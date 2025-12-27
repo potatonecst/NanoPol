@@ -24,7 +24,7 @@ export function LogPanel() {
             }
         };
         fetchLogs();
-        const interval = setInterval(fetchLogs, 1000);
+        const interval = setInterval(fetchLogs, 200);
         return () => clearInterval(interval);
     }, []);
 
@@ -33,7 +33,7 @@ export function LogPanel() {
         if (isOpen) {
             bottomRef.current?.scrollIntoView({ behavior: "smooth" });
         }
-    }, [logs.length, isOpen])
+    }, [logs.length, isOpen, isMaximized])
 
     //色分け
     const getLevelColor = (level: string) => {
@@ -58,7 +58,7 @@ export function LogPanel() {
     return (
         <div
             className={cn(
-                "flex flex-col border-t bg-zinc-950 text-zinc-100 font-mono text-xs transition-all duration-300 ease-in-out shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]",
+                "flex flex-col border-t bg-zinc-950 text-zinc-100 font-mono text-xs transition-all duration-300 ease-in-out shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] overflow-hidden",
                 getHeightClass()
             )}
         >
