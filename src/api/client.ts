@@ -82,7 +82,7 @@ export const systemApi = {
         request<{ status: string }>("/health"),
 
     reset: () =>
-        request<{ status: string, mesage: string }>("system/reset", { method: "POST" }),
+        request<{ status: string, mesage: string }>("/system/reset", { method: "POST" }),
 
     getPorts: () =>
         request<{ ports: string[] }>("/system/ports", { method: "GET" }),
@@ -91,7 +91,7 @@ export const systemApi = {
         request<{ logs: LogEntry[] }>("/system/logs", { method: "GET" }),
 
     postLogs: (level: "INFO" | "WARNING" | "ERROR", message: string) =>
-        request("system/logs", {
+        request("/system/logs", {
             method: "POST",
             body: JSON.stringify({ level, message })
         }),

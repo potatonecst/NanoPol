@@ -16,23 +16,23 @@ stage = StageController()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     #起動時の処理
-    print("[SYSTEM] Backend Starting...")
+    logger.info("[SYSTEM] Backend Starting...")
     
     yield #ここでサーバーが稼働し続ける
     
     #終了時の処理
-    print("[SYSTEM] Backend Shutting Down...")
+    logger.info("[SYSTEM] Backend Shutting Down...")
     
     #強制的に切断処理
-    print("[SYSTEM] Releasing Stage Conection...")
+    logger.info("[SYSTEM] Releasing Stage Conection...")
     #if stage_instance.is_open:
     #    stage_instance.close()
     
-    print("[SYSTEM] Releasing Camera Conection...")
+    logger.info("[SYSTEM] Releasing Camera Conection...")
     #if camera_instance.is_open:
     #    camera_instance.close() #pyueye.ueye.is_ExitCamera(hCam) など
     
-    print("[SYSTEM] Cleanup Complete.")
+    logger.info("[SYSTEM] Cleanup Complete.")
 
 app = FastAPI(title="NanoPol Backend", version="0.1.0", lifespan=lifespan)
 
@@ -91,7 +91,7 @@ def health_check():
 @app.post("/system/reset")
 def system_reset():
     #強制リセット: 全てのデバイス接続を開放する
-    print("[SYSTEM] FORCE RESET TRIGGERD")
+    logger.warning("[SYSTEM] FORCE RESET TRIGGERD")
     
     #ここに実機のリソース開放処理を書く
     if stage:
@@ -129,6 +129,7 @@ def connect_stage(req: ConnectStageRequest):
         
         mode = "Mock" if stage.is_mock_env else "Real"
         
+        logger.info(f"Connected to stage on {req.port} (Mode: {mode})")
         return {
             "status": "success",
             "mode": mode,
@@ -136,7 +137,7 @@ def connect_stage(req: ConnectStageRequest):
         }
     except Exception as e:
         #接続失敗時は500エラーを返し、フロントエンドでcatchさせる
-        print(f"[ERROR] Stage Connection Failed: {e}")
+        logger.error(f"Stage Connection Failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/stage/config")
@@ -247,7 +248,7 @@ def stage_get_position():
 @app.post("/camera/connect")
 def connect_camera(camera_id: str):
     #カメラ接続リクエスト
-    print(f"[CMD] Connect Camera ID {camera_id}")
+    logger.info(f"[CMD] Connect Camera ID {camera_id}")
     
     #Mock動作: 常に成功を返す
     return {"status": "success", "message": f"Connected to Camera {camera_id} (Mock)"}

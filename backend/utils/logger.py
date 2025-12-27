@@ -32,7 +32,7 @@ def setup_logger(name: str = "NanoPol"):
     logger.setLevel(logging.INFO)
     
     #handlerが二重に追加されないようにチェック
-    if logging.handlers:
+    if logger.handlers:
         return logger
     
     #---formatter定義---

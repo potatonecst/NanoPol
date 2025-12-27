@@ -10,8 +10,11 @@
   * **Backend:** Python 3.11 + FastAPI.
       * **Img Proc:** OpenCV (`cv2`), NumPy, `tifffile`.
       * **Device:** `pyserial`, `pyueye`.
-      * **Logging:** `/system/logs` エンドポイントによる集中ログ管理（Frontend/Backendのログを統合）。
-      * **Mock Mode:** Windows以外のOSでは自動的に「Mockデバイスモード」で動作し、開発をサポート。
+      * **Logging:**
+      * **Backend:** `backend/utils/logger.py` の `logger` インスタンスを使用。標準出力(`sys.stdout`)、ファイル(`logs/system.log`)、およびメモリ内バッファ(`log_buffer`)の3箇所に出力される。
+      * **Frontend Integration:** Frontendは1秒ごとに `GET /system/logs` をポーリングし、メモリ内バッファに蓄積された直近200件のログを取得・表示する。
+      * **Unified Logging:** Frontend側の操作ログも `POST /system/logs` 経由でBackendに送信され、一元管理される。
+      * **Implementation Note:** Backend開発時は `print()` ではなく必ず `logger.info()` 等を使用すること。`print()` はバッファに捕捉されない。
 
 ### 2.2 座標系と精度 (Coordinate System)
 
