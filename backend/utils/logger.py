@@ -43,7 +43,7 @@ def setup_logger(name: str = "NanoPol"):
     )
     
     #コンソール用: シンプルに
-    console_formatter = logging.Formater(
+    console_formatter = logging.Formatter(
         "[%(levelname)s] %(message)s",
     )
     

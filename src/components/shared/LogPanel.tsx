@@ -78,7 +78,7 @@ export function LogPanel() {
                     {/* 閉じている時に最新ログを表示 */}
                     {!isOpen && latestLog && (
                         <div className="flex items-center gap-2 overflow-hidden opacity-80">
-                            <span className="text-zinx-500 text-[10px] shrink-0">
+                            <span className="text-zinc-500 text-[10px] shrink-0">
                                 {latestLog.timestamp}
                             </span>
                             <span className={cn("font-bold text-[10px] shrink-0", getLevelColor(latestLog.level))}>
@@ -123,7 +123,7 @@ export function LogPanel() {
                     <div className="space-y-0.5">
                         {logs.map((log, i) => (
                             <div key={i} className="flex gap-3 hover:bg-white/5 px-2 py-0.5 rounded transition-colors group">
-                                <span className="ext-zinc-500 w-16 shrink-0 text-[10px] pt-0.5 select-none">
+                                <span className="text-zinc-500 w-16 shrink-0 text-[10px] pt-0.5 select-none">
                                     {log.timestamp}
                                 </span>
                                 <span className={cn("w-14 shrink-0 font-bold text-[10px] pt-0.5 select-none", getLevelColor(log.level))}>
