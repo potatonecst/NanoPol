@@ -11,6 +11,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
+import { Toaster } from "./components/ui/sonner";
+import { toast } from "sonner";
 
 import { Camera, Moon, Sun, Video, Square } from "lucide-react"
 import { IconWaveSine } from "@tabler/icons-react"
@@ -20,16 +22,22 @@ import { DevicesView } from "./components/views/DevicesView";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { ManualView } from "./components/views/ManualView";
+import { LogPanel } from "./components/shared/LogPanel";
 
 function App() {
-  const { currentMode, isCameraConnected } = useAppStore(
+  const {
+    currentMode, isCameraConnected, //どのモードかを聞き出す
+    isRecording, setIsRecording, //録画状態管理用
+  } = useAppStore(
     useShallow((state) => ({
       currentMode: state.currentMode,
-      isCameraConnected: state.isCameraConnected
+      isCameraConnected: state.isCameraConnected,
+      isRecording: state.isRecording,
+      setIsRecording: state.setIsRecording,
     }))
-  ); //どのモードかを聞き出す
+  );
+
   const [isDark, setIsDark] = useState(true); //ダークモード切り替え用
-  const [isRecording, setIsRecording] = useState(false); //録画状態管理用
 
   //HTMLタグ自体にdarkクラスを付与
   useEffect(() => {
@@ -37,6 +45,15 @@ function App() {
     root.classList.remove("light", "dark");
     root.classList.add(isDark ? "dark" : "light");
   }, [isDark]);
+
+  //カメラ切断時に録画状態をリセット
+  useEffect(() => {
+    if (!isCameraConnected && isRecording) {
+      console.warn("Camera disconnected during recording. Stopping recording.");
+      setIsRecording(false);
+      toast.error("Recording stopped due to disconnection.");
+    }
+  })
 
   //録画ボタンのトグル処理
   const toggleRecording = () => {
@@ -181,10 +198,15 @@ function App() {
         </div>
 
         {/* ステータスバー */}
-        <footer className="flex h-6 shrink-0 items-center border-t bg-card px-4 text-xs text-muted-foreground">
+        {/*<footer className="flex h-6 shrink-0 items-center border-t bg-card px-4 text-xs text-muted-foreground">
           <span className="w-2 h-2 rounded-full bg-green-500 mr-2" />
           <span>[INFO] Application initialized successfully. Waiting for device connection...</span>
-        </footer>
+        </footer>*/}
+        <div className="shrink-0 z-50">
+          <LogPanel />
+        </div>
+
+        <Toaster richColors position="top-center" />
       </div>
     </TooltipProvider>
   )

@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "NanoPol Controller",
+        "title": "NanoPol",
         "width": 800,
-        "height": 600
+        "height": 850,
+        "minWidth": 425,
+        "minHeight": 500
       }
     ],
     "security": {

@@ -12,10 +12,11 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 export function AppSidebar() {
-    const { currentMode, setMode } = useAppStore(
+    const { currentMode, setMode, isSystemBusy } = useAppStore(
         useShallow((state) => ({
             currentMode: state.currentMode,
             setMode: state.setMode,
+            isSystemBusy: state.isSystemBusy,
         }))
     );
 
@@ -37,6 +38,7 @@ export function AppSidebar() {
                         )}
                         onClick={() => setMode(mode)}
                         title={label}
+                        disabled={isSystemBusy}
                     >
                         <Icon className="size-6" />
                     </Button>

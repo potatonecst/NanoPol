@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store/useAppStore";
+import { stageApi, cameraApi, systemApi } from "@/api/client";
 
 import { Button } from "../ui/button";
 import {
@@ -21,6 +22,19 @@ import {
 import { Badge } from "../ui/badge";
 import { Label } from "../ui/label";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogTrigger,
+} from "../ui/alert-dialog";
+import { toast } from "sonner";
+
 import { Cable, Camera, RefreshCw, AlertCircle } from "lucide-react";
 
 export function DevicesView() {
@@ -29,6 +43,8 @@ export function DevicesView() {
         isStageConnected, setIsStageConnected,
         cameraId, setCameraId,
         isCameraConnected, setIsCameraConnected,
+        isRecording,
+        resetAllConnections,
     } = useAppStore(
         useShallow((state) => ({
             stagePort: state.stagePort,
@@ -39,13 +55,127 @@ export function DevicesView() {
             setCameraId: state.setCameraId,
             isCameraConnected: state.isCameraConnected,
             setIsCameraConnected: state.setIsCameraConnected,
+            isRecording: state.isRecording,
+            resetAllConnections: state.resetAllConnections,
         }))
     );
 
-    const RefreshButton = ({ label, disabled }: { label: string, disabled: boolean }) => (
+    const [availablePorts, setAvailablePorts] = useState<string[]>([]);
+    const [isStageLoading, setIsStageLoading] = useState(false);
+    const [isCameraLoading, setIsCameraLoading] = useState(false);
+
+    //Port一覧
+    const fetchPorts = async () => {
+        try {
+            const res = await systemApi.getPorts();
+            setAvailablePorts(res.ports);
+        } catch (error) {
+            console.error("Failed to fetch ports", error);
+            toast.error("Failed to list COM ports");
+        }
+    }
+
+    //初回マウント時にポート一覧を取得
+    useEffect(() => {
+        fetchPorts();
+    }, []);
+
+    //ステージ接続ハンドラー
+    const handleStageConnect = async () => {
+        if (isStageConnected) {
+            //切断処理（Mockなので状態を変えるだけ）
+            setIsStageConnected(false);
+            toast.info("Disconnected Stage");
+            return;
+        }
+
+        if (!stagePort) {
+            toast.error("Please select a COM port."); //簡易アラート
+            return;
+        }
+
+        try {
+            setIsStageLoading(true);
+            //API呼び出し
+            const res = await stageApi.connect(stagePort);
+            console.log(res); //{status: "success"}
+
+            //成功したら接続状態にする
+            setIsStageConnected(true);
+            toast.success(`Connected to ${stagePort}`);
+        } catch (error) {
+            console.error(error);
+            toast.error("Failed to connect stage.");
+        } finally {
+            setIsStageLoading(false);
+        }
+    }
+
+    //カメラ接続ハンドラー
+    const handleCameraConnect = async () => {
+        if (isCameraConnected) {
+            //切断処理（Mockなので状態を変えるだけ）
+            setIsCameraConnected(false);
+            toast.info("Disconnected Camera");
+            return;
+        }
+
+        if (!cameraId) {
+            toast.error("Please select a Camera ID."); //簡易アラート
+            return;
+        }
+
+        try {
+            setIsCameraLoading(true);
+            //API呼び出し
+            const res = await cameraApi.connect(cameraId);
+            console.log(res); //{status: "success"}
+
+            //成功したら接続状態にする
+            setIsCameraConnected(true);
+            toast.success(`Connected to Camera ${cameraId}`);
+        } catch (error) {
+            console.error(error);
+            toast.error("Failed to connect camera.");
+        } finally {
+            setIsCameraLoading(false);
+        }
+    }
+
+    //Force Resetハンドラー
+    const executeForceReset = async () => {
+        console.log("Executing Force Reset...");
+
+        try {
+            await systemApi.reset();
+            toast.success("System reset command sent.");
+        } catch (error) {
+            console.error(error);
+            toast.warning("Backend reset failed, but resetting UI anyway.");
+        } finally {
+            resetAllConnections();
+            toast.info("All connections reset.");
+        }
+    }
+
+    const RefreshButton = ({
+        label,
+        disabled,
+        onClick,
+    }: {
+        label: string,
+        disabled: boolean,
+        onClick?: () => void,
+    }) => (
         <Tooltip>
             <TooltipTrigger asChild>
-                <Button variant="outline" size="icon-lg" aria-label={label} disabled={disabled}>
+                <Button
+                    variant="outline"
+                    size="icon-lg"
+                    aria-label={label}
+                    disabled={disabled}
+                    onClick={onClick}
+                >
                     <RefreshCw className="size-4" />
                 </Button>
             </TooltipTrigger>
@@ -92,14 +222,24 @@ export function DevicesView() {
                                             <SelectValue placeholder="Select COM Port" />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="COM1">COM1</SelectItem>
-                                            <SelectItem value="COM3">COM3</SelectItem>
-                                            <SelectItem value="COM4">COM4</SelectItem>
+                                            {availablePorts.length === 0 ? (
+                                                <SelectItem value="placeholder" disabled>No ports found</SelectItem>
+                                            ) : (
+                                                availablePorts.map((port) => (
+                                                    <SelectItem key={port} value={port}>
+                                                        {port}
+                                                    </SelectItem>
+                                                ))
+                                            )}
                                         </SelectContent>
                                     </Select>
 
                                     {/* リフレッシュボタン（Tooltip付き） */}
-                                    <RefreshButton label="Refresh Ports" disabled={isStageConnected} />
+                                    <RefreshButton
+                                        label="Refresh Ports"
+                                        disabled={isStageConnected}
+                                        onClick={fetchPorts}
+                                    />
                                 </div>
                             </div>
                         </CardContent>
@@ -107,9 +247,10 @@ export function DevicesView() {
                             <div className="text-xs text-muted-foreground">Baudrate: 9600</div>
                             <Button
                                 variant={isStageConnected ? "destructive" : "default"}
-                                onClick={() => setIsStageConnected(!isStageConnected)}
+                                onClick={handleStageConnect}
+                                disabled={isStageLoading || (isStageConnected && isRecording)}
                             >
-                                {isStageConnected ? "Disconnect" : "Connect"}
+                                {isStageLoading ? "Connecting..." : (isStageConnected ? "Disconnect" : "Connect")}
                             </Button>
                         </CardFooter>
                     </Card>
@@ -153,9 +294,10 @@ export function DevicesView() {
                             <div className="text-xs text-muted-foreground">Mode: 10-bit RAW</div>
                             <Button
                                 variant={isCameraConnected ? "destructive" : "default"}
-                                onClick={() => setIsCameraConnected(!isCameraConnected)}
+                                onClick={handleCameraConnect}
+                                disabled={isCameraLoading || (isCameraConnected && isRecording)}
                             >
-                                {isCameraConnected ? "Disconnect" : "Connect"}
+                                {isCameraLoading ? "Connecting..." : (isCameraConnected ? "Disconnect" : "Connect")}
                             </Button>
                         </CardFooter>
                     </Card>
@@ -167,9 +309,34 @@ export function DevicesView() {
                         <AlertCircle className="size-5 text-amber-500" />
                         Troubleshooting
                     </h3>
-                    <Button variant="outline" className="text-muted-foreground border-dashed">
-                        Force Reset All Connections
-                    </Button>
+
+                    <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                            <Button
+                                variant="outline"
+                                className="text-muted-foreground border-dashed"
+                            >
+                                Force Reset All Connections
+                            </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                            <AlertDialogHeader>
+                                <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                    This will forcefully disconnected all devices and reset the system states.
+                                    Any ongoing measurements will be stopped.
+                                </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                {/* Continueを押した時にexecuteForceResetを実行 */}
+                                <AlertDialogAction onClick={executeForceReset} className="bg-destructive hover:bg-destructive/90">
+                                    Force Reset
+                                </AlertDialogAction>
+                            </AlertDialogFooter>
+                        </AlertDialogContent>
+                    </AlertDialog>
+
                     <p className="text-xs text-muted-foreground mt-2">
                         Use this if devices are stuck or not responding. It will forcefully close all handles.
                     </p>
