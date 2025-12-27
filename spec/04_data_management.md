@@ -66,7 +66,17 @@
 }
 ```
 
-### 5.4 CSV形式
+### 5.4 フロントエンド状態管理 (Runtime State)
+
+`src/store/useAppStore.ts` (Zustand) にて管理される一時的なUI状態。
+
+*   **接続状態:** `isStageConnected`, `isCameraConnected`, `stagePort`, `cameraId`.
+*   **カメラ制御:** `exposureTime`, `gain`, `cameraResolution`.
+*   **ビュー制御:** `zoomLevel`, `panOffset`.
+*   **ステージ設定:** `stageSettings` (StepMode, PulsesPerDegree, Speed config).
+*   **システム状態:** `isSystemBusy` (排他制御用).
+
+### 5.5 CSV形式
 
 ワイド形式。
 `Angle, Timestamp, ROI1_Max, ROI1_Sum, ROI2_Max, ROI2_Sum, ImagePath`

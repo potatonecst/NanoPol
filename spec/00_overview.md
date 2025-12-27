@@ -9,8 +9,9 @@
 
   * **回転ステージ (GSC-01):**
       * 通信: RS-232C (9600bps, Data 8, Stop 1, Parity None).
-      * フロー制御: **None (RTS/CTS=False)** を推奨。
+      * フロー制御: **Hardware (RTS/CTS=True)** (実装により変更).
       * コマンド: `M:` (相対移動), `G:` (駆動), `Q:` (状態確認), `H:` (原点復帰).
+      * **その他:** Windows以外ではMockモードで動作。
   * **カメラ (DCC1645C):**
       * ドライバ: IDS uEye (`uc480`).
       * ライブラリ: `pyueye` (Python).
