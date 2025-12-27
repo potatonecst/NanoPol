@@ -14,6 +14,7 @@
       * **Backend:** `backend/utils/logger.py` の `logger` インスタンスを使用。標準出力(`sys.stdout`)、ファイル(`logs/system.log`)、およびメモリ内バッファ(`log_buffer`)の3箇所に出力される。
       * **Frontend Integration:** Frontendは1秒ごとに `GET /system/logs` をポーリングし、メモリ内バッファに蓄積された直近200件のログを取得・表示する。
       * **Unified Logging:** Frontend側の操作ログも `POST /system/logs` 経由でBackendに送信され、一元管理される。
+      * **Operation Logging:** ハードウェア操作（Homing, Stopping, Movingなど）は、開始時だけでなく、完了時（またはMockモードでの待機完了時）にも必ずログを出力し、ユーザーが状態遷移を明確に把握できるようにする。
       * **Implementation Note:** Backend開発時は `print()` ではなく必ず `logger.info()` 等を使用すること。`print()` はバッファに捕捉されない。
 
 ### 2.2 座標系と精度 (Coordinate System)
