@@ -64,7 +64,7 @@ export function LogPanel() {
         >
             {/* ヘッダー（常に表示） */}
             <div
-                className="flex items-center justify-between px-2 py-1 bg-white/5 border-b border-white/10 cursor-pointer hover:bg-white/10 transition-colors"
+                className="flex items-center justify-between px-2 py-1 bg-white/5 border-b border-white/10 cursor-pointer hover:bg-white/10 transition-colors shrink-0"
                 onClick={() => setIsOpen(!isOpen)}
             >
                 <div className="flex items-center gap-3 overflow-hidden">
@@ -119,7 +119,7 @@ export function LogPanel() {
 
             {/* ログリスト（開いている時だけ中身を表示） */}
             {isOpen && (
-                <ScrollArea className="flex-1 p-2">
+                <ScrollArea className="flex-1 min-h-0 p-2">
                     <div className="space-y-0.5">
                         {logs.map((log, i) => (
                             <div key={i} className="flex gap-3 hover:bg-white/5 px-2 py-0.5 rounded transition-colors group">
