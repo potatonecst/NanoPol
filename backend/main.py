@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -8,10 +8,11 @@ import os
 
 from utils.logger import logger, log_buffer
 from devices.stage_controller import StageController
-#from devices.camera_controller import camera_instance
+from devices.camera_controller import CameraController
 
 #グローバルインスタンス
 stage = StageController()
+camera = CameraController()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,12 +26,12 @@ async def lifespan(app: FastAPI):
     
     #強制的に切断処理
     logger.info("[SYSTEM] Releasing Stage Conection...")
-    #if stage_instance.is_open:
-    #    stage_instance.close()
+    if stage.is_connected:
+        stage.close()
     
     logger.info("[SYSTEM] Releasing Camera Conection...")
-    #if camera_instance.is_open:
-    #    camera_instance.close() #pyueye.ueye.is_ExitCamera(hCam) など
+    if camera.is_connected:
+        camera.disconnect()
     
     logger.info("[SYSTEM] Cleanup Complete.")
 
@@ -67,6 +68,10 @@ class SetSpeedRequest(BaseModel):
 class UpdateConfigRequest(BaseModel):
     pulses_per_degree: int
 
+class CameraConfigRequest(BaseModel):
+    exposure_ms: float
+    gain: int
+
 class LogPostRequest(BaseModel):
     level: str
     message: str
@@ -85,6 +90,7 @@ def health_check():
     return {
         "status": "OK",
         "stage_connected": stage.is_connected,
+        "camera_connected": camera.is_connected,
         "mode": "Mock" if stage.is_mock_env else "Real"
     }
 
@@ -96,7 +102,8 @@ def system_reset():
     #ここに実機のリソース開放処理を書く
     if stage:
         stage.close()
-    #if camera_controller: camera_controller.close()
+    if camera:
+        camera.disconnect()
     
     return {"status": "success", "message": "All connections forcefully reset."}
 
@@ -141,7 +148,7 @@ def connect_stage(req: ConnectStageRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/stage/config")
-def stage_update_coonfig(req: UpdateConfigRequest):
+def stage_update_config(req: UpdateConfigRequest):
     #接続されていなくても設定値だけは更新できるようにしても良いが、
     #整合性を保つために常時受け付ける
     stage.update_settings(req.pulses_per_degree)
@@ -246,12 +253,45 @@ def stage_get_position():
 #---カメラ関連API---
 
 @app.post("/camera/connect")
-def connect_camera(camera_id: str):
+def connect_camera(camera_id: int = 0):
     #カメラ接続リクエスト
     logger.info(f"[CMD] Connect Camera ID {camera_id}")
     
-    #Mock動作: 常に成功を返す
-    return {"status": "success", "message": f"Connected to Camera {camera_id} (Mock)"}
+    success = camera.connect(camera_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Camera connection failed")
+        
+    mode = "Mock" if camera.is_mock_env else "Real"
+    return {"status": "success", "mode": mode, "message": f"Connected to Camera {camera_id} ({mode})"}
+
+@app.post("/camera/disconnect")
+def disconnect_camera():
+    camera.disconnect()
+    return {"status": "success"}
+
+@app.post("/camera/config")
+def config_camera(req: CameraConfigRequest):
+    if not camera.is_connected:
+        raise HTTPException(status_code=400, detail="Camera not connected")
+        
+    camera.set_exposure(req.exposure_ms)
+    camera.set_gain(req.gain)
+    return {"status": "success"}
+
+@app.get("/camera/snapshot")
+def get_snapshot():
+    # JPEG画像を返す
+    if not camera.is_connected:
+        # 未接続時は404または503だが、UIがポーリングしている場合は
+        # 404を返すとエラーログが出るので、黒画像などを返す実装もアリ。
+        # ここではシンプルにエラー
+        raise HTTPException(status_code=503, detail="Camera not connected")
+        
+    jpeg_bytes = camera.capture_frame()
+    if jpeg_bytes is None:
+        raise HTTPException(status_code=500, detail="Capture failed")
+        
+    return Response(content=jpeg_bytes, media_type="image/jpeg")
 
 #---ログ関連API---
 

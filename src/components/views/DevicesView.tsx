@@ -114,9 +114,18 @@ export function DevicesView() {
     //カメラ接続ハンドラー
     const handleCameraConnect = async () => {
         if (isCameraConnected) {
-            //切断処理（Mockなので状態を変えるだけ）
-            setIsCameraConnected(false);
-            toast.info("Disconnected Camera");
+            try {
+                //切断処理
+                setIsCameraLoading(true);
+                await cameraApi.disconnect();
+                setIsCameraConnected(false);
+                toast.info("Disconnected Camera");
+            } catch (error) {
+                console.error(error);
+                toast.error("Failed to disconnect camera.");
+            } finally {
+                setIsCameraLoading(false);
+            }
             return;
         }
 
@@ -127,8 +136,9 @@ export function DevicesView() {
 
         try {
             setIsCameraLoading(true);
-            //API呼び出し
-            const res = await cameraApi.connect(cameraId);
+            //API呼び出し (backend expects int, but client passes string "1" usually. cast it if needed in client.ts or here)
+            // client.ts accepts number.
+            const res = await cameraApi.connect(parseInt(cameraId));
             console.log(res); //{status: "success"}
 
             //成功したら接続状態にする

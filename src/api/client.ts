@@ -1,6 +1,6 @@
 import { LogEntry } from "../types";
 
-const API_BASE = "http://127.0.0.1:8000"
+export const API_BASE = "http://127.0.0.1:8000"
 
 //共通のフェッチ関数
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -71,10 +71,19 @@ export const stageApi = {
 
 //カメラ操作
 export const cameraApi = {
-    connect: (id: string) =>
-        request<{ status: string, message: string }>(`/connect/camera?camera_id=${id}`, { method: "POST" }),
+    connect: (id: number = 0) =>
+        request<{ status: string, mode: string, message: string }>(`/camera/connect?camera_id=${id}`, { method: "POST" }),
 
-    //あとで追加: snap, record, etc.
+    disconnect: () =>
+        request<{ status: string }>("/camera/disconnect", { method: "POST" }),
+    
+    config: (exposure_ms: number, gain: number) =>
+        request<{ status: string }>("/camera/config", {
+            method: "POST",
+            body: JSON.stringify({ exposure_ms, gain })
+        }),
+
+    getSnapshotUrl: () => `${API_BASE}/camera/snapshot`,
 }
 
 export const systemApi = {

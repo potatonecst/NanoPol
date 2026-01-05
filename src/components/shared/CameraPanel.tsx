@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store/useAppStore";
+import { cameraApi } from "@/api/client";
 
 import { Button } from "../ui/button";
 import { Slider } from "../ui/slider";
@@ -24,6 +25,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         gain, setGain,
         zoomLevel, setZoomLevel,
         panOffset, setPanOffset,
+        isCameraConnected,
     } = useAppStore(useShallow((state) => ({
         cameraResolution: state.cameraResolution,
         currentAngle: state.currentAngle,
@@ -35,6 +37,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         setZoomLevel: state.setZoomLevel,
         panOffset: state.panOffset,
         setPanOffset: state.setPanOffset,
+        isCameraConnected: state.isCameraConnected,
     })));
 
     //Camera Interaction ref
@@ -42,6 +45,8 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
     const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
     const isDragging = useRef(false);
     const lastMousePos = useRef({ x: 0, y: 0 });
+
+    const [imageSrc, setImageSrc] = useState<string>("");
 
     //ZoomとPanのロジック
     const handleWheel = (e: React.WheelEvent) => {
@@ -103,6 +108,33 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         obs.observe(containerRef.current);
         return () => obs.disconnect();
     }, [])
+
+    // Polling Logic
+    useEffect(() => {
+        if (!isCameraConnected) return;
+
+        let active = true;
+        const updateFrame = () => {
+            if (!active) return;
+            setImageSrc(cameraApi.getSnapshotUrl());
+            // Approx 15 FPS
+            setTimeout(updateFrame, 66);
+        };
+        updateFrame();
+
+        return () => { active = false; };
+    }, [isCameraConnected]);
+
+    // Config Sync Logic (Debounced)
+    useEffect(() => {
+        if (!isCameraConnected) return;
+        
+        const timer = setTimeout(() => {
+            cameraApi.config(exposureTime, gain).catch(console.error);
+        }, 500);
+
+        return () => clearTimeout(timer);
+    }, [exposureTime, gain, isCameraConnected]);
 
     //コンテナサイズにアスペクト比を守らせる
     const fitSize = useMemo(() => {
@@ -247,14 +279,22 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                             transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
                         }}
                     >
-                        {/* ここにcanvasやimg */}
-
-                        {/* プレースホルダー */}
-                        <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-700">
-                            <CameraOff className="size-16 mb-4" />
-                            <p className="text-lg font-medium">No Signal</p>
-                            <p className="text-sm">Check connection</p>
-                        </div>
+                        {/* Camera Image */}
+                        {isCameraConnected ? (
+                            <img 
+                                src={imageSrc} 
+                                alt="Camera Stream" 
+                                className="w-full h-full object-contain pointer-events-none"
+                                draggable={false}
+                            />
+                        ) : (
+                            /* Placeholder */
+                            <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-700">
+                                <CameraOff className="size-16 mb-4" />
+                                <p className="text-lg font-medium">No Signal</p>
+                                <p className="text-sm">Check connection</p>
+                            </div>
+                        )}
 
                         {/* ROI選択などの操作は、このdivに対してonClickイベントを設定すれば、文字などに邪魔せれずに座標を取得できる。 */}
                     </div>
