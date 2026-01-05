@@ -6,6 +6,9 @@
 
 階層構造: `[Base] / [YYYYMMDD] / [SampleName] / ...`
 
+  * **[Base]:** Settingsモードで設定されたルートパス (Default: `D:\Data`)。
+  * **[YYYYMMDD]:** 測定実行日の日付で自動生成。
+
 ```text
 📂 D:\Data \
      └─📂 20251207 \
@@ -15,7 +18,7 @@
                │
                ├── 📂 images /             # 本番画像ルート
                │    ├── 1_Left_Front_001 / # 1回目の試行 (IDと連動)
-               │    │    ├── 000.0deg.tif
+               │    │    ├── 000.0deg.tif  # ★重要: Rawデータから生成された可逆圧縮画像 (TIFF/PNG)
                │    │    └── 📂 analysis /
                │    │         ├── heatmap_ref.tif
                │    │         └── graph_ref.png

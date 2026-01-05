@@ -13,6 +13,11 @@
       * **Device Control:**
           * `backend/devices/stage_controller.py`: GSC-01 制御ロジック (実装済み)。
           * `backend/devices/camera_controller.py`: DCC1645C 制御 (未実装 - Planned)。
+              * **責務の分離:**
+                  * `get_raw_image()`: メモリから生データ (Numpy array) を取得。保存・解析用。
+                  * `capture_jpeg()`: 生データを JPEG に変換して返す。UI プレビュー用。
+              * **並行処理対策:** `threading.Lock` を導入し、複数リクエスト時の競合を防止。
+              * **配信方式:** ライブビュー用エンドポイント (`/camera/video_feed`) は MJPEG ストリーミングを採用し、ポーリング負荷を軽減。
       * **Logging:** `backend/utils/logger.py` による一元管理。
 
 ### 2.2 ログ・ステータス管理 (Logging & Status)

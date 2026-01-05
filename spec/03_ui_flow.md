@@ -41,14 +41,18 @@
   * **Stage Controller Panel:**
       * **COM Port:** プルダウン選択 (Backendから取得)。リフレッシュボタンあり。
       * **Action:** `[Connect]` / `[Disconnect]`.
+          * **UI改善:** 接続処理中はボタン内にスピナー (Loader2) を表示し、テキストを "Connecting..." に変更する。
       * **Status:** 接続時は緑色のBadgeとボーダー強調で視覚的に通知。
       * **挙動:** Windows環境では実機接続を試行し、失敗時はエラー通知を行う。非Windows環境ではMock接続となる。
   * **Camera Panel:**
-      * **Camera ID:** ID選択 (現在は '1' 固定のMock)。
-      * **Action:** `[Connect]` / `[Disconnect]`.
+      * **Camera ID:** ID選択 (Backendから動的に取得)。
+          * **改善:** リフレッシュボタンで `/system/cameras` (Planned) を叩き、接続可能なカメラIDリストを更新する仕組みを導入。
+      * **Action:** `[Connect]` / `[Disconnect]`. 処理中のスピナー表示を追加。
       * **Note:** 現在はBackendのMockエンドポイントに接続するのみ。
   * **Troubleshooting:**
       * `[Force Reset All Connections]`: システム全体の接続状態を強制リセットし、UIロックを解除する緊急ボタン。
+  * **Code Quality:**
+      * `RefreshButton` などの内部コンポーネントはファイル外または別ファイルに切り出し、不要な再レンダリングを防止する。
 
 #### ② 🛠️ Manual Mode (調整) - **Implemented**
 
@@ -69,10 +73,55 @@
 
 #### ③ 📉 Auto Mode (自動測定) - **Planned**
 
-  * **現状:** プレースホルダー表示のみ。
-  * **予定:** `spec.md` v9.0 に準拠した、セッション管理・測定シーケンスUIを実装予定。
+サイドバーの状態遷移でフローを管理する。
+
+**【State 0: セッション開始 (Session Entry)】**
+Autoモードに入った最初の状態。サイドバーに表示。
+
+  * **Base Folder:** `D:\Data` (設定から自動反映)
+  * **Date Folder:** `YYYYMMDD` (当日日付で自動生成)
+  * **[ 📄 新規測定 (New) ]**
+      * `Sample Name`: `Sample_1` (自動採番で重複回避。編集可)。
+      * `[Create & Start]` ボタン。
+  * **[ 📂 つづきから (Load) ]**
+      * 既存のサンプルフォルダを選択。
+      * `settings.json` を読み込み、**State A** へ遷移。
+
+**【State A: 測定選択 (Selection)】**
+
+  * **履歴リスト (History):** 過去の測定（ID, ステータス）を表示。
+  * **次アクション選択:**
+      * `[ 1. Left / Front ]`
+      * `[ 2. Right / Front ]`
+      * `[ 3. Left / Back ]`
+      * `[ 4. Right / Back ]`
+      * `[ 5. Custom ]`
+      * `[ Finish Experiment ]` (State 0に戻る)
+  * **遷移:** ボタン選択 → **State B** へ。
+
+**【State B: 準備・実行 (Setup & Run)】**
+
+  * **Header:** `Target: 1. Left / Front` (クリックでState Aに戻る)。
+  * **Instruction:** 「レーザーを左、サンプルを手前にセット」。
+  * **Input (Mandatory):**
+      * `Laser Power`: `[ ] mW` (空欄・必須)。
+      * `Fiber Pos`: `X:[ ] Y:[ ]` (前回値保持・必須)。
+  * **Action Buttons:**
+      * `[<] [>]`: **Mini Jog** (微調整用)。
+      * `[📷 Test Shot]`: 1枚撮影・ROI解析値表示。
+      * `[🔍 Pre-Scan]`: **必須**。ROIオートセンタリング。
+      * `[▶ START MEASUREMENT]`: 本番開始。
+  * **Progress:**
+      * 実行中: `Angle / 360`, プログレスバー。
+      * `[🛑 ABORT / PAUSE]`: 緊急停止。
 
 #### ④ ⚙️ Settings Mode (設定) - **Planned**
 
-  * **現状:** プレースホルダー表示のみ。
-  * **予定:** 保存先パス設定、ステージのパルスレート設定などの永続化管理。
+  * **Path Settings:**
+      * `Default Base Folder`: 測定データ保存のルートパス (例: `D:\Data`)。
+  * **Device Settings:**
+      * パルス/度 換算値 (Default: 400 pulses/degree)。
+      * 通信タイムアウト設定。
+  * **UI Settings:**
+      * **Sounds:** 完了時・エラー時の通知音 (ON/OFF)。
+      * **Safety:** 測定中止時やアプリ終了時の確認ダイアログ表示 (ON/OFF)。
