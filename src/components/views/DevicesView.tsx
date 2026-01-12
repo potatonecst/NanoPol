@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store/useAppStore";
 import { stageApi, cameraApi, systemApi } from "@/api/client";
@@ -42,6 +42,7 @@ export function DevicesView() {
         stagePort, setStagePort,
         isStageConnected, setIsStageConnected,
         cameraId, setCameraId,
+        availableCameras, setAvailableCameras,
         isCameraConnected, setIsCameraConnected,
         isRecording,
         resetAllConnections,
@@ -53,6 +54,8 @@ export function DevicesView() {
             setIsStageConnected: state.setIsStageConnected,
             cameraId: state.cameraId,
             setCameraId: state.setCameraId,
+            availableCameras: state.availableCameras,
+            setAvailableCameras: state.setAvailableCameras,
             isCameraConnected: state.isCameraConnected,
             setIsCameraConnected: state.setIsCameraConnected,
             isRecording: state.isRecording,
@@ -75,9 +78,29 @@ export function DevicesView() {
         }
     }
 
+    //Camera一覧
+    const fetchCameras = async () => {
+        try {
+            const res = await cameraApi.listCameras();
+            setAvailableCameras(res.cameras);
+            // If only one camera, select it automatically if none selected
+            if (res.cameras.length > 0 && !cameraId) {
+                setCameraId(res.cameras[0].id.toString());
+            }
+        } catch (error) {
+            console.error("Failed to fetch cameras", error);
+            toast.error("Failed to list cameras");
+        }
+    }
+
     //初回マウント時にポート一覧を取得
+    const initialized = useRef(false);
     useEffect(() => {
-        fetchPorts();
+        if (!initialized.current) {
+            initialized.current = true;
+            fetchPorts();
+            fetchCameras();
+        }
     }, []);
 
     //ステージ接続ハンドラー
@@ -291,12 +314,20 @@ export function DevicesView() {
                                             <SelectValue placeholder="Select Camera" />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="1">ID: 1 (DCC1645C)</SelectItem>
+                                            {availableCameras.length === 0 ? (
+                                                <SelectItem value="placeholder" disabled>No cameras found</SelectItem>
+                                            ) : (
+                                                availableCameras.map((cam) => (
+                                                    <SelectItem key={cam.id} value={cam.id.toString()}>
+                                                        {cam.name} ({cam.id})
+                                                    </SelectItem>
+                                                ))
+                                            )}
                                         </SelectContent>
                                     </Select>
 
                                     {/* リフレッシュボタン（Tooltip付き） */}
-                                    <RefreshButton label="Refresh List" disabled={isCameraConnected} />
+                                    <RefreshButton label="Refresh List" disabled={isCameraConnected} onClick={fetchCameras} />
                                 </div>
                             </div>
                         </CardContent>

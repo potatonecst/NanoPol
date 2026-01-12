@@ -71,8 +71,14 @@ export const stageApi = {
 
 //カメラ操作
 export const cameraApi = {
+    listCameras: () =>
+        request<{ cameras: Array<{ id: number, name: string, model: string, serial: string }> }>("/system/cameras"),
+
     connect: (id: number = 0) =>
-        request<{ status: string, mode: string, message: string }>(`/camera/connect?camera_id=${id}`, { method: "POST" }),
+        request<{ status: string, mode: string, message: string }>("/camera/connect", {
+            method: "POST",
+            body: JSON.stringify({ camera_id: id })
+        }),
 
     disconnect: () =>
         request<{ status: string }>("/camera/disconnect", { method: "POST" }),
@@ -84,6 +90,8 @@ export const cameraApi = {
         }),
 
     getSnapshotUrl: () => `${API_BASE}/camera/snapshot`,
+
+    getVideoFeedUrl: () => `${API_BASE}/camera/video_feed`,
 }
 
 export const systemApi = {

@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -71,6 +72,9 @@ class UpdateConfigRequest(BaseModel):
 class CameraConfigRequest(BaseModel):
     exposure_ms: float
     gain: int
+
+class CameraConnectRequest(BaseModel):
+    camera_id: int = 0
 
 class LogPostRequest(BaseModel):
     level: str
@@ -253,16 +257,16 @@ def stage_get_position():
 #---カメラ関連API---
 
 @app.post("/camera/connect")
-def connect_camera(camera_id: int = 0):
+def connect_camera(req: CameraConnectRequest):
     #カメラ接続リクエスト
-    logger.info(f"[CMD] Connect Camera ID {camera_id}")
+    logger.info(f"[CMD] Connect Camera ID {req.camera_id}")
     
-    success = camera.connect(camera_id)
+    success = camera.connect(req.camera_id)
     if not success:
         raise HTTPException(status_code=500, detail="Camera connection failed")
         
     mode = "Mock" if camera.is_mock_env else "Real"
-    return {"status": "success", "mode": mode, "message": f"Connected to Camera {camera_id} ({mode})"}
+    return {"status": "success", "mode": mode, "message": f"Connected to Camera {req.camera_id} ({mode})"}
 
 @app.post("/camera/disconnect")
 def disconnect_camera():
@@ -277,6 +281,21 @@ def config_camera(req: CameraConfigRequest):
     camera.set_exposure(req.exposure_ms)
     camera.set_gain(req.gain)
     return {"status": "success"}
+
+@app.get("/system/cameras")
+def get_cameras():
+    cameras_list = camera.get_available_cameras()
+    return {"cameras": cameras_list}
+
+@app.get("/camera/video_feed")
+def video_feed():
+    if not camera.is_connected:
+        raise HTTPException(status_code=503, detail="Camera not connected")
+    
+    return StreamingResponse(
+        camera.generate_frames(), 
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
 
 @app.get("/camera/snapshot")
 def get_snapshot():

@@ -16,6 +16,8 @@ interface AppState {
     //カメラ接続
     cameraId: string; //カメラのID
     setCameraId: (id: string) => void; //カメラのIDを設定
+    availableCameras: Array<{ id: number; name: string; model: string; serial: string }>; //利用可能なカメラリスト
+    setAvailableCameras: (cameras: Array<{ id: number; name: string; model: string; serial: string }>) => void; //リスト設定
     isCameraConnected: boolean; //カメラの接続状態
     setIsCameraConnected: (connected: boolean) => void; //カメラの接続状態を設定する関数
 
@@ -71,6 +73,8 @@ export const useAppStore = create<AppState>((set) => ({
 
     cameraId: "", //初期値
     setCameraId: (id) => set({ cameraId: id }), //set関数でcameraIdを書き換え
+    availableCameras: [], //初期値
+    setAvailableCameras: (cameras) => set({ availableCameras: cameras }), //set関数
     isCameraConnected: false, //初期値
     setIsCameraConnected: (connected) => set({ isCameraConnected: connected }), //set関数でisCameraConnectedを書き換え
 
@@ -104,6 +108,7 @@ export const useAppStore = create<AppState>((set) => ({
         stagePort: "",
         isCameraConnected: false,
         cameraId: "",
+        availableCameras: [],
         cameraResolution: { width: 1280, height: 1024 },
         isRecording: false,
         currentAngle: 0,

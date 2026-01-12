@@ -65,17 +65,17 @@ class CameraController:
         self.height = int(sensor_info.nMaxHeight) # Maximum Height
         
         # Allocate Memory
-        self.mem_ptr = ueye.c_mem_p() # Pointer to image memory
-        self.mem_id = ueye.int() # Memory ID
+        self.mem_ptr = ueye.c_mem_p() # Pointer to image memory C言語のポインタ型変数を準備
+        self.mem_id = ueye.int() # Memory ID メモリIDを入れる変数を準備
         
         ueye.is_AllocImageMem(self.h_cam, self.width, self.height, self.bpp, self.mem_ptr, self.mem_id) # Allocate memory
         ueye.is_SetImageMem(self.h_cam, self.mem_ptr, self.mem_id) # Set memory
         
         # Get Pitch (Line width in bytes)
-        # pitch = width * (bpp / 8) usually, but hardware might align it
-        # pyueye doesn't always return pitch easily without helper, assume standard calculation or use is_GetImageMemPitch
-        # For simplicity in this structure:
-        self.pitch = self.width * int((self.bpp + 7) / 8)
+        # Use is_GetImageMemPitch to get the correct stride/pitch including hardware padding
+        pc_pitch = ueye.int()
+        ueye.is_GetImageMemPitch(self.h_cam, pc_pitch)
+        self.pitch = int(pc_pitch)
         
         # Set default parameters
         self.set_exposure(self.exposure_ms)
@@ -136,21 +136,26 @@ class CameraController:
         # Freeze video is simple for single frame capture
         ret = ueye.is_FreezeVideo(self.h_cam, ueye.IS_WAIT)
         if ret == ueye.IS_SUCCESS:
-            # Extract data from memory
-            # This requires reading from the ctypes pointer
-            # Create a numpy array from the memory buffer
+            # Extract data from memory with proper stride handling
             
-            # Buffer size
-            size = self.width * self.height * 3
+            # 1. Total buffer size = height * pitch
+            total_size = self.height * self.pitch
             
-            # Access memory
-            c_array = (ctypes.c_ubyte * size).from_address(ctypes.addressof(self.mem_ptr.contents))
+            # 2. Access memory as a 1D byte array
+            c_array = (ctypes.c_ubyte * total_size).from_address(ctypes.addressof(self.mem_ptr.contents))
+            raw_data = np.frombuffer(c_array, dtype=np.uint8)
             
-            # Convert to numpy
-            image_data = np.frombuffer(c_array, dtype=np.uint8)
-            image_data = image_data.reshape((self.height, self.width, 3))
+            # 3. Use as_strided to handle padding (pitch) without copying yet
+            # strides = (bytes_per_row, bytes_per_pixel_col, bytes_per_channel)
+            # pitch is bytes per row. 3 is bytes per pixel (BGR). 1 is byte per channel.
+            image_data = np.lib.stride_tricks.as_strided(
+                raw_data,
+                shape=(self.height, self.width, 3),
+                strides=(self.pitch, 3, 1)
+            )
             
-            success, encoded_img = cv2.imencode('.jpg', image_data)
+            # 4. Make a copy to get a contiguous standard array for OpenCV
+            success, encoded_img = cv2.imencode('.jpg', image_data.copy())
             return encoded_img.tobytes() if success else None
             
         logger.error(f"[CAMERA] Capture failed: {ret}")
@@ -176,3 +181,79 @@ class CameraController:
         # uEye gain is 0-100 master gain
         ueye.is_SetHardwareGain(self.h_cam, val, ueye.IS_IGNORE_PARAMETER, ueye.IS_IGNORE_PARAMETER, ueye.IS_IGNORE_PARAMETER)
         logger.info(f"[CAMERA] Set Gain: {val}")
+
+    def get_available_cameras(self):
+        """
+        Returns a list of available cameras.
+        """
+        if self.is_mock_env:
+            return [
+                {"id": 0, "name": "Mock Camera A (Virtual)", "model": "Simulated-100", "serial": "SIM001"},
+            ]
+        
+        if not HAS_PYUEYE:
+            return []
+
+        # Real implementation using ueye.is_GetNumberOfCameras
+        num_cameras = ueye.int()
+        if ueye.is_GetNumberOfCameras(num_cameras) == ueye.IS_SUCCESS:
+            n = int(num_cameras)
+            cameras = []
+            
+            # [WARNING] uEye Camera IDs are persistent and may not be sequential (1, 2, 3...).
+            # Proper implementation requires 'is_GetCameraList' with C-structs.
+            # For this prototype, we ASSUME the connected camera has ID 1.
+            # If you have multiple cameras or custom IDs, this needs a fix.
+            if n > 0:
+                # 簡易的に ID:1 だけを返す、あるいは ID:1〜ID:n を返す
+                for i in range(1, n + 1):
+                    cameras.append({
+                        "id": i, 
+                        "name": f"uEye Camera (ID: {i})", 
+                        "model": "DCC1645C", 
+                        "serial": "Unknown"
+                    })
+            return cameras
+        
+        return []
+
+    def generate_frames(self):
+        """
+        Generator function for MJPEG streaming.
+        Handles both Mock (simulated motion) and Real (hardware capture).
+        """
+        prefix = "[CAMERA-MOCK]" if self.is_mock_env else "[CAMERA]"
+        logger.info(f"{prefix} Starting MJPEG stream")
+        
+        # FPS制御用
+        target_fps = 30
+        frame_interval = 1.0 / target_fps
+        
+        while self.is_connected:
+            start_time = time.time()
+            
+            # --- 画像取得 ---
+            # Mockの場合、この内部で「動く丸」を描画している
+            frame_bytes = self.capture_frame()
+            
+            if frame_bytes:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            else:
+                # エラーや取得失敗時は少し待ってリトライ（CPU暴走防止）
+                time.sleep(0.1)
+                continue
+            
+            # --- FPS調整 ---
+            # Realカメラの場合、露光時間で待たされるのでSleepはほぼ不要だが、
+            # Mockの場合は計算が速すぎるのでSleepが必要。
+            elapsed = time.time() - start_time
+            if self.is_mock_env:
+                sleep_time = max(0, frame_interval - elapsed)
+                time.sleep(sleep_time)
+            else:
+                # 実機でも高FPS過ぎる場合のガードとしてごく短時間待つか、
+                # あるいは露光時間が短い場合のみ待つ
+                if elapsed < frame_interval:
+                     time.sleep(frame_interval - elapsed)
+

@@ -330,6 +330,7 @@ export function ManualView() {
                                     </Label>
                                     <Input
                                         type="number"
+                                        step="0.0025"
                                         className="h-8 font-mono text-right"
                                         value={moveStep}
                                         onChange={(e) => setMoveStep(parseFloat(e.target.value))}
@@ -353,6 +354,7 @@ export function ManualView() {
                                     </Label>
                                     <Input
                                         type="number"
+                                        step="0.0025"
                                         value={targetAngle}
                                         onChange={(e) => setTargetAngle(e.target.value)}
                                         className="font-mono text-right"
@@ -382,6 +384,7 @@ export function ManualView() {
                                     <span className="text-[10px] text-muted-foreground">Start [deg.]</span>
                                     <Input
                                         type="number"
+                                        step="0.0025"
                                         value={sweepStart}
                                         onChange={(e) => setSweepStart(e.target.value)}
                                         className="h-8 font-mono text-right"
@@ -392,6 +395,7 @@ export function ManualView() {
                                     <span className="text-[10px] text-muted-foreground">End [deg.]</span>
                                     <Input
                                         type="number"
+                                        step="0.0025"
                                         value={sweepEnd}
                                         onChange={(e) => setSweepEnd(e.target.value)}
                                         className="h-8 font-mono text-right"

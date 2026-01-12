@@ -46,7 +46,11 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
     const isDragging = useRef(false);
     const lastMousePos = useRef({ x: 0, y: 0 });
 
-    const [imageSrc, setImageSrc] = useState<string>("");
+    // Stream URL with timestamp to prevent caching on reconnect
+    const videoFeedUrl = useMemo(() => {
+        if (!isCameraConnected) return "";
+        return `${cameraApi.getVideoFeedUrl()}?t=${Date.now()}`;
+    }, [isCameraConnected]);
 
     //ZoomとPanのロジック
     const handleWheel = (e: React.WheelEvent) => {
@@ -108,22 +112,6 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         obs.observe(containerRef.current);
         return () => obs.disconnect();
     }, [])
-
-    // Polling Logic
-    useEffect(() => {
-        if (!isCameraConnected) return;
-
-        let active = true;
-        const updateFrame = () => {
-            if (!active) return;
-            setImageSrc(cameraApi.getSnapshotUrl());
-            // Approx 15 FPS
-            setTimeout(updateFrame, 66);
-        };
-        updateFrame();
-
-        return () => { active = false; };
-    }, [isCameraConnected]);
 
     // Config Sync Logic (Debounced)
     useEffect(() => {
@@ -282,7 +270,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                         {/* Camera Image */}
                         {isCameraConnected ? (
                             <img 
-                                src={imageSrc} 
+                                src={videoFeedUrl} 
                                 alt="Camera Stream" 
                                 className="w-full h-full object-contain pointer-events-none"
                                 draggable={false}

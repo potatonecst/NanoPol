@@ -97,7 +97,7 @@ class StageController:
     
     #角度をパルスに変換
     def _deg_to_pulse(self, deg: float) -> int:
-        return int(deg * self.pulses_per_degree)
+        return int(round(deg * self.pulses_per_degree)) #四捨五入してパルス数を整数化
     
     #パルスを角度に変換
     def _pulse_to_deg(self, pulse: int) -> float:
