@@ -12,8 +12,16 @@ const isMultipleOfStep = (val: number) => {
 };
 
 // 共通の角度入力スキーマ
-export const angleInputSchema = z.coerce
-    .number({ invalid_type_error: "数値を入力してください" })
+export const angleInputSchema = z
+    .union([z.number(), z.string()])
+    .transform((val) => {
+        if (typeof val === "number") return val;
+        if (val.trim() === "") return NaN;
+        return Number(val);
+    })
+    .refine((val) => !isNaN(val), {
+        message: "値を入力してください"
+    })
     .refine(isMultipleOfStep, {
         message: `値は ${STEP_RESOLUTION} の倍数である必要があります`,
     });

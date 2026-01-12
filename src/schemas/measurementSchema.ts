@@ -3,7 +3,7 @@ import { z } from "zod";
 // バリデーションルールの定義
 export const setupFormSchema = z.object({
     laserPower: z.coerce
-        .number({ invalid_type_error: "数値を入力してください" })
+        .number()
         .min(0, "0以上の値を入力してください")
         .max(1000, "値が大きすぎます"), // 上限も設定可能
 

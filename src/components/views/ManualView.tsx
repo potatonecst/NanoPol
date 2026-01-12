@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store/useAppStore";
 import { stageApi } from "@/api/client";
+import { manualControlSchema, angleInputSchema } from "@/schemas/manualControlSchema";
 
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -38,7 +39,7 @@ export function ManualView() {
     const stopSignal = useRef(false); //停止シグナル管理用Ref
 
     //Step Move用
-    const [moveStep, setMoveStep] = useState(5.0); //Step Moveのステップ量
+    const [moveStep, setMoveStep] = useState("5.0"); //Step Moveのステップ量
 
     //Absolute Move用
     const [targetAngle, setTargetAngle] = useState(""); //任意角度入力用
@@ -48,6 +49,13 @@ export function ManualView() {
     const [sweepEnd, setSweepEnd] = useState("360");
     const [sweepSpeed, setSweepSpeed] = useState("10"); //[deg/s]
     const [isSweeping, setIsSweeping] = useState(false);
+
+    // Zodによるバリデーション
+    const stepVal = angleInputSchema.safeParse(moveStep);
+    const targetVal = angleInputSchema.safeParse(targetAngle);
+    const sweepStartVal = angleInputSchema.safeParse(sweepStart);
+    const sweepEndVal = angleInputSchema.safeParse(sweepEnd);
+    const sweepSpeedVal = manualControlSchema.shape.sweepSpeed.safeParse(sweepSpeed);
 
     //ステージが停止するまで待機（ポーリング）
     const waitForIdle = async () => {
@@ -123,7 +131,7 @@ export function ManualView() {
     //回転操作（Jog）
     const rotateStage = (direction: 1 | -1) => {
         performMove("Step Move", async () => {
-            const target = moveStep * direction;
+            const target = Number(moveStep) * direction;
 
             const res = await stageApi.moveRelative(target);
             setCurrentAngle(res.current_angle);
@@ -266,7 +274,7 @@ export function ManualView() {
                                 Current Angle
                             </Label>
                             <div className="text-2xl font-mono font-bold tracking-tight text-primary">
-                                {isStageConnected ? currentAngle.toFixed(2) + "°" : "--"}
+                                {isStageConnected ? currentAngle.toFixed(4) + "°" : "--"}
                             </div>
                         </div>
 
@@ -288,7 +296,7 @@ export function ManualView() {
                                             size="icon"
                                             className="size-12 rounded-full"
                                             onClick={() => rotateStage(-1)}
-                                            disabled={!moveStep || !isStageConnected || isSystemBusy}
+                                            disabled={!moveStep || !isStageConnected || isSystemBusy || !stepVal.success}
                                             aria-label={`Rotate -${moveStep}°`}
                                         >
                                             <Minus className="size-6" />
@@ -315,7 +323,7 @@ export function ManualView() {
                                             size="icon-lg"
                                             className="size-12 rounded-full"
                                             onClick={() => rotateStage(1)}
-                                            disabled={!moveStep || !isStageConnected || isSystemBusy}
+                                            disabled={!moveStep || !isStageConnected || isSystemBusy || !stepVal.success}
                                             aria-label={`Rotate +${moveStep}°`}
                                         >
                                             <Plus className="size-6" />
@@ -324,17 +332,24 @@ export function ManualView() {
                                 </div>
 
                                 {/* Move Step Input */}
-                                <div className="flex items-center gap-2 pt-2 border-t border-border/50">
-                                    <Label className="text-xs text-muted-foreground whitespace-nowrap">
-                                        Step [deg.]:
-                                    </Label>
-                                    <Input
-                                        type="number"
-                                        step="0.0025"
-                                        className="h-8 font-mono text-right"
-                                        value={moveStep}
-                                        onChange={(e) => setMoveStep(parseFloat(e.target.value))}
-                                    />
+                                <div className="flex flex-col gap-1 pt-2 border-t border-border/50">
+                                    <div className="flex items-center gap-2">
+                                        <Label className="text-xs text-muted-foreground whitespace-nowrap">
+                                            Step [deg.]:
+                                        </Label>
+                                        <Input
+                                            type="number"
+                                            step="0.0025"
+                                            className={`h-8 font-mono text-right ${!stepVal.success ? "border-destructive text-destructive" : ""}`}
+                                            value={moveStep}
+                                            onChange={(e) => setMoveStep(e.target.value)}
+                                        />
+                                    </div>
+                                    {!stepVal.success && (
+                                        <span className="text-[10px] text-destructive font-medium text-right">
+                                            {stepVal.error.issues[0].message}
+                                        </span>
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -347,27 +362,34 @@ export function ManualView() {
                                 Absolute Move
                             </Label>
 
-                            <div className="flex gap-2">
-                                <div className="relative flex-1 flex gap-1">
-                                    <Label className="text-xs text-muted-foreground whitespace-nowrap">
-                                        Target [deg.]:
-                                    </Label>
-                                    <Input
-                                        type="number"
-                                        step="0.0025"
-                                        value={targetAngle}
-                                        onChange={(e) => setTargetAngle(e.target.value)}
-                                        className="font-mono text-right"
-                                    />
-                                </div>
+                            <div className="flex flex-col gap-1">
+                                <div className="flex gap-2">
+                                    <div className="relative flex-1 flex gap-1 items-center">
+                                        <Label className="text-xs text-muted-foreground whitespace-nowrap">
+                                            Target [deg.]:
+                                        </Label>
+                                        <Input
+                                            type="number"
+                                            step="0.0025"
+                                            value={targetAngle}
+                                            onChange={(e) => setTargetAngle(e.target.value)}
+                                            className={`font-mono text-right ${!targetVal.success && targetAngle !== "" ? "border-destructive text-destructive" : ""}`}
+                                        />
+                                    </div>
 
-                                <Button
-                                    onClick={handleMoveTo}
-                                    disabled={!targetAngle || !isStageConnected || isSystemBusy}
-                                    className="min-w-16 bg-amber-600 hover:bg-amber-600/90 text-white"
-                                >
-                                    Go<MoveRight className="ml-1 size-3" />
-                                </Button>
+                                    <Button
+                                        onClick={handleMoveTo}
+                                        disabled={!targetAngle || !isStageConnected || isSystemBusy || !targetVal.success}
+                                        className="min-w-16 bg-amber-600 hover:bg-amber-600/90 text-white"
+                                    >
+                                        Go<MoveRight className="ml-1 size-3" />
+                                    </Button>
+                                </div>
+                                {!targetVal.success && targetAngle !== "" && (
+                                    <span className="text-[10px] text-destructive font-medium text-right">
+                                        {targetVal.error.issues[0].message}
+                                    </span>
+                                )}
                             </div>
                         </div>
 
@@ -387,8 +409,13 @@ export function ManualView() {
                                         step="0.0025"
                                         value={sweepStart}
                                         onChange={(e) => setSweepStart(e.target.value)}
-                                        className="h-8 font-mono text-right"
+                                        className={`h-8 font-mono text-right ${!sweepStartVal.success ? "border-destructive text-destructive" : ""}`}
                                     />
+                                    {!sweepStartVal.success && (
+                                        <p className="text-[10px] text-destructive leading-tight text-right">
+                                            {sweepStartVal.error.issues[0].message}
+                                        </p>
+                                    )}
                                 </div>
 
                                 <div className="space-y-1">
@@ -398,31 +425,46 @@ export function ManualView() {
                                         step="0.0025"
                                         value={sweepEnd}
                                         onChange={(e) => setSweepEnd(e.target.value)}
-                                        className="h-8 font-mono text-right"
+                                        className={`h-8 font-mono text-right ${!sweepEndVal.success ? "border-destructive text-destructive" : ""}`}
                                     />
+                                    {!sweepEndVal.success && (
+                                        <p className="text-[10px] text-destructive leading-tight text-right">
+                                            {sweepEndVal.error.issues[0].message}
+                                        </p>
+                                    )}
                                 </div>
                             </div>
 
-                            <div className="flex gap-2 items-end">
-                                <div className="space-y-1 flex-1">
-                                    <span className="text-[10px] text-muted-foreground">Speed [deg./s]</span>
-                                    <Input
-                                        type="number"
-                                        value={sweepSpeed}
-                                        onChange={(e) => setSweepSpeed(e.target.value)}
-                                        className="h-8 font-mono text-right"
-                                    />
-                                </div>
+                            <div className="space-y-1">
+                                <div className="flex gap-2 items-end">
+                                    <div className="space-y-1 flex-1">
+                                        <span className="text-[10px] text-muted-foreground">Speed [deg./s]</span>
+                                        <Input
+                                            type="number"
+                                            value={sweepSpeed}
+                                            onChange={(e) => setSweepSpeed(e.target.value)}
+                                            className={`h-8 font-mono text-right ${!sweepSpeedVal.success ? "border-destructive text-destructive" : ""}`}
+                                        />
+                                    </div>
 
-                                <Button
-                                    size="sm"
-                                    onClick={handleSweep}
-                                    className="h-8 bg-amber-600 hover:bg-amber-600/90 text-white"
-                                    disabled={!sweepStart || !sweepEnd || !sweepSpeed || !isStageConnected || isSystemBusy}
-                                >
-                                    {isSweeping ? <RefreshCw className="size-3 mr-1 animate-spin" /> : <Play className="size-3 mr-1" />}
-                                    {isSweeping ? "Running..." : "Run"}
-                                </Button>
+                                    <Button
+                                        size="sm"
+                                        onClick={handleSweep}
+                                        className="h-8 bg-amber-600 hover:bg-amber-600/90 text-white"
+                                        disabled={
+                                            !sweepStart || !sweepEnd || !sweepSpeed || !isStageConnected || isSystemBusy ||
+                                            !sweepStartVal.success || !sweepEndVal.success || !sweepSpeedVal.success
+                                        }
+                                    >
+                                        {isSweeping ? <RefreshCw className="size-3 mr-1 animate-spin" /> : <Play className="size-3 mr-1" />}
+                                        {isSweeping ? "Running..." : "Run"}
+                                    </Button>
+                                </div>
+                                {!sweepSpeedVal.success && (
+                                    <p className="text-[10px] text-destructive leading-tight text-right">
+                                        {sweepSpeedVal.error.issues[0].message}
+                                    </p>
+                                )}
                             </div>
                         </div>
 
