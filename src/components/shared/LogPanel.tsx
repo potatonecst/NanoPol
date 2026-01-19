@@ -1,19 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { systemApi } from "../../api/client";
 import { LogEntry } from "../../types";
-import { ScrollArea } from "../ui/scroll-area";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { cn } from "@/lib/utils";
-import { Terminal, ChevronUp, ChevronDown, Maximize2, Minimize2 } from "lucide-react";
+import { Terminal, ChevronUp, ChevronDown, Maximize2, Minimize2, ArrowDown } from "lucide-react";
 
 export function LogPanel() {
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [isOpen, setIsOpen] = useState(false); //開閉状態
     const [isMaximized, setIsMaximized] = useState(false); //最大化状態
-    const bottomRef = useRef<HTMLDivElement>(null);
 
-    //定期フェッチ（1秒ごと）
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const [isAtBottom, setIsAtBottom] = useState(true); // ユーザーが一番下にいるか
+    const [showResumeBtn, setShowResumeBtn] = useState(false); // Resumeボタンの表示制御
+
+    //定期フェッチ（0.2秒ごと）
     useEffect(() => {
         const fetchLogs = async () => {
             try {
@@ -28,12 +30,45 @@ export function LogPanel() {
         return () => clearInterval(interval);
     }, []);
 
-    //ログ更新時のログ更新時の自動スクロール
+    // スクロールイベントの監視
+    const handleScroll = () => {
+        if (!scrollRef.current) return;
+        const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+
+        // 下から20px以内にいれば「底にいる」とみなす
+        const atBottom = scrollHeight - (scrollTop + clientHeight) < 20;
+        setIsAtBottom(atBottom);
+        setShowResumeBtn(!atBottom);
+    };
+
+    // Smart Auto-Scroll: ログ更新時、ユーザーが底にいる場合のみスクロール
     useEffect(() => {
-        if (isOpen) {
-            bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+        if (isOpen && isAtBottom && scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
-    }, [logs.length, isOpen, isMaximized])
+    }, [logs, isOpen, isMaximized, isAtBottom]);
+
+    // Resume Button: 強制的に最新へスクロール
+    const scrollToBottom = () => {
+        if (scrollRef.current) {
+            scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+            // スクロール完了を待たずにフラグを戻す（UX向上のため）
+            setIsAtBottom(true);
+            setShowResumeBtn(false);
+        }
+    };
+
+    // パネル開閉（閉じる時に最大化リセット）
+    const togglePanel = () => {
+        if (isOpen) {
+            setIsMaximized(false); // Close Action: Reset maximization
+        } else {
+            // Re-open Action: Reset scroll state to bottom
+            setIsAtBottom(true);
+            setShowResumeBtn(false);
+        }
+        setIsOpen(!isOpen);
+    };
 
     //色分け
     const getLevelColor = (level: string) => {
@@ -43,6 +78,14 @@ export function LogPanel() {
             case "ERROR": return "text-red-400 font-bold";
             default: return "text-muted-foreground";
         }
+    };
+
+    // メッセージ本文の色分け（Mock判定など）
+    const getMessageColor = (message: string) => {
+        if (message.includes("MOCK]")) { // [STAGE-MOCK], [CAMERA-MOCK] 等を検出
+            return "text-violet-400";
+        }
+        return "text-zinc-300 group-hover:text-white";
     };
 
     //最新のログ
@@ -65,7 +108,7 @@ export function LogPanel() {
             {/* ヘッダー（常に表示） */}
             <div
                 className="flex items-center justify-between px-2 py-1 bg-white/5 border-b border-white/10 cursor-pointer hover:bg-white/10 transition-colors shrink-0"
-                onClick={() => setIsOpen(!isOpen)}
+                onClick={togglePanel}
             >
                 <div className="flex items-center gap-3 overflow-hidden">
                     {/* アイコンとタイトル */}
@@ -119,8 +162,12 @@ export function LogPanel() {
 
             {/* ログリスト（開いている時だけ中身を表示） */}
             {isOpen && (
-                <ScrollArea className="flex-1 min-h-0 p-2">
-                    <div className="space-y-0.5">
+                <div className="relative flex-1 min-h-0 overflow-hidden">
+                    <div
+                        ref={scrollRef}
+                        onScroll={handleScroll}
+                        className="h-full overflow-y-auto p-2 space-y-0.5"
+                    >
                         {logs.map((log, i) => (
                             <div key={i} className="flex gap-3 hover:bg-white/5 px-2 py-0.5 rounded transition-colors group">
                                 <span className="text-zinc-500 w-16 shrink-0 text-[10px] pt-0.5 select-none">
@@ -129,14 +176,23 @@ export function LogPanel() {
                                 <span className={cn("w-14 shrink-0 font-bold text-[10px] pt-0.5 select-none", getLevelColor(log.level))}>
                                     {log.level}
                                 </span>
-                                <span className="break-all whitespace-pre-wrap text-zinc-300 group-hover:text-white">
+                                <span className={cn("break-all whitespace-pre-wrap transition-colors", getMessageColor(log.message))}>
                                     {log.message}
                                 </span>
                             </div>
                         ))}
-                        <div ref={bottomRef} /> {/* 自動スクロール用のダミー要素 */}
                     </div>
-                </ScrollArea>
+
+                    {/* Resume Button (Floating) */}
+                    {showResumeBtn && (
+                        <div className="absolute bottom-4 right-4 z-10 animate-in fade-in zoom-in duration-200">
+                            <Button size="sm" variant="secondary" className="h-7 text-[10px] shadow-md border border-white/10 bg-zinc-800 hover:bg-zinc-700 text-zinc-100" onClick={scrollToBottom}>
+                                <ArrowDown className="mr-1 h-3 w-3" />
+                                New Logs
+                            </Button>
+                        </div>
+                    )}
+                </div>
             )}
         </div>
     );

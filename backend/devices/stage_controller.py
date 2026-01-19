@@ -13,6 +13,7 @@ class StageController:
         self.ser = None
         self.is_mock_env = platform.system() != "Windows" #Windows以外のOSではMock環境とみなす
         self.is_connected = False
+        self.log_tag = "[STAGE-MOCK]" if self.is_mock_env else "[STAGE]"
         
         #ステージ仕様 (OSMS-60YAW)
         #分解能: Full=0.005deg/pulse, Half=0.0025deg/pulse 
@@ -24,7 +25,7 @@ class StageController:
     
     def update_settings(self, pulses_per_degree: int):
         self.pulses_per_degree = pulses_per_degree
-        logger.info(f"[STAGE] Update Resolution: {self.pulses_per_degree} pulses/deg")
+        logger.info(f"{self.log_tag} Update Resolution: {self.pulses_per_degree} pulses/deg")
     
     def connect(self, port: str, baudrate: int = 9600):
         #接続処理
@@ -64,7 +65,7 @@ class StageController:
     def close(self):
         if self.ser and self.ser.is_open:
             self.ser.close()
-            logger.info("[STAGE] Connection closed")
+            logger.info(f"{self.log_tag} Connection closed")
         
         self.ser = None
         self.is_connected = False
@@ -72,7 +73,7 @@ class StageController:
     def _send_command(self, cmd: str):
         #コマンド送信とレスポンス受信（CR+LF終端）
         if self.is_mock_env:
-            logger.debug(f"[STAGE-MOCK] Send: {cmd}")
+            logger.debug(f"{self.log_tag} Send: {cmd}")
             return "OK"
         
         if not self.ser or not self.ser.is_open:
@@ -89,7 +90,7 @@ class StageController:
             
             return response
         except Exception as e:
-            logger.error(f"[STAGE] Communication Error: {e}")
+            logger.error(f"{self.log_tag} Communication Error: {e}")
             
             raise e
     
@@ -108,21 +109,21 @@ class StageController:
     #原点復帰
     def home(self):
         #H:（機械原点復帰命令）
-        logger.info("[Stage] Homing...")
+        logger.info(f"{self.log_tag} Homing...")
         
         if self.is_mock_env:
             time.sleep(2)
             self._mock_pulse = 0
-            logger.info("[Stage] Homed (Mock)")
+            logger.info(f"{self.log_tag} Homed")
             return True
         
         resp = self._send_command("H:1")
         
         if resp == "OK":
-            logger.info("[Stage] Homed")
+            logger.info(f"{self.log_tag} Homed")
             return True
         else:
-            logger.error(f"[Stage] Homing Error. Resp: {resp}")
+            logger.error(f"{self.log_tag} Homing Error. Resp: {resp}")
             return False
     
     #絶対移動
@@ -132,13 +133,13 @@ class StageController:
         direction = "+"if target_pulse >= 0 else "-"
         abs_pulse = abs(target_pulse)
         
-        logger.info(f"[STAGE] Move Abs to {target_angle} deg ({direction}{abs_pulse} pulses)")
+        logger.info(f"{self.log_tag} Move Abs to {target_angle} deg ({direction}{abs_pulse} pulses)")
         
         #Mockモードの場合
         if self.is_mock_env:
             time.sleep(0.5)
             self._mock_pulse = target_pulse
-            logger.info(f"[STAGE] Move Abs Complete (Mock): {target_angle} deg")
+            logger.info(f"{self.log_tag} Move Abs Complete: {target_angle} deg")
             return True
         
         #移動量設定コマンド A:1{+/-}P{pulse}
@@ -146,17 +147,17 @@ class StageController:
         resp_a = self._send_command(cmd_a)
         
         if resp_a != "OK":
-            logger.error(f"[STAGE] Move setup failed: {resp_a}")
+            logger.error(f"{self.log_tag} Move setup failed: {resp_a}")
             return False
         
         #駆動コマンド G:
         resp_g = self._send_command("G:")
         
         if resp_g == "OK":
-            logger.info(f"[STAGE] Move Abs Command Sent: {target_angle} deg")
+            logger.info(f"{self.log_tag} Move Abs Command Sent: {target_angle} deg")
             return True
         else:
-            logger.error(f"[STAGE] Move Abs Command Failed: {resp_g}")
+            logger.error(f"{self.log_tag} Move Abs Command Failed: {resp_g}")
             return False
     
     #相対移動
@@ -171,13 +172,13 @@ class StageController:
         direction = "+" if delta_pulse >= 0 else "-"
         abs_pulse = abs(delta_pulse)
         
-        logger.info(f"[STAGE] Move Rel {delta_angle} deg ({direction}{abs_pulse} pulses)")
+        logger.info(f"{self.log_tag} Move Rel {delta_angle} deg ({direction}{abs_pulse} pulses)")
         
         #Mockモードの場合
         if self.is_mock_env:
             time.sleep(0.2)
             self._mock_pulse += delta_pulse
-            logger.info(f"[STAGE] Move Rel Complete (Mock): {delta_angle} deg")
+            logger.info(f"{self.log_tag} Move Rel Complete: {delta_angle} deg")
             return True
         
         #移動量設定コマンド M:1{+/-}P{pulse}
@@ -185,23 +186,23 @@ class StageController:
         resp_m = self._send_command(cmd_m)
         
         if resp_m != "OK":
-            logger.error(f"[STAGE] Move setup failed: {resp_m}")
+            logger.error(f"{self.log_tag} Move setup failed: {resp_m}")
             return False
         
         #駆動コマンド G:
         resp_g = self._send_command("G:")
         
         if resp_g == "OK":
-            logger.info(f"[STAGE] Move Rel Command Sent: {delta_angle} deg")
+            logger.info(f"{self.log_tag} Move Rel Command Sent: {delta_angle} deg")
             return True
         else:
-            logger.error(f"[STAGE] Move Rel Command Failed: {resp_g}")
+            logger.error(f"{self.log_tag} Move Rel Command Failed: {resp_g}")
             return False
     
     #スピード指定
     def set_speed(self, min_pps: int, max_pps: int, accel_time_ms: int):
         #D:（速度設定命令）
-        logger.info(f"[STAGE] Set Speed: ={min_pps}, F={max_pps}, ={accel_time_ms}")
+        logger.info(f"{self.log_tag} Set Speed: ={min_pps}, F={max_pps}, ={accel_time_ms}")
         
         if self.is_mock_env:
             return True
@@ -215,19 +216,19 @@ class StageController:
     #停止
     def stop(self, immediate: bool = False):
         #L:1 or L:E（減速停止命令または即停止命令）
-        logger.info(f"[STAGE] Stopping... (Immediate={immediate})")
+        logger.info(f"{self.log_tag} Stopping... (Immediate={immediate})")
         if self.is_mock_env:
-            logger.info("[STAGE] Stopped (Mock)")
+            logger.info(f"{self.log_tag} Stopped")
             return True
         
         cmd = "L:E" if immediate else "L:1" #immediate=TrueでL:E
         resp = self._send_command(cmd)
         
         if resp == "OK":
-            logger.info("[STAGE] Stop Command Sent")
+            logger.info(f"{self.log_tag} Stop Command Sent")
             return True
         else:
-            logger.error(f"[STAGE] Stop Command Failed: {resp}")
+            logger.error(f"{self.log_tag} Stop Command Failed: {resp}")
             return False
 
     #状態取得(戻り値: 現在の角度（float）, Busyかどうか（bool）)

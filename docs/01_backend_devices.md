@@ -5,10 +5,10 @@
 
 ## 1. モジュール構成
 
-| ファイル名 | クラス名 | 役割 | 制御対象 |
-| :--- | :--- | :--- | :--- |
-| `stage_controller.py` | `StageController` | 回転ステージの角度制御、原点復帰、状態監視 | Sigma Koki GSC-01 (OSMS-60YAW) |
-| `camera_controller.py` | `CameraController` | 露光/ゲイン設定、画像キャプチャ、MJPEG配信 | Thorlabs DCC1645C (uEye) |
+| ファイル名             | クラス名           | 役割                                       | 制御対象                       |
+| :--------------------- | :----------------- | :----------------------------------------- | :----------------------------- |
+| `stage_controller.py`  | `StageController`  | 回転ステージの角度制御、原点復帰、状態監視 | Sigma Koki GSC-01 (OSMS-60YAW) |
+| `camera_controller.py` | `CameraController` | 露光/ゲイン設定、画像キャプチャ、MJPEG配信 | Thorlabs DCC1645C (uEye)       |
 
 ---
 
@@ -62,7 +62,7 @@ sequenceDiagram
 
 *   **Windows:** 実機接続 (`serial.Serial`) を試みます。失敗した場合はエラーを送出します（意図しないMock動作を防ぐため）。
 *   **macOS / Linux:** `platform.system()` を検知し、強制的に **Mockモード** で起動します。
-    *   Mockモードでは `time.sleep()` を用いて移動時間をシミュレートし、内部変数 `_mock_pulse` を更新します。
+    *   Mockモードでは `time.sleep()` を用いて移動時間をシミュレートし、内部変数 `_mock_pulse` を更新します。また、ログ出力を `[STAGE-MOCK]` とすることで実機動作と明確に区別します。
 
 ### 2.4 メソッド詳細リファレンス (StageController)
 
@@ -76,7 +76,7 @@ sequenceDiagram
     *   **設定パラメータ:**
         *   `rtscts=True`: ハードウェアフロー制御を有効にします。GSC-01はこれがないと通信を取りこぼすことがあります。
         *   `timeout=1.0`: 読み込み時にデータが来ない場合、1秒で諦めて処理を戻します（無限ブロック防止）。
-*   **Mock時の挙動:** 実際には接続せず、ログを出力して `True` を返します。
+*   **Mock時の挙動:** 実際には接続せず、`[STAGE-MOCK]` プレフィックス付きでログを出力して `True` を返します。
 
 #### `home() -> bool`
 機械原点復帰 (`H:1`) を実行します。
@@ -192,8 +192,8 @@ return cv2.imencode('.jpg', image_data.copy())[1].tobytes()
 
 ### 3.3 Mock機能
 
-`pyueye` ライブラリがインストールされていない環境、またはmacOS環境では、自動的にMockモードになります。
-`capture_frame` メソッド内で、`cv2.circle` や `np.random` を使って動的な画像を生成しています。
+`pyueye` ライブラリがインストールされていない環境、またはmacOS環境では、自動的にMockモードになります。`capture_frame` メソッド内で、`cv2.circle` や `np.random` を使って動的な画像を生成しています。
+また、ログ出力を `[CAMERA-MOCK]` とすることで実機動作と明確に区別します。
 
 ### 3.4 メソッド詳細リファレンス (CameraController)
 
@@ -256,4 +256,3 @@ except Exception as e:
 `get_status` の戻り値 `Tuple[float, bool]` などで使われています。
 *   リスト `[1, 2]` と似ていますが、タプル `(1, 2)` は**中身を変更できません**。
 *   関数の戻り値として「複数の値をセットで返したい」ときによく使われます。ここでは「角度」と「Busy状態」という2つの情報をセットにして返しています。
-

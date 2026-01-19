@@ -28,6 +28,7 @@ class CameraController:
         # If pyueye is missing or OS is not Windows/Linux (depending on driver support), use Mock
         # Generally uEye drivers are Windows/Linux. Mac support is limited/non-existent for some models.
         self.is_mock_env = not HAS_PYUEYE or platform.system() == "Darwin"
+        self.log_tag = "[CAMERA-MOCK]" if self.is_mock_env else "[CAMERA]"
         
         # Camera settings
         self.exposure_ms = 10.0
@@ -38,7 +39,7 @@ class CameraController:
             self.is_connected = True
             self.width = 1280
             self.height = 1024
-            logger.info(f"[CAMERA-MOCK] Connected to Virtual Camera (ID: {camera_id})")
+            logger.info(f"{self.log_tag} Connected to Virtual Camera (ID: {camera_id})")
             return True
         
         if not HAS_PYUEYE:
@@ -53,7 +54,7 @@ class CameraController:
             return False
             
         self.is_connected = True
-        logger.info(f"[CAMERA] Connected to Camera ID {camera_id}")
+        logger.info(f"{self.log_tag} Connected to Camera ID {camera_id}")
         
         # Set Color Mode
         ueye.is_SetColorMode(self.h_cam, ueye.IS_CM_BGR8_PACKED) # 24 bpp
@@ -86,7 +87,7 @@ class CameraController:
     def disconnect(self):
         if self.is_mock_env:
             self.is_connected = False
-            logger.info("[CAMERA-MOCK] Disconnected")
+            logger.info(f"{self.log_tag} Disconnected")
             return
 
         if self.h_cam is not None:
@@ -98,7 +99,7 @@ class CameraController:
             self.h_cam = None
             
         self.is_connected = False
-        logger.info("[CAMERA] Disconnected")
+        logger.info(f"{self.log_tag} Disconnected")
 
     def capture_frame(self) -> Optional[bytes]:
         """
@@ -164,23 +165,23 @@ class CameraController:
     def set_exposure(self, ms: float):
         self.exposure_ms = ms
         if self.is_mock_env:
-            logger.info(f"[CAMERA-MOCK] Set Exposure: {ms}ms")
+            logger.info(f"{self.log_tag} Set Exposure: {ms}ms")
             return
             
         # uEye uses double for exposure
         new_exp = ueye.double(ms)
         ueye.is_Exposure(self.h_cam, ueye.IS_EXPOSURE_CMD_SET_EXPOSURE, new_exp, 8)
-        logger.info(f"[CAMERA] Set Exposure: {ms}ms")
+        logger.info(f"{self.log_tag} Set Exposure: {ms}ms")
 
     def set_gain(self, val: int):
         self.gain = val
         if self.is_mock_env:
-            logger.info(f"[CAMERA-MOCK] Set Gain: {val}")
+            logger.info(f"{self.log_tag} Set Gain: {val}")
             return
             
         # uEye gain is 0-100 master gain
         ueye.is_SetHardwareGain(self.h_cam, val, ueye.IS_IGNORE_PARAMETER, ueye.IS_IGNORE_PARAMETER, ueye.IS_IGNORE_PARAMETER)
-        logger.info(f"[CAMERA] Set Gain: {val}")
+        logger.info(f"{self.log_tag} Set Gain: {val}")
 
     def get_available_cameras(self):
         """
@@ -222,8 +223,7 @@ class CameraController:
         Generator function for MJPEG streaming.
         Handles both Mock (simulated motion) and Real (hardware capture).
         """
-        prefix = "[CAMERA-MOCK]" if self.is_mock_env else "[CAMERA]"
-        logger.info(f"{prefix} Starting MJPEG stream")
+        logger.info(f"{self.log_tag} Starting MJPEG stream")
         
         # FPS制御用
         target_fps = 30
@@ -256,4 +256,3 @@ class CameraController:
                 # あるいは露光時間が短い場合のみ待つ
                 if elapsed < frame_interval:
                      time.sleep(frame_interval - elapsed)
-
