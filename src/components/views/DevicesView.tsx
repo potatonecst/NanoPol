@@ -46,6 +46,9 @@ export function DevicesView() {
         isCameraConnected, setIsCameraConnected,
         isRecording,
         resetAllConnections,
+        // useShallow: パフォーマンス最適化フック。
+        // ストア全体のデータが変わっても、ここで指定したプロパティ（stagePortなど）に変化がなければ
+        // このコンポーネントは再レンダリングされません。
     } = useAppStore(
         useShallow((state) => ({
             stagePort: state.stagePort,
@@ -67,7 +70,8 @@ export function DevicesView() {
     const [isStageLoading, setIsStageLoading] = useState(false);
     const [isCameraLoading, setIsCameraLoading] = useState(false);
 
-    //Port一覧
+    // Port一覧を取得する非同期関数
+    // バックエンド(Python)に問い合わせて、利用可能なCOMポートのリストを取得します。
     const fetchPorts = async () => {
         try {
             const res = await systemApi.getPorts();
@@ -78,7 +82,7 @@ export function DevicesView() {
         }
     }
 
-    //Camera一覧
+    // Camera一覧を取得する非同期関数
     const fetchCameras = async () => {
         try {
             const res = await cameraApi.listCameras();
@@ -93,7 +97,11 @@ export function DevicesView() {
         }
     }
 
-    //初回マウント時にポート一覧を取得
+    // 【初期化処理】
+    // コンポーネントが画面に表示された（マウントされた）直後に実行されます。
+    // useRef(initialized) を使う理由:
+    // React 18のStrict Mode（開発モード）では、バグ発見のためにuseEffectがわざと2回実行されます。
+    // APIリクエストが2回飛ぶのを防ぐため、refフラグでガードしています。
     const initialized = useRef(false);
     useEffect(() => {
         if (!initialized.current) {
@@ -101,9 +109,11 @@ export function DevicesView() {
             fetchPorts();
             fetchCameras();
         }
+        // 依存配列が空 [] なので、マウント時の1回だけ実行されます。
     }, []);
 
-    //ステージ接続ハンドラー
+    // ステージ接続ボタンが押された時の処理
+    // async/await を使うことで、接続処理が終わるまで待機し、その間ローディング表示を出します。
     const handleStageConnect = async () => {
         if (isStageConnected) {
             //切断処理（Mockなので状態を変えるだけ）
@@ -118,12 +128,12 @@ export function DevicesView() {
         }
 
         try {
-            setIsStageLoading(true);
-            //API呼び出し
+            setIsStageLoading(true); // ボタンを無効化し、スピナーを表示
+            // API呼び出し: バックエンドに接続命令を送る
             const res = await stageApi.connect(stagePort);
             console.log(res); //{status: "success"}
 
-            //成功したら接続状態にする
+            // 成功したらストアの状態を更新（これにより画面上のバッジなどが緑色に変わる）
             setIsStageConnected(true);
             toast.success(`Connected to ${stagePort}`);
         } catch (error) {
@@ -134,7 +144,7 @@ export function DevicesView() {
         }
     }
 
-    //カメラ接続ハンドラー
+    // カメラ接続ボタンが押された時の処理
     const handleCameraConnect = async () => {
         if (isCameraConnected) {
             try {
@@ -175,7 +185,9 @@ export function DevicesView() {
         }
     }
 
-    //Force Resetハンドラー
+    // 【緊急用】強制リセット処理
+    // バックエンドの状態に関わらず、フロントエンドの接続フラグを全て「未接続」に戻します。
+    // デバイスがフリーズして操作不能になった場合などに使用します。
     const executeForceReset = async () => {
         console.log("Executing Force Reset...");
 
@@ -191,6 +203,7 @@ export function DevicesView() {
         }
     }
 
+    // 再利用可能なリフレッシュボタンコンポーネント（ローカル定義）
     const RefreshButton = ({
         label,
         disabled,

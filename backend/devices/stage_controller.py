@@ -11,15 +11,23 @@ from utils.logger import logger
 class StageController:
     def __init__(self):
         self.ser = None
-        self.is_mock_env = platform.system() != "Windows" #Windows以外のOSではMock環境とみなす
+        # Windows以外のOS（Mac/Linux）ではドライバがないため、自動的にMock（シミュレータ）環境とみなす
+        self.is_mock_env = platform.system() != "Windows" 
         self.is_connected = False
         self.log_tag = "[STAGE-MOCK]" if self.is_mock_env else "[STAGE]"
         
         #ステージ仕様 (OSMS-60YAW)
         #分解能: Full=0.005deg/pulse, Half=0.0025deg/pulse 
         #GSC-01のデフォルトはHalfステップ駆動 
-        #したがって、1度 = 1 / 0.0025 = 400 パルス
+        # したがって、1度動かすのに必要なパルス数は:
+        # 1 [deg] / 0.0025 [deg/pulse] = 400 [pulse]
+        # この値を使って、ユーザーが入力した「角度」を機械が理解できる「パルス数」に変換します。
         self.pulses_per_degree = 400
+        
+        # 速度設定のデフォルト値 (SettingsView等から上書き可能)
+        self.speed_min_pps = 500
+        self.speed_max_pps = 5000
+        self.speed_accel_ms = 200
         
         self._mock_pulse = 0 #Mock用の内部変数
     
@@ -29,14 +37,15 @@ class StageController:
     
     def connect(self, port: str, baudrate: int = 9600):
         #接続処理
-        #Mac: 強制的にMock接続
-        #Windows: 実機接続を試み、失敗したらエラーを投げる（Mockにはしない）
+        # Mac/Linux: 強制的にMock接続として成功させる
         if self.is_mock_env:
             self.is_connected = True
             logger.info(f"[STAGE-MOCK] Connected to Virtual Device (OS: {platform.system()})")
+            # Mockでも設定適用ログを出すために呼び出す
+            self.set_speed(self.speed_min_pps, self.speed_max_pps, self.speed_accel_ms)
             return True
         
-        #Windows実機環境
+        # Windows実機環境: pyserialを使ってCOMポートを開く
         try:
             self.ser = serial.Serial(
                 port=port,
@@ -44,9 +53,12 @@ class StageController:
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=1.0, #タイムアウト
+                timeout=1.0, # 読み込み時にデータが来なくても1秒で諦める（無限待機防止）
                 xonxoff=False,
-                rtscts=True, #ハードウェアフロー制御: 有効
+                # 【重要】ハードウェアフロー制御 (RTS/CTS) を有効にする
+                # GSC-01は処理が追いつかない時にRTS信号を使って「待って」と合図を送ります。
+                # これを無視するとコマンドの取りこぼしが発生します。
+                rtscts=True, 
                 dsrdtr=False,
             )
             self.is_connected = True
@@ -54,6 +66,9 @@ class StageController:
             
             #接続確認: バージョン情報の問い合わせなど
             #self._send_command("?:V")
+            
+            # 接続成功時に、現在の速度設定を適用する
+            self.set_speed(self.speed_min_pps, self.speed_max_pps, self.speed_accel_ms)
             
             return True
         except serial.SerialException as e:
@@ -72,6 +87,7 @@ class StageController:
     
     def _send_command(self, cmd: str):
         #コマンド送信とレスポンス受信（CR+LF終端）
+        # GSC-01の通信プロトコルは、コマンドの末尾に必ず改行コード(\r\n)が必要です。
         if self.is_mock_env:
             logger.debug(f"{self.log_tag} Send: {cmd}")
             return "OK"
@@ -80,11 +96,13 @@ class StageController:
             raise Exception("Device not connected")
         
         try:
-            #コマンド送信（CR+LF）
+            # 1. コマンド送信
+            # 文字列をバイト列(ascii)にエンコードし、末尾にCR+LFを付与
             full_cmd = f"{cmd}\r\n"
             self.ser.write(full_cmd.encode("ascii"))
             
-            #レスポンス受信
+            # 2. レスポンス受信
+            # readline()は改行コードが来るまで待機します（またはタイムアウト）
             response = self.ser.readline().decode("ascii").strip()
             #logger.debug(f"[STAGE] Send: {cmd} / Recv: {response}")
             
@@ -96,7 +114,9 @@ class StageController:
     
     #---座標変換---
     
-    #角度をパルスに変換
+    # 角度[deg] -> パルス[pulse] 変換
+    # round()を使う理由:
+    # int()で切り捨てると、0.0024度のような微小移動が「0パルス」になってしまい動かないため、四捨五入します。
     def _deg_to_pulse(self, deg: float) -> int:
         return int(round(deg * self.pulses_per_degree)) #四捨五入してパルス数を整数化
     
@@ -108,7 +128,7 @@ class StageController:
     
     #原点復帰
     def home(self):
-        #H:（機械原点復帰命令）
+        # H:1 コマンド（機械原点復帰命令）
         logger.info(f"{self.log_tag} Homing...")
         
         if self.is_mock_env:
@@ -128,7 +148,8 @@ class StageController:
     
     #絶対移動
     def move_absolute(self, target_angle: float):
-        #A:1+Pxxx -> G:（絶対移動パルス数設定命令 -> 駆動命令）
+        # GSC-01の仕様: 移動するには「移動量の設定(Aコマンド)」と「駆動開始(Gコマンド)」の2段階が必要
+        
         target_pulse = self._deg_to_pulse(target_angle)
         direction = "+"if target_pulse >= 0 else "-"
         abs_pulse = abs(target_pulse)
@@ -142,7 +163,7 @@ class StageController:
             logger.info(f"{self.log_tag} Move Abs Complete: {target_angle} deg")
             return True
         
-        #移動量設定コマンド A:1{+/-}P{pulse}
+        # 1. 移動量設定コマンド送信: A:1{方向}P{パルス数}
         cmd_a = f"A:1{direction}P{abs_pulse}"
         resp_a = self._send_command(cmd_a)
         
@@ -150,7 +171,7 @@ class StageController:
             logger.error(f"{self.log_tag} Move setup failed: {resp_a}")
             return False
         
-        #駆動コマンド G:
+        # 2. 駆動開始コマンド送信: G:
         resp_g = self._send_command("G:")
         
         if resp_g == "OK":
@@ -162,7 +183,7 @@ class StageController:
     
     #相対移動
     def move_relative(self, delta_angle: float):
-        #M1+Pxxx -> G:（相対移動パルス数設定命令 -> 駆動命令）
+        # M:1+Pxxx -> G:（相対移動パルス数設定命令 -> 駆動命令）
         delta_pulse = self._deg_to_pulse(delta_angle)
         
         #ゼロなら何もしない
@@ -181,7 +202,7 @@ class StageController:
             logger.info(f"{self.log_tag} Move Rel Complete: {delta_angle} deg")
             return True
         
-        #移動量設定コマンド M:1{+/-}P{pulse}
+        # 1. 移動量設定: M:1{方向}P{パルス数}
         cmd_m = f"M:1{direction}P{abs_pulse}"
         resp_m = self._send_command(cmd_m)
         
@@ -189,7 +210,7 @@ class StageController:
             logger.error(f"{self.log_tag} Move setup failed: {resp_m}")
             return False
         
-        #駆動コマンド G:
+        # 2. 駆動開始: G:
         resp_g = self._send_command("G:")
         
         if resp_g == "OK":
@@ -201,13 +222,18 @@ class StageController:
     
     #スピード指定
     def set_speed(self, min_pps: int, max_pps: int, accel_time_ms: int):
-        #D:（速度設定命令）
-        logger.info(f"{self.log_tag} Set Speed: ={min_pps}, F={max_pps}, ={accel_time_ms}")
+        # D:（速度設定命令）
+        # 内部設定値を更新（再接続時などに再適用できるようにするため保持しておく）
+        self.speed_min_pps = min_pps
+        self.speed_max_pps = max_pps
+        self.speed_accel_ms = accel_time_ms
+
+        logger.info(f"{self.log_tag} Set Speed: S(min)={min_pps}, F(max)={max_pps}, R={accel_time_ms}")
         
         if self.is_mock_env:
             return True
         
-        #速度設定コマンド D:1S{min}F{max}R{accel}
+        # 速度設定コマンド D:1S{起動速度}F{最高速度}R{加減速時間}
         cmd = f"D:1S{min_pps}F{max_pps}R{accel_time_ms}"
         resp = self._send_command(cmd)
         
@@ -215,7 +241,7 @@ class StageController:
     
     #停止
     def stop(self, immediate: bool = False):
-        #L:1 or L:E（減速停止命令または即停止命令）
+        # L:1 (減速停止) or L:E (非常停止/即停止)
         logger.info(f"{self.log_tag} Stopping... (Immediate={immediate})")
         if self.is_mock_env:
             logger.info(f"{self.log_tag} Stopped")
@@ -233,12 +259,12 @@ class StageController:
 
     #状態取得(戻り値: 現在の角度（float）, Busyかどうか（bool）)
     def get_status(self) -> Tuple[float, bool]:
-        #Q:（ステータス確認1命令: ステージ動作状況、座標値を返送）
-        #フォーマット: 座標値, ACK1, ACK2, ACK3
-        #座標値: 符号含めて10桁固定（正符号は省略）
-        #ACK1: X -> コマンドエラー, K -> コマンド正常受付
-        #ACK2: L -> リミットセンサで停止, K -> 正常停止
-        #ACK3: B -> Busy状態, R -> Ready状態
+        # Q:（ステータス確認コマンド）
+        # レスポンスフォーマット: "座標値, ACK1, ACK2, ACK3"
+        # 例: "+00018000,K,K,B"
+        #   - 座標値: パルス数
+        #   - ACK3: 'B'=Busy(移動中), 'R'=Ready(停止中)
+        
         if self.is_mock_env:
             return self._pulse_to_deg(self._mock_pulse), False
         
@@ -247,11 +273,11 @@ class StageController:
         try:
             parts = resp.split(",")
             if len(parts) >= 4:
-                #座標値
+                # 1つ目の要素: 座標値（パルス）
                 pulse_str = parts[0].strip()
                 current_pulse = int(pulse_str)
                 
-                #ステータス（ack3）
+                # 4つ目の要素: ステータス（B or R）
                 ack3 = parts[3].strip()
                 is_busy = (ack3 == "B")
                 

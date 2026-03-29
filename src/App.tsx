@@ -18,17 +18,23 @@ import { Camera, Moon, Sun, Video, Square } from "lucide-react"
 import { IconWaveSine } from "@tabler/icons-react"
 
 import { DevicesView } from "./components/views/DevicesView";
+import { ManualView } from "./components/views/ManualView";
+import { SettingsView } from "./components/views/SettingsView";
 
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
-import { ManualView } from "./components/views/ManualView";
 import { LogPanel } from "./components/shared/LogPanel";
 
 function App() {
   const {
-    currentMode, isCameraConnected, //どのモードかを聞き出す
-    isRecording, setIsRecording, //録画状態管理用
+    currentMode, isCameraConnected, // 現在選択されているモードと、カメラ接続状態
+    isRecording, setIsRecording, // 録画中かどうかのフラグと、それを更新する関数
   } = useAppStore(
+    // 【パフォーマンス最適化】
+    // useShallow を使うことで、ここで取り出した値（currentModeなど）が変化した時だけ
+    // Appコンポーネントを再レンダリングするようにしています。
+    // これを使わないと、ストア内の無関係なデータ（例えばステージの位置情報など）が変わっただけでも
+    // 画面全体が再描画されてしまい、動作が重くなる原因になります。
     useShallow((state) => ({
       currentMode: state.currentMode,
       isCameraConnected: state.isCameraConnected,
@@ -37,37 +43,46 @@ function App() {
     }))
   );
 
-  const [isDark, setIsDark] = useState(true); //ダークモード切り替え用
+  // ダークモードの状態管理（trueならダークモード、falseならライトモード）
+  const [isDark, setIsDark] = useState(true);
 
-  //HTMLタグ自体にdarkクラスを付与
+  // 【副作用 (Side Effect) の制御】
+  // テーマ切り替え処理：isDark の値が変わるたびに実行されます。
+  // Reactの状態変化に合わせて、ブラウザのDOM（<html>タグ）のクラスを直接書き換えます。
   useEffect(() => {
     const root = window.document.documentElement;
     root.classList.remove("light", "dark");
     root.classList.add(isDark ? "dark" : "light");
+    // [isDark] は依存配列です。この中の値が変化した時だけ、このuseEffectの中身が実行されます。
   }, [isDark]);
 
-  //カメラ切断時に録画状態をリセット
+  // 【安全装置】カメラ切断時の録画停止処理
+  // 録画中にケーブルが抜けるなどしてカメラ接続が切れた場合、
+  // 録画中フラグが立ったままだとUIと内部状態が矛盾するため、強制的にOFFにします。
   useEffect(() => {
+    // 条件: カメラが切断され(isCameraConnected === false)、かつ現在録画中(isRecording === true)の場合
     if (!isCameraConnected && isRecording) {
       console.warn("Camera disconnected during recording. Stopping recording.");
       setIsRecording(false);
       toast.error("Recording stopped due to disconnection.");
     }
-  })
+    // 依存配列: これらの変数のいずれかが変化するたびに、上記のチェックが走ります。
+  }, [isCameraConnected, isRecording, setIsRecording]);
 
-  //録画ボタンのトグル処理
+  // 録画ボタンが押された時の処理
   const toggleRecording = () => {
     if (isRecording) {
       console.log("Stop Recording...")
-      //ここにバックエンドへのリクエスト
+      // TODO: ここにバックエンド(Python/Rust)への録画停止リクエストを実装予定
     } else {
       console.group("Start Recording...")
-      //ここにバックエンドへのリクエスト
+      // TODO: ここにバックエンドへの録画開始リクエストを実装予定
     }
+    // 状態を反転させる（true -> false, false -> true）
     setIsRecording(!isRecording);
   };
 
-  //currentModeの値によって表示内容を切り替え
+  // 現在のモード（currentMode）に応じて、メインエリアに表示するコンポーネントを切り替える関数
   const renderContent = () => {
     switch (currentMode) {
       case "devices":
@@ -77,13 +92,14 @@ function App() {
       case "auto":
         return <div className="p-8 text-2xl font-bold text-muted-foreground">▶️ Auto Mode Area</div>;
       case "settings":
-        return <div className="p-8 text-2xl font-bold text-muted-foreground">⚙️ Settings Mode Area</div>;
+        return <SettingsView />;
       default:
         return null;
     }
   };
 
-  //Tooltip付きボタン
+  // ヘッダー用のアクションボタンコンポーネント（Tooltip付き）
+  // マウスホバー時に説明文（label）を表示するUI部品です。
   const HeaderAction = ({
     label,
     children,
@@ -104,7 +120,7 @@ function App() {
   );
 
   return (
-    //画面の大枠（全体を縦並び）
+    // 画面の大枠レイアウト（全体を縦並び flex-col）
     <TooltipProvider>
       <div className={"flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"}>
         {/* Header */}
@@ -120,7 +136,7 @@ function App() {
               <span className="text-xs text-muted-foreground">v0.1</span>
             </div>
 
-            {/* Status Badge */}
+            {/* Status Badge: システムの状態を表示するバッジ（点滅アニメーション付き） */}
             <div className="ml-4">
               <Badge
                 variant="outline"
@@ -187,25 +203,22 @@ function App() {
 
         {/* Body */}
         <div className="flex flex-1 overflow-hidden">
-          {/* Sidebar */}
+          {/* Sidebar: 左側のナビゲーションメニュー */}
           <AppSidebar />
 
-          {/* メインコンテンツ表示エリア */}
+          {/* メインコンテンツ表示エリア: renderContent()の結果がここに表示される */}
           <main className="flex-1 overflow-auto bg-secondary/20 relative">
             {/* 現在のモードに対応した画面 */}
             {renderContent()}
           </main>
         </div>
 
-        {/* ステータスバー */}
-        {/*<footer className="flex h-6 shrink-0 items-center border-t bg-card px-4 text-xs text-muted-foreground">
-          <span className="w-2 h-2 rounded-full bg-green-500 mr-2" />
-          <span>[INFO] Application initialized successfully. Waiting for device connection...</span>
-        </footer>*/}
+        {/* ログパネル: 画面下部にログを表示。z-50で最前面に表示 */}
         <div className="shrink-0 z-50">
           <LogPanel />
         </div>
 
+        {/* トースト通知: エラーや成功メッセージを画面上部にポップアップ表示 */}
         <Toaster richColors position="top-center" />
       </div>
     </TooltipProvider>

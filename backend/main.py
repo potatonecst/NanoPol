@@ -11,21 +11,24 @@ from utils.logger import logger, log_buffer
 from devices.stage_controller import StageController
 from devices.camera_controller import CameraController
 
-#グローバルインスタンス
+# グローバルインスタンスの作成
+# アプリケーション全体で1つのコントローラーを共有します（シングルトンパターン）
 stage = StageController()
 camera = CameraController()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    #起動時の処理
+    # 【ライフサイクル管理】
+    # サーバー起動時(startup)の処理
     logger.info("[SYSTEM] Backend Starting...")
     
-    yield #ここでサーバーが稼働し続ける
+    yield # ここでサーバーがリクエストを受け付け続ける（稼働状態）
     
-    #終了時の処理
+    # サーバー終了時(shutdown)の処理
+    # Ctrl+Cなどで停止した際に、開いているリソース（COMポート、カメラ）を確実に閉じます。
     logger.info("[SYSTEM] Backend Shutting Down...")
     
-    #強制的に切断処理
+    # 強制的に切断処理
     logger.info("[SYSTEM] Releasing Stage Conection...")
     if stage.is_connected:
         stage.close()
@@ -38,16 +41,20 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="NanoPol Backend", version="0.1.0", lifespan=lifespan)
 
-#CORS
+# CORS (Cross-Origin Resource Sharing) 設定
+# フロントエンド(localhost:1420)とバックエンド(localhost:8000)のポートが違うため、
+# ブラウザのセキュリティ制限を緩和して通信を許可します。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], #本番では"http://localhost:1420" 等に絞る
+    allow_origins=["*"], # 開発中は全て許可。本番では"http://localhost:1420"等に絞るべき
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-#---リクエストボディ定義---
+# --- Pydanticモデル定義 ---
+# リクエストボディのデータ構造と型を定義します。
+# FastAPIはこれを使って自動的にバリデーション（入力チェック）を行います。
 
 class ConnectStageRequest(BaseModel):
     port: str
@@ -80,17 +87,12 @@ class LogPostRequest(BaseModel):
     level: str
     message: str
 
-#APIエンドポイント
-#@app.get("/")
-#def read_root():
-#    return {"status": "NanoPol backend is running", "mode": "Mock" if not IS_REAL_DEVICE_AVAILABLE else "Real/Mock"}
-
 #---システムAPI---
 
 @app.get("/health")
 def health_check():
-    #フロントエンド起動時に叩く生存確認用
-    #接続状態とモードを返す
+    # フロントエンド起動時に叩く生存確認用API
+    # 現在の接続状態とモード（Mock/Real）を返します。
     return {
         "status": "OK",
         "stage_connected": stage.is_connected,
@@ -100,7 +102,7 @@ def health_check():
 
 @app.post("/system/reset")
 def system_reset():
-    #強制リセット: 全てのデバイス接続を開放する
+    # 強制リセット: 全てのデバイス接続を強制的に開放する
     logger.warning("[SYSTEM] FORCE RESET TRIGGERD")
     
     #ここに実機のリソース開放処理を書く
@@ -113,7 +115,7 @@ def system_reset():
 
 @app.get("/system/ports")
 def get_system_ports():
-    #Mock環境ならダミーを返す
+    # Mock環境ならダミーのポートリストを返す
     if stage.is_mock_env:
         return {
             "ports": [
@@ -123,6 +125,7 @@ def get_system_ports():
             ],
         }
     
+    # 実機環境ならOSからCOMポート一覧を取得
     ports = [p.device for p in list_ports.comports()]
     
     if not ports:
@@ -132,7 +135,9 @@ def get_system_ports():
 
 #---ステージ関連API---
 
-#ステージ接続
+# ステージ接続
+# 注意: FastAPIでは `async def` ではなく `def` で定義すると、スレッドプールで実行されます。
+# シリアル通信のようなブロッキングI/Oを含む処理は `def` の方が安全です。
 @app.post("/stage/connect")
 def connect_stage(req: ConnectStageRequest):
     try:
@@ -147,14 +152,13 @@ def connect_stage(req: ConnectStageRequest):
             "message": f"Connected to {req.port} (mode)"
         }
     except Exception as e:
-        #接続失敗時は500エラーを返し、フロントエンドでcatchさせる
+        # 接続失敗時は500エラーを返し、フロントエンド側でcatchさせる
         logger.error(f"Stage Connection Failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/stage/config")
 def stage_update_config(req: UpdateConfigRequest):
-    #接続されていなくても設定値だけは更新できるようにしても良いが、
-    #整合性を保つために常時受け付ける
+    # 接続されていなくても設定値（パルス換算レートなど）は更新できるようにする
     stage.update_settings(req.pulses_per_degree)
     
     return {
@@ -168,7 +172,7 @@ def stage_home():
         raise HTTPException(status_code=400, detail="Stage not connected")
     
     success = stage.home()
-    #成功可否をチェック
+    # コマンド送信の成功可否をチェック
     if not success:
         raise HTTPException(status_code=500, detail="Homing failed")
     
@@ -289,6 +293,8 @@ def get_cameras():
 
 @app.get("/camera/video_feed")
 def video_feed():
+    # MJPEGストリーミングのエンドポイント
+    # multipart/x-mixed-replace 形式で、画像を次々と送り続けます。
     if not camera.is_connected:
         raise HTTPException(status_code=503, detail="Camera not connected")
     
@@ -299,7 +305,7 @@ def video_feed():
 
 @app.get("/camera/snapshot")
 def get_snapshot():
-    # JPEG画像を返す
+    # 現在のフレームを1枚だけキャプチャしてJPEG画像として返す
     if not camera.is_connected:
         # 未接続時は404または503だが、UIがポーリングしている場合は
         # 404を返すとエラーログが出るので、黒画像などを返す実装もアリ。
@@ -316,12 +322,12 @@ def get_snapshot():
 
 @app.get("/system/logs")
 def get_logs():
-    #メモリバッファにあるログを取得（ポーリング用）
+    # メモリバッファにある直近のログを取得（UIポーリング用）
     return {"logs": list(log_buffer)}
 
 @app.post("/system/logs")
 def post_log(req: LogPostRequest):
-    #フロントエンドからの操作ログをバックエンドのloggerに記録
+    # フロントエンドからの操作ログ（ボタンクリック等）をバックエンドのloggerに統合して記録
     msg = f"[UI] {req.message}"
     
     if req.level.upper() == "ERROR":
@@ -334,6 +340,6 @@ def post_log(req: LogPostRequest):
     return {"status": "success"}
 
 if __name__ == "__main__":
-    #開発サーバー起動（ポート8000）
+    # 開発用サーバー起動（ポート8000）
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)

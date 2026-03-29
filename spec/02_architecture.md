@@ -6,8 +6,9 @@
       * **UI Lib:** shadcn/ui, Tailwind CSS, Lucide React (Icons).
       * **State:** **Zustand** (`src/store/useAppStore.ts`) - 接続状態、デバイス設定、システムビジー状態を一元管理。
       * **Viz:** Recharts (Planned).
-  * **Middleware:** Tauri v2 (Shell only).
-      * 現在の通信は主に `fetch` API を用いて `localhost:8000` の FastAPI サーバーと通信する構成。
+  * **Middleware:** Tauri v2.
+      * **Communication:** `fetch` API を用いて `localhost:8000` の FastAPI サーバー (Device Control) と通信。
+      * **Native Capabilities:** `tauri-plugin-fs` (設定保存・フォルダ作成), `tauri-plugin-dialog` (フォルダ選択) を使用。
   * **Backend:** Python 3.11 + FastAPI.
       * **Server:** `uvicorn` (Dev mode).
       * **Device Control:**

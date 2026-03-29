@@ -119,13 +119,20 @@ Autoモードに入った最初の状態。サイドバーに表示。
       * 実行中: `Angle / 360`, プログレスバー。
       * `[🛑 ABORT / PAUSE]`: 緊急停止。
 
-#### ④ ⚙️ Settings Mode (設定) - **Planned**
+#### ④ ⚙️ Settings Mode (設定) - **Implemented**
 
-  * **Path Settings:**
-      * `Default Base Folder`: 測定データ保存のルートパス (例: `D:\Data`)。
-  * **Device Settings:**
-      * パルス/度 換算値 (Default: 400 pulses/degree)。
-      * 通信タイムアウト設定。
-  * **UI Settings:**
-      * **Sounds:** 完了時・エラー時の通知音 (ON/OFF)。
-      * **Safety:** 測定中止時やアプリ終了時の確認ダイアログ表示 (ON/OFF)。
+`src/components/views/SettingsView.tsx`
+
+  * **File Save Settings:**
+      * **Output Directory:** 測定データの保存先フォルダ。
+          * **Default:** `Documents/NanoPol` (OSのドキュメントフォルダ配下)。
+          * **Behavior:** 設定保存時にフォルダが存在しない場合、自動的に再帰作成される。
+          * **Action:** `[Browse]` ボタンでネイティブのフォルダ選択ダイアログを開く。
+      * **Filename Prefix:** ファイル名の接頭辞 (Default: `scan_`)。
+      * **Image Format:** 保存画像のフォーマット (TIFF/PNG/JPG)。
+  * **Stage Motion Defaults:**
+      * 速度 (Min/Max PPS), 加減速時間 (Accel Time) のデフォルト値設定。
+  * **Camera Defaults:**
+      * 露光時間 (Exposure), ゲイン (Gain) のデフォルト値設定。
+  * **Persistence:**
+      * 設定は `AppConfig` ディレクトリ（OS標準のアプリ設定場所）にある `config.json` に保存され、次回起動時に自動的に読み込まれる。

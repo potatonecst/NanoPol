@@ -15,22 +15,39 @@ export function LogPanel() {
     const [isAtBottom, setIsAtBottom] = useState(true); // ユーザーが一番下にいるか
     const [showResumeBtn, setShowResumeBtn] = useState(false); // Resumeボタンの表示制御
 
-    //定期フェッチ（0.2秒ごと）
+    // 定期フェッチ（0.2秒ごと）
+    // サーバーから最新のログを取得し続けます（ポーリング）。
+    // WebSocketを使わないシンプルな実装です。
     useEffect(() => {
+        let timeoutId: ReturnType<typeof setTimeout>;
+        let isMounted = true;
+
         const fetchLogs = async () => {
             try {
                 const res = await systemApi.getLogs();
-                setLogs(res.logs);
+                if (isMounted) {
+                    setLogs(res.logs);
+                }
             } catch (e) {
                 console.error(e);
+            } finally {
+                // 処理が終わったら、次のタイマーをセット（再帰呼び出し）
+                if (isMounted) {
+                    timeoutId = setTimeout(fetchLogs, 200);
+                }
             }
         };
+
         fetchLogs();
-        const interval = setInterval(fetchLogs, 200);
-        return () => clearInterval(interval);
+
+        return () => {
+            isMounted = false;
+            clearTimeout(timeoutId);
+        };
     }, []);
 
     // スクロールイベントの監視
+    // ユーザーが手動で上にスクロールしたかどうかを判定します。
     const handleScroll = () => {
         if (!scrollRef.current) return;
         const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
@@ -42,6 +59,7 @@ export function LogPanel() {
     };
 
     // Smart Auto-Scroll: ログ更新時、ユーザーが底にいる場合のみスクロール
+    // これにより、ユーザーが過去のログを読んでいる最中に勝手にスクロールされるのを防ぎます。
     useEffect(() => {
         if (isOpen && isAtBottom && scrollRef.current) {
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -70,7 +88,7 @@ export function LogPanel() {
         setIsOpen(!isOpen);
     };
 
-    //色分け
+    // ログレベルに応じた色分け
     const getLevelColor = (level: string) => {
         switch (level) {
             case "INFO": return "text-blue-400";
@@ -88,10 +106,10 @@ export function LogPanel() {
         return "text-zinc-300 group-hover:text-white";
     };
 
-    //最新のログ
+    // 最新のログ（閉じた状態のヘッダーに表示するため）
     const latestLog = logs.length > 0 ? logs[logs.length - 1] : null;
 
-    //パネルの高さ決定
+    // パネルの高さ決定（CSSクラス）
     const getHeightClass = () => {
         if (isMaximized) return "h-[80vh]"; //最大化時
         if (isOpen) return "h-48"; //通常オープン時

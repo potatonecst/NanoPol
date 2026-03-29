@@ -1,32 +1,58 @@
 # 01. ハードウェア制御層 (Backend Devices)
+# 01. Backend Devices (Device Control)
 
 このドキュメントでは、`backend/devices/` ディレクトリに配置されているハードウェア制御モジュールについて解説します。
 本プロジェクトでは、**「ハードウェアの抽象化」** を徹底しており、上位レイヤー（APIサーバーやUI）は、接続先が実機かシミュレータ（Mock）かを意識せずに操作できるよう設計されています。
+## 1. Stage Controller (GSC-01)
 
 ## 1. モジュール構成
+OptoSigma製 GSC-01 (1軸ステージコントローラー) を制御するモジュールです。
 
 | ファイル名             | クラス名           | 役割                                       | 制御対象                       |
 | :--------------------- | :----------------- | :----------------------------------------- | :----------------------------- |
 | `stage_controller.py`  | `StageController`  | 回転ステージの角度制御、原点復帰、状態監視 | Sigma Koki GSC-01 (OSMS-60YAW) |
 | `camera_controller.py` | `CameraController` | 露光/ゲイン設定、画像キャプチャ、MJPEG配信 | Thorlabs DCC1645C (uEye)       |
+- **File:** `backend/devices/stage_controller.py`
+- **Device:** OptoSigma GSC-01 + OSMS-60YAW (回転ステージ)
+- **Interface:** RS232C (Serial)
 
 ---
+### 1.1. 接続仕様
+- **Baudrate:** 9600 bps (Default)
+- **Flow Control:** RTS/CTS (Hardware) - **必須**。これがないとコマンドを取りこぼす可能性があります。
+- **Terminator:** CR+LF (`\r\n`)
 
 ## 2. StageController (ステージ制御)
+### 1.2. Mock Mode (Simulation)
+- **判定:** OSがWindows以外（Mac/Linux）の場合、自動的にMockモードで動作します。
+- **挙動:** 実機とは通信せず、内部変数で座標を管理し、適切なウェイトを入れて応答を返します。
+- **ログ:** `[STAGE-MOCK]` プレフィックスが付きます。
 
 シグマ光機製の1軸ステージコントローラ `GSC-01` を介して、回転ステージ `OSMS-60YAW` を制御します。通信方式は RS-232C (USB-Serial) です。
+### 1.3. 主要コマンド実装
 
 ### 2.2 座標変換ロジック
 - **分解能:** 0.0025度/パルス (Half step駆動時)
 - **変換式:**
   - `Pulse = round(Angle * 400)`
   - `Angle = Pulse / 400`
+| 機能     | GSC-01コマンド          | 実装メソッド               | 備考                                                       |
+| :------- | :---------------------- | :------------------------- | :--------------------------------------------------------- |
+| 原点復帰 | `H:1`                   | `home()`                   | 機械原点復帰。完了までブロックしません（Busy確認が必要）。 |
+| 絶対移動 | `A:1+Pxxx` -> `G:`      | `move_absolute(deg)`       | 角度をパルスに変換して送信。                               |
+| 相対移動 | `M:1+Pxxx` -> `G:`      | `move_relative(deg)`       | 現在地からの差分移動。                                     |
+| 速度設定 | `D:1S{min}F{max}R{acc}` | `set_speed(min, max, acc)` | 起動速度(S), 最高速度(F), 加減速時間(R)を設定。            |
+| 停止     | `L:1`                   | `stop(immediate=False)`    | 減速停止。                                                 |
+| 非常停止 | `L:E`                   | `stop(immediate=True)`     | 即時停止（モーター励磁OFF等の挙動は設定依存）。            |
+| 状態取得 | `Q:`                    | `get_status()`             | 座標とBusy状態(`B`/`R`)を取得。                            |
 
 > **Note: 丸め処理について (Why round?)**
 >
 > 初期の設計では `int()` による切り捨てを採用していましたが、以下の理由から `round()` による四捨五入に変更しました。
 > 1.  **直感的な操作感 (UX):** ユーザーが入力した任意の角度に対して、物理的に可能な「最も近い位置」へ移動するのが計測機器としてあるべき挙動であるため。切り捨ての場合、0.0024度のような微小な入力が「0パルス（移動なし）」となり、ユーザーに「反応しない」という誤解を与えるリスクがありました。
 > 2.  **誤差の均等化:** 切り捨て（床関数）は常に値を小さく見積もるバイアスがかかりますが、四捨五入（特にPythonの `round` は偶数丸め）は誤差の方向が分散するため、繰り返し操作による位置ズレの累積を統計的に抑制できます。
+### 1.4. ログフォーマット
+速度設定時のログ出力は以下のフォーマットに統一されています。
 
 ### 2.2 コマンド送信フロー
 
@@ -54,17 +80,33 @@ sequenceDiagram
         Dev-->>Ctrl: +1000,K,K,B (Busy)
         Ctrl-->>API: {angle: 2.5, is_busy: true}
     end
+```text
+[STAGE] Set Speed: S={min_pps}, F={max_pps}, R={accel_time_ms}
 ```
+- **S (Start Speed):** 起動速度 (PPS)
+- **F (Final/Max Speed):** 最高速度 (PPS)
+- **R (Rate/Time):** 加減速時間 (ms)
 
 ### 2.3 Mock/Real 自動判定
+## 2. Camera (Thorlabs DCC1645C)
 
 開発効率を高めるため、OS環境に応じた自動フォールバック機能を実装しています。
+Thorlabs製 DCC1645C (uEye) カメラを制御します。
+*(詳細は `backend/devices/camera_controller.py` の実装待ち)*
 
 *   **Windows:** 実機接続 (`serial.Serial`) を試みます。失敗した場合はエラーを送出します（意図しないMock動作を防ぐため）。
 *   **macOS / Linux:** `platform.system()` を検知し、強制的に **Mockモード** で起動します。
     *   Mockモードでは `time.sleep()` を用いて移動時間をシミュレートし、内部変数 `_mock_pulse` を更新します。また、ログ出力を `[STAGE-MOCK]` とすることで実機動作と明確に区別します。
+### 2.1. 基本仕様 (予定)
+- **Driver:** Thorlabs uEye SDK / pyueye
+- **Format:** MJPEG Stream (HTTP) for Preview
+- **Capture:** Snapshot (TIFF/PNG), Video Recording (AVI/MP4)
 
 ### 2.4 メソッド詳細リファレンス (StageController)
+### 2.2. パラメータ
+- **Exposure:** 露光時間 (ms)
+- **Gain:** ゲイン (0-100)
+- **Pixel Clock:** 読み出し速度
 
 これらのメソッドは `backend/devices/stage_controller.py` に実装されています。
 
@@ -104,6 +146,18 @@ sequenceDiagram
     # 4. 駆動コマンド送信 (G:)
     self._send_command("G:")
     ```
+
+#### `set_speed(min_pps: int, max_pps: int, accel_time_ms: int) -> bool`
+起動速度、最高速度、加減速時間を設定します (`D:` コマンド)。
+
+*   **ログフォーマット:**
+    設定適用時、以下の形式でログが出力されます。
+    ```text
+    [STAGE] Set Speed: S={min_pps}, F={max_pps}, R={accel_time_ms}
+    ```
+    *   **S:** Start Speed (起動速度)
+    *   **F:** Final Speed (最高速度)
+    *   **R:** Rate/Time (加減速時間)
 
 #### `get_status() -> Tuple[float, bool]`
 現在の状態を問い合わせます (`Q:` コマンド)。
@@ -256,3 +310,4 @@ except Exception as e:
 `get_status` の戻り値 `Tuple[float, bool]` などで使われています。
 *   リスト `[1, 2]` と似ていますが、タプル `(1, 2)` は**中身を変更できません**。
 *   関数の戻り値として「複数の値をセットで返したい」ときによく使われます。ここでは「角度」と「Busy状態」という2つの情報をセットにして返しています。
+*Last Updated: 2024-01-24*

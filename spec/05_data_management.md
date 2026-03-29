@@ -6,7 +6,9 @@
 
 階層構造: `[Base] / [YYYYMMDD] / [SampleName] / ...`
 
-  * **[Base]:** Settingsモードで設定されたルートパス (Default: `D:\Data`)。
+  * **[Base]:** Settingsモードで設定されたルートパス。
+      * **Default:** `~/Documents/NanoPol` (ユーザーのドキュメントフォルダ内)。
+      * **Config:** `AppConfig/config.json` に保存された `outputDirectory` の値を使用。
   * **[YYYYMMDD]:** 測定実行日の日付で自動生成。
 
 ```text
