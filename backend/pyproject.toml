@@ -13,3 +13,8 @@ dependencies = [
     "tifffile>=2025.10.16",
     "uvicorn>=0.38.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.19.0",
+]

@@ -1,0 +1,100 @@
+name: Build and Release Windows App
+
+# ==========================================
+# 【発動条件】この自動ビルドがいつ走るかの設定
+# ==========================================
+on:
+  push:
+    tags:
+      # 1. ターミナルで `git tag v1.0.0` のように「v」から始まるタグをつけてPushした時 (本番リリース用)
+      - 'v*'
+  # 2. GitHubのWeb画面 (Actionsタブ) から手動で「Run workflow」ボタンを押した時 (テスト用)
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    # クラウド上で借りるPCのOSを指定します。MacからWindowsアプリを作るために必須です。
+    runs-on: windows-latest
+    
+    # 出来上がったインストーラー（.msiなど）をGitHubのReleasesページにアップロードするための「書き込み権限」です。
+    permissions:
+      contents: write
+
+    steps:
+      # 【Step 0】まずはクラウド上のWindows PCに、GitHubから最新のソースコードをダウンロードします。
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ==========================================
+      # 【Step 1】Pythonバックエンドのビルド
+      # ==========================================
+      # 超高速なPythonパッケージマネージャー「uv」をインストールします。
+      # enable-cache: true により、2回目以降のビルドが早くなります。
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      # クラウド上のWindows PCに指定したバージョンのPythonをインストールします。
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # バックエンドを動かすために必要なライブラリ(FastAPI, OpenCVなど)をインストールします。
+      - name: Install Python dependencies
+        working-directory: ./backend
+        run: uv sync
+
+      # 先ほど作ったスクリプトを実行し、FastAPIサーバー全体を1つの「backend.exe」に固めます。
+      - name: Build Python executable
+        working-directory: ./backend
+        run: uv run python build_exe.py
+
+      - name: Move backend executable for Tauri
+        # Windowsランナーのデフォルトシェルである PowerShell (pwsh) のコマンドを使用してファイルを移動します。
+        # "x86_64-pc-windows-msvc" というのは、TauriがWindows向けビルドをする際に探す「OSの識別子」です。
+        # 
+        # [構文解説]
+        # 1. New-Item: 新しい要素を作成するコマンド。
+        #    -ItemType Directory で「フォルダ」であることを指定し、-Force をつけることで「既に存在していてもエラーにせず上書き（続行）」します。
+        # 2. Move-Item: ファイルを移動・名前変更するコマンド。
+        #    -Path (移動元のファイル) を -Destination (移動先のフォルダと新しい名前) へ移動します。
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/bin
+          Move-Item -Path backend/dist/backend.exe -Destination src-tauri/bin/backend-x86_64-pc-windows-msvc.exe
+
+      # ==========================================
+      # 【Step 2】フロントエンドとTauriのビルド
+      # ==========================================
+      # Reactなどの画面を作るためのパッケージマネージャー「pnpm」をインストールします。
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      # pnpmを動かすためのNode.js環境をインストールします。
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      # package.json に書かれているReactやTailwindなどのライブラリをインストールします。
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      # Rustのインストール、Reactのビルド、Tauriのビルド、インストーラー(.msi)作成、
+      # そしてGitHubへのアップロードまでを全自動でやってくれるTauri公式のアクションです。
+      - name: Build and Release Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__ # package.jsonのバージョン(例: 0.1.0)を読み取って自動で「v0.1.0」というタグを作ります
+          releaseName: 'Version __VERSION__ Release' # リリースのタイトル
+          releaseBody: '最新のリリースです。下の `nanopol_X.X.X_x64_en-US.msi` をダウンロードしてインストールしてください。'
+          # true にしておくと、ビルド完了後いきなり公開されず「下書き(Draft)」として保存されます。
+          # 開発者がGitHubの画面でダウンロードして動作確認し、問題なければ「Publish」ボタンを押すという安全な運用ができます。
+          releaseDraft: true
+          prerelease: false
