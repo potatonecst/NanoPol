@@ -50,9 +50,8 @@
       * **挙動:** Windows環境では実機接続を試行し、失敗時はエラー通知を行う。非Windows環境ではMock接続となる。
   * **Camera Panel:**
       * **Camera ID:** ID選択 (Backendから動的に取得)。
-          * **改善:** リフレッシュボタンで `/system/cameras` (Planned) を叩き、接続可能なカメラIDリストを更新する仕組みを導入。
+          * **実装済み:** リフレッシュボタン、または画面マウント時に `/system/cameras` を叩き、ハードウェアから取得した正確なカメラID・モデル名リストをドロップダウンに表示・更新する。
       * **Action:** `[Connect]` / `[Disconnect]`. 処理中のスピナー表示を追加。
-      * **Note:** 現在はBackendのMockエンドポイントに接続するのみ。
   * **Troubleshooting:**
       * `[Force Reset All Connections]`: システム全体の接続状態を強制リセットし、UIロックを解除する緊急ボタン。
   * **Code Quality:**
@@ -134,5 +133,6 @@ Autoモードに入った最初の状態。サイドバーに表示。
       * 速度 (Min/Max PPS), 加減速時間 (Accel Time) のデフォルト値設定。
   * **Camera Defaults:**
       * 露光時間 (Exposure), ゲイン (Gain) のデフォルト値設定。
-  * **Persistence:**
+  * **Persistence & Sync:**
       * 設定は `AppConfig` ディレクトリ（OS標準のアプリ設定場所）にある `config.json` に保存され、次回起動時に自動的に読み込まれる。
+      * 保存時 (`[Save Settings]`) およびアプリ起動時、バックエンドの `/system/settings` APIにJSONを送信し、ハードウェアの設定（プレビューのColor/Monoモードなど）に即時反映させる。

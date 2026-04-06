@@ -37,6 +37,17 @@ import { toast } from "sonner";
 
 import { Cable, Camera, RefreshCw, AlertCircle } from "lucide-react";
 
+/**
+ * デバイス接続管理画面 (Devices View) コンポーネント
+ *
+ * システム（回転ステージとカメラ）の通信ポートやIDを選択し、接続・切断を行うための画面です。
+ *
+ * 【主な機能】
+ * - 利用可能なCOMポートおよびカメラの一覧の自動取得（ポーリング/手動リフレッシュ）。
+ * - デバイスごとの独立した接続・切断操作。
+ * - Zustandストア（グローバル状態）の接続フラグの更新。
+ * - トラブル時のシステム全体強制リセット機能。
+ */
 export function DevicesView() {
     const {
         stagePort, setStagePort,
@@ -70,8 +81,12 @@ export function DevicesView() {
     const [isStageLoading, setIsStageLoading] = useState(false);
     const [isCameraLoading, setIsCameraLoading] = useState(false);
 
-    // Port一覧を取得する非同期関数
-    // バックエンド(Python)に問い合わせて、利用可能なCOMポートのリストを取得します。
+    /**
+     * COMポート一覧を取得する非同期関数
+     * 
+     * バックエンド(FastAPI)の `/system/ports` APIに問い合わせて、現在PCに認識されている
+     * シリアルポートのリストを取得し、ドロップダウンメニューの選択肢を更新します。
+     */
     const fetchPorts = async () => {
         try {
             const res = await systemApi.getPorts();
@@ -79,10 +94,13 @@ export function DevicesView() {
         } catch (error) {
             console.error("Failed to fetch ports", error);
             toast.error("Failed to list COM ports");
+            systemApi.postLogs("ERROR", `Failed to fetch COM ports: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         }
     }
 
-    // Camera一覧を取得する非同期関数
+    /**
+     * 接続可能なカメラ一覧を取得する非同期関数
+     */
     const fetchCameras = async () => {
         try {
             const res = await cameraApi.listCameras();
@@ -94,14 +112,18 @@ export function DevicesView() {
         } catch (error) {
             console.error("Failed to fetch cameras", error);
             toast.error("Failed to list cameras");
+            systemApi.postLogs("ERROR", `Failed to fetch cameras: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         }
     }
 
-    // 【初期化処理】
-    // コンポーネントが画面に表示された（マウントされた）直後に実行されます。
-    // useRef(initialized) を使う理由:
-    // React 18のStrict Mode（開発モード）では、バグ発見のためにuseEffectがわざと2回実行されます。
-    // APIリクエストが2回飛ぶのを防ぐため、refフラグでガードしています。
+    /**
+     * 【初期化エフェクト】
+     * 画面マウント時に1回だけ、ポートとカメラの一覧を自動取得します。
+     * 
+     * 【useRef(initialized) によるガード】
+     * React 18のStrict Mode（開発モード）特有の「二重マウント（useEffectの2回実行）」によって
+     * APIリクエストが2回連続で飛んでしまうのを防ぐためのフラグです。
+     */
     const initialized = useRef(false);
     useEffect(() => {
         if (!initialized.current) {
@@ -109,21 +131,27 @@ export function DevicesView() {
             fetchPorts();
             fetchCameras();
         }
-        // 依存配列が空 [] なので、マウント時の1回だけ実行されます。
     }, []);
 
-    // ステージ接続ボタンが押された時の処理
-    // async/await を使うことで、接続処理が終わるまで待機し、その間ローディング表示を出します。
+    /**
+     * ステージコントローラーの「Connect / Disconnect」ボタンハンドラ
+     * 
+     * 現在の接続状態（isStageConnected）に応じて、接続または切断のAPIを呼び出します。
+     * 通信中はボタンをローディング状態（isStageLoading）にし、ユーザーの二重操作を防ぎます。
+     * 処理完了後、成功・失敗に関わらずグローバル状態とログを更新します。
+     */
     const handleStageConnect = async () => {
         if (isStageConnected) {
             //切断処理（Mockなので状態を変えるだけ）
             setIsStageConnected(false);
             toast.info("Disconnected Stage");
+            systemApi.postLogs("INFO", "Disconnected Stage (Mock state updated)").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             return;
         }
 
         if (!stagePort) {
             toast.error("Please select a COM port."); //簡易アラート
+            systemApi.postLogs("WARNING", "Stage connection failed: No COM port selected").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             return;
         }
 
@@ -136,15 +164,22 @@ export function DevicesView() {
             // 成功したらストアの状態を更新（これにより画面上のバッジなどが緑色に変わる）
             setIsStageConnected(true);
             toast.success(`Connected to ${stagePort}`);
+            systemApi.postLogs("INFO", `Stage connected successfully to ${stagePort}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (error) {
             console.error(error);
             toast.error("Failed to connect stage.");
+            systemApi.postLogs("ERROR", `Failed to connect stage on ${stagePort}: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
             setIsStageLoading(false);
         }
     }
 
-    // カメラ接続ボタンが押された時の処理
+    /**
+     * カメラデバイスの「Connect / Disconnect」ボタンハンドラ
+     * 
+     * 指定されたカメラID（整数）を使用してバックエンドの接続APIを呼び出します。
+     * 接続成功後、バックエンド側ではMJPEGストリーム配信用（特急レーン）の別スレッドが起動します。
+     */
     const handleCameraConnect = async () => {
         if (isCameraConnected) {
             try {
@@ -153,9 +188,11 @@ export function DevicesView() {
                 await cameraApi.disconnect();
                 setIsCameraConnected(false);
                 toast.info("Disconnected Camera");
+                systemApi.postLogs("INFO", "Disconnected Camera successfully").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             } catch (error) {
                 console.error(error);
                 toast.error("Failed to disconnect camera.");
+                systemApi.postLogs("ERROR", `Failed to disconnect camera: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             } finally {
                 setIsCameraLoading(false);
             }
@@ -164,6 +201,7 @@ export function DevicesView() {
 
         if (!cameraId) {
             toast.error("Please select a Camera ID."); //簡易アラート
+            systemApi.postLogs("WARNING", "Camera connection failed: No Camera ID selected").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             return;
         }
 
@@ -177,33 +215,46 @@ export function DevicesView() {
             //成功したら接続状態にする
             setIsCameraConnected(true);
             toast.success(`Connected to Camera ${cameraId}`);
+            systemApi.postLogs("INFO", `Camera ${cameraId} connected successfully`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (error) {
             console.error(error);
             toast.error("Failed to connect camera.");
+            systemApi.postLogs("ERROR", `Failed to connect camera ${cameraId}: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
             setIsCameraLoading(false);
         }
     }
 
-    // 【緊急用】強制リセット処理
-    // バックエンドの状態に関わらず、フロントエンドの接続フラグを全て「未接続」に戻します。
-    // デバイスがフリーズして操作不能になった場合などに使用します。
+    /**
+     * 【緊急用】システム全体強制リセット処理
+     * 
+     * 機器の暴走、フリーズ、通信のデッドロックなどが発生した場合のフェイルセーフ機能です。
+     * 1. バックエンドに対し、全デバイスのシリアルポートやカメラハンドルの強制クローズ（解放）を要求します。
+     * 2. フロントエンド（Zustandストア）の接続フラグを全て「未接続」状態にリセットします。
+     */
     const executeForceReset = async () => {
         console.log("Executing Force Reset...");
+        systemApi.postLogs("WARNING", "User initiated Force Reset sequence").catch((e) => console.debug("※ログ送信も失敗しました:", e));
 
         try {
             await systemApi.reset();
             toast.success("System reset command sent.");
+            systemApi.postLogs("INFO", "Force system reset command executed by backend successfully").catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (error) {
             console.error(error);
             toast.warning("Backend reset failed, but resetting UI anyway.");
+            systemApi.postLogs("ERROR", `Backend force reset failed (API error): ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
             resetAllConnections();
             toast.info("All connections reset.");
+            systemApi.postLogs("INFO", "All frontend connection states have been reset").catch((e) => console.debug("※ログ送信も失敗しました:", e));
         }
     }
 
-    // 再利用可能なリフレッシュボタンコンポーネント（ローカル定義）
+    /**
+     * 補助コンポーネント: リフレッシュボタン
+     * ドロップダウンメニューの横に配置され、ポートやカメラの一覧を再取得するためのボタンです。
+     */
     const RefreshButton = ({
         label,
         disabled,
@@ -243,7 +294,7 @@ export function DevicesView() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {/* Stage Controller Panel */}
-                    <Card className={isStageConnected ? "border-green500/50 bg-green-500/10" : ""}>
+                    <Card>
                         <CardHeader>
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2">
@@ -302,7 +353,7 @@ export function DevicesView() {
                     </Card>
 
                     {/* Camera Panel */}
-                    <Card className={isCameraConnected ? "border-green500/50 bg-green-500/10" : ""}>
+                    <Card>
                         <CardHeader>
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2">

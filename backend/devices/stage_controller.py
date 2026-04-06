@@ -32,12 +32,15 @@ class StageController:
         self._mock_pulse = 0 #Mock用の内部変数
     
     def update_settings(self, pulses_per_degree: int):
+        """分解能（1度あたりのパルス数）の設定を更新します"""
         self.pulses_per_degree = pulses_per_degree
         logger.info(f"{self.log_tag} Update Resolution: {self.pulses_per_degree} pulses/deg")
     
     def connect(self, port: str, baudrate: int = 9600):
-        #接続処理
-        # Mac/Linux: 強制的にMock接続として成功させる
+        """
+        指定されたCOMポートを開き、ステージコントローラと接続します。
+        Mac/Linux環境の場合は、自動的にMock（シミュレータ）接続として成功を返します。
+        """
         if self.is_mock_env:
             self.is_connected = True
             logger.info(f"[STAGE-MOCK] Connected to Virtual Device (OS: {platform.system()})")
@@ -78,6 +81,7 @@ class StageController:
             raise e
     
     def close(self):
+        """通信ポートを閉じ、デバイスから切断します"""
         if self.ser and self.ser.is_open:
             self.ser.close()
             logger.info(f"{self.log_tag} Connection closed")
@@ -86,8 +90,10 @@ class StageController:
         self.is_connected = False
     
     def _send_command(self, cmd: str):
-        #コマンド送信とレスポンス受信（CR+LF終端）
-        # GSC-01の通信プロトコルは、コマンドの末尾に必ず改行コード(\r\n)が必要です。
+        """
+        【内部用】デバイスにコマンドを送信し、レスポンスを受信します（自動でCR+LF終端）。
+        GSC-01の通信プロトコルは、コマンドの末尾に必ず改行コード(\r\n)が必要です。
+        """
         if self.is_mock_env:
             logger.debug(f"{self.log_tag} Send: {cmd}")
             return "OK"
@@ -114,21 +120,20 @@ class StageController:
     
     #---座標変換---
     
-    # 角度[deg] -> パルス[pulse] 変換
-    # round()を使う理由:
-    # int()で切り捨てると、0.0024度のような微小移動が「0パルス」になってしまい動かないため、四捨五入します。
     def _deg_to_pulse(self, deg: float) -> int:
+        """
+        角度[deg]をパルス数[pulse]に変換します。微小移動時（0.0024度のような角度の移動）の無視を防ぐため四捨五入(round)します。
+        """
         return int(round(deg * self.pulses_per_degree)) #四捨五入してパルス数を整数化
     
-    #パルスを角度に変換
     def _pulse_to_deg(self, pulse: int) -> float:
+        """パルス数[pulse]を角度[deg]に変換します"""
         return float(pulse) / self.pulses_per_degree
     
     #---操作メソッド---
     
-    #原点復帰
     def home(self):
-        # H:1 コマンド（機械原点復帰命令）
+        """H:1 コマンド（機械原点復帰）を送信します"""
         logger.info(f"{self.log_tag} Homing...")
         
         if self.is_mock_env:
@@ -146,8 +151,8 @@ class StageController:
             logger.error(f"{self.log_tag} Homing Error. Resp: {resp}")
             return False
     
-    #絶対移動
     def move_absolute(self, target_angle: float):
+        """絶対角度[deg]を指定してステージを移動させます（移動量設定後、駆動開始）"""
         # GSC-01の仕様: 移動するには「移動量の設定(Aコマンド)」と「駆動開始(Gコマンド)」の2段階が必要
         
         target_pulse = self._deg_to_pulse(target_angle)
@@ -181,8 +186,8 @@ class StageController:
             logger.error(f"{self.log_tag} Move Abs Command Failed: {resp_g}")
             return False
     
-    #相対移動
     def move_relative(self, delta_angle: float):
+        """現在の位置から指定した角度[deg]だけ相対移動させます"""
         # M:1+Pxxx -> G:（相対移動パルス数設定命令 -> 駆動命令）
         delta_pulse = self._deg_to_pulse(delta_angle)
         
@@ -220,8 +225,8 @@ class StageController:
             logger.error(f"{self.log_tag} Move Rel Command Failed: {resp_g}")
             return False
     
-    #スピード指定
     def set_speed(self, min_pps: int, max_pps: int, accel_time_ms: int):
+        """モーターの起動速度、最高速度、加減速時間を設定します"""
         # D:（速度設定命令）
         # 内部設定値を更新（再接続時などに再適用できるようにするため保持しておく）
         self.speed_min_pps = min_pps
@@ -239,8 +244,8 @@ class StageController:
         
         return resp == "OK"
     
-    #停止
     def stop(self, immediate: bool = False):
+        """ステージの移動を停止します (immediate=True で非常停止)"""
         # L:1 (減速停止) or L:E (非常停止/即停止)
         logger.info(f"{self.log_tag} Stopping... (Immediate={immediate})")
         if self.is_mock_env:
@@ -257,14 +262,19 @@ class StageController:
             logger.error(f"{self.log_tag} Stop Command Failed: {resp}")
             return False
 
-    #状態取得(戻り値: 現在の角度（float）, Busyかどうか（bool）)
     def get_status(self) -> Tuple[float, bool]:
-        # Q:（ステータス確認コマンド）
-        # レスポンスフォーマット: "座標値, ACK1, ACK2, ACK3"
-        # 例: "+00018000,K,K,B"
-        #   - 座標値: パルス数
-        #   - ACK3: 'B'=Busy(移動中), 'R'=Ready(停止中)
+        """
+        Q:（ステータス確認コマンド）を送信し、現在の座標とBusy状態を取得します。
         
+        レスポンスフォーマット: "座標値, ACK1, ACK2, ACK3"
+        
+        例: "+00018000,K,K,B"
+          - 座標値: パルス数
+          - ACK3: 'B'=Busy(移動中), 'R'=Ready(停止中)
+        
+        Returns:
+            Tuple[float, bool]: (現在の角度[deg], 移動中(Busy)かどうか)
+        """
         if self.is_mock_env:
             return self._pulse_to_deg(self._mock_pulse), False
         

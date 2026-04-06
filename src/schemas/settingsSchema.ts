@@ -5,20 +5,39 @@ import { z } from "zod";
 // "PNG" | "TIFF" | "JPEG" という具体的な値の型（リテラル型）として扱われます。
 export const ImageFormats = ["PNG", "TIFF", "JPEG"] as const;
 
+// 録画フォーマットの選択肢
+export const RecordFormats = ["16-bit TIFF", "8-bit TIFF"] as const;
+
+// カメラのカラーモードの選択肢
+export const CameraModes = ["Monochrome", "Color"] as const;
+
 export const settingsSchema = z.object({
     // --- File I/O Settings ---
     outputDirectory: z
         .string()
         .min(1, { message: "保存先ディレクトリを入力してください" }), // 空文字を許容しない
 
-    filenamePrefix: z
+    askSavePath: z.boolean().default(false),
+
+    snapshotPrefix: z
         .string()
-        .default("scan_")
-        // refine: カスタム検証ロジック。ここでは正規表現を使ってファイル名に使えない文字を弾いています。
-        .refine((val) => /^[a-zA-Z0-9_-]+$/.test(val), {
-            message: "ファイル名には英数字、ハイフン、アンダースコアのみ使用できます",
+        .default("snapshot_")
+        // refine: 空文字(*)も許容しつつ、ファイル名に使えない記号を弾きます。
+        .refine((val) => /^[a-zA-Z0-9_-]*$/.test(val), {
+            message: "英数字、ハイフン、アンダースコアのみ使用できます",
+        }),
+
+    recordPrefix: z
+        .string()
+        .default("record_")
+        .refine((val) => /^[a-zA-Z0-9_-]*$/.test(val), {
+            message: "英数字、ハイフン、アンダースコアのみ使用できます",
         }),
     imageFormat: z.enum(ImageFormats).default("TIFF"),
+
+    recordFormat: z.enum(RecordFormats).default("16-bit TIFF"),
+    autoConvertMp4: z.boolean().default(false),
+    keepRawTiff: z.boolean().default(true),
 
     // --- Motion Settings (Stage) ---
     // バックエンドのデフォルト値: Min=500, Max=5000, Accel=200
@@ -46,6 +65,7 @@ export const settingsSchema = z.object({
         .default(200),
 
     // --- Camera Defaults ---
+    cameraMode: z.enum(CameraModes).default("Monochrome"),
     defaultExposure: z.coerce.number().min(0.01).max(1000).default(10.0),
     defaultGain: z.coerce.number().min(0).max(100).default(50),
 })

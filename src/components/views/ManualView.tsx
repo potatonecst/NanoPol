@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store/useAppStore";
-import { stageApi } from "@/api/client";
+import { stageApi, systemApi } from "@/api/client";
 import { manualControlSchema, angleInputSchema } from "@/schemas/manualControlSchema";
 import { z } from "zod";
 
@@ -21,6 +21,17 @@ import {
 } from "lucide-react";
 import { CameraPanel } from "../shared/CameraPanel";
 
+/**
+ * マニュアル操作画面 (Manual View) コンポーネント
+ *
+ * ユーザーがステージの直接操作（ステップ移動、絶対・相対移動、原点復帰）や、
+ * 単純なスイープ測定（指定範囲の連続駆動と自動録画）を行うための画面です。
+ *
+ * 【主な機能】
+ * - Step / Absolute: 任意の角度への移動。
+ * - Sweep: StartからEndへの等速移動。助走区間の自動計算や動画の自動録画タイマー機能を含む。
+ * - Polling: ステージの動作中はバックエンドを監視し、UIをロックして二重操作を防ぐ。
+ */
 export function ManualView() {
     const {
         isStageConnected,
@@ -41,10 +52,13 @@ export function ManualView() {
         stageSettings: state.stageSettings,
     })));
 
-    // 停止シグナル管理用Ref
-    // useStateではなくuseRefを使う理由:
-    // 非同期処理（ループ中）から参照する際、useStateだと古い値（クロージャ）を参照してしまうことがありますが、
-    // useRef.current は常に最新の値を参照できるため、割り込み停止フラグに適しています。
+    /**
+     * 停止シグナル管理用フラグ (Ref)
+     * 
+     * 【useStateではなくuseRefを使う理由】
+     * 非同期処理（ポーリングのループ中など）から参照する際、useStateだと古い値（クロージャ）を参照してしまうことがありますが、
+     * `useRef.current` はメモリ上の同じ場所を直接見に行くため、常に最新の値を参照でき、割り込み停止フラグに最適です。
+     */
     const stopSignal = useRef(false);
 
     //Step Move用
@@ -61,8 +75,8 @@ export function ManualView() {
     const [autoRecord, setAutoRecord] = useState(false); // 自動録画のON/OFF
 
     // タイマー管理用Ref (中断時にクリアするため)
-    const recordStartTimer = useRef<NodeJS.Timeout | null>(null);
-    const recordStopTimer = useRef<NodeJS.Timeout | null>(null);
+    const recordStartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const recordStopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Zodによるバリデーション
     const stepVal = angleInputSchema.safeParse(moveStep);
@@ -71,14 +85,21 @@ export function ManualView() {
     const sweepEndVal = angleInputSchema.safeParse(sweepEnd);
     const sweepSpeedVal = manualControlSchema.shape.sweepSpeed.safeParse(sweepSpeed);
 
-    // 【重要】ステージが停止するまで待機する関数（ポーリング）
-    // JavaScriptはシングルスレッドなので、while(true)でループすると画面がフリーズしてしまいます。
-    // そのため、setIntervalを使って「0.5秒ごとにバックエンドに問い合わせる」処理をPromiseで包みます。
-    // 
-    // 【改善点】堅牢性の向上
-    // 1. タイムアウト処理: 装置トラブル等で永遠にBusyの場合に備え、最大待機時間を設けます。
-    //    Sweep測定など時間がかかる動作もあるため、デフォルトを60秒→300秒(5分)に延長しました。
-    // 2. エラーリトライ: 一瞬の通信エラーで即座に失敗扱いにならないよう、連続エラーを数回許容します。
+    /**
+     * ステージの動作完了を監視（ポーリング）する非同期関数。
+     *
+     * バックエンドの `/stage/position` APIを定期的に呼び出し、`is_busy` フラグが false になるまで待機します。
+     * JavaScriptのシングルスレッド環境でUIをフリーズさせないために `Promise` と `setInterval` を使用しています。
+     * 
+     * （JavaScriptはシングルスレッドなので、while(true)でループすると画面がフリーズしてしまいます。そのため、setIntervalを使って「0.5秒ごとにバックエンドに問い合わせる」処理をPromiseで包みます。）
+     * 
+     * タイムアウト処理: 装置トラブル等で永遠にBusyの場合に備え、最大待機時間を設けます。
+     * 
+     * エラーリトライ: 一瞬の通信エラーで即座に失敗扱いにならないよう、連続エラーを数回許容します。
+     * 
+     * @param timeoutMs - タイムアウトまでの最大待機時間（ミリ秒）。Sweep測定などの長時間の動作も考慮し、デフォルトは300秒(5分)。
+     * @returns 動作完了時（is_busyがfalse）に resolve される Promise。通信エラーの連続やタイムアウト時は reject されます。
+     */
     const waitForIdle = async (timeoutMs = 300000) => { // デフォルト5分(300000ms)
         const startTime = Date.now();
         let errorCount = 0;
@@ -143,7 +164,8 @@ export function ManualView() {
                     await waitForIdle();
 
                     setIsSystemBusy(false);
-                    toast.success("Operation Finished (Recovered")
+                    toast.success("Operation Finished (Recovered)");
+                    systemApi.postLogs("INFO", "Operation Finished (Recovered)").catch((e) => console.debug("※ログ送信も失敗しました:", e));
                 }
             } catch (e) {
                 console.error("Status sync failed", e);
@@ -152,9 +174,15 @@ export function ManualView() {
         syncStatus();
     }, [isStageConnected]) //接続状態が変わったときもチェック
 
-    // 移動処理の共通ラッパー関数
-    // 全ての移動操作（Step, Absolute, Home）はこれを経由させることで、
-    // 「UIロック(isSystemBusy)」「エラーハンドリング」「完了通知」を共通化しています。
+    /**
+     * 各種移動操作の共通ラッパー関数。
+     *
+     * 移動コマンドの実行、UIのロック（Busy状態）、動作完了の待機(waitForIdle)、
+     * および成功・失敗・中断時のユーザー通知（トースト）処理を一元管理します。
+     *
+     * @param actionName - ログやトーストに表示するアクション名（例: "Step Move", "Homing"）
+     * @param moveFn - 実際にバックエンドのAPIを呼び出して移動を開始させる非同期関数
+     */
     const performMove = async (actionName: string, moveFn: () => Promise<void>) => {
         if (isSystemBusy) return; // 既に動いている場合は二重実行防止
         setIsSystemBusy(true); // UI全体をロック（ボタンを押せなくする）
@@ -166,18 +194,24 @@ export function ManualView() {
 
             if (stopSignal.current) {
                 toast.warning(`${actionName} Stopped`);
+                systemApi.postLogs("WARNING", `${actionName} Stopped by user`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             } else {
                 toast.success(`${actionName} Complete`);
+                systemApi.postLogs("INFO", `${actionName} Complete`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             }
         } catch (e) {
             console.error(e);
             toast.error(`${actionName} Failed`);
+            systemApi.postLogs("ERROR", `${actionName} Failed: ${e}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
             setIsSystemBusy(false); // 処理が終わったら（成功でも失敗でも）ロック解除
         }
     }
 
-    // 相対移動（Jog操作）: 現在地から指定角度だけ動かす
+    /**
+     * 相対移動（Jog操作）
+     * @param direction - +1 ならプラス方向、-1 ならマイナス方向に移動します。
+     */
     const rotateStage = (direction: 1 | -1) => {
         performMove("Step Move", async () => {
             const target = Number(moveStep) * direction;
@@ -187,7 +221,9 @@ export function ManualView() {
         })
     }
 
-    // 原点復帰（Homing）: 機械的な0点を探しに行く
+    /**
+     * 原点復帰（Homing）: 機械的な0点（センサー位置）を探しに行きます。
+     */
     const goOrigin = () => {
         performMove("Homing", async () => {
             toast.info("Homing...");
@@ -197,7 +233,9 @@ export function ManualView() {
         })
     }
 
-    // 絶対移動: 指定した角度へ移動する
+    /**
+     * 絶対移動: 入力された特定の角度（Target）へ直接移動します。
+     */
     const handleMoveTo = async () => {
         const val = parseFloat(targetAngle);
         if (isNaN(val)) return;
@@ -209,8 +247,19 @@ export function ManualView() {
         })
     }
 
-    // Sweep操作（Start -> Endへ連続移動）
-    // 測定シーケンスの簡易版です。
+    /**
+     * スイープ動作（連続移動）の実行シーケンス。
+     *
+     * 指定された開始角度(Start)から終了角度(End)まで、指定された速度(Speed)で等速移動します。
+     *
+     * 【内部シーケンス】
+     * 1. 速度と入力値のバリデーション（ハードウェアのPPS制約に合わせて丸め込み）。
+     * 2. 等速移動を担保するための「助走位置（Approach Margin）」の物理計算。
+     * 3. 助走位置への移動と待機。
+     * 4. （自動録画ONの場合）等速移動区間に合わせたカメラの録画開始・停止タイマーのセット。
+     * 5. 終了位置への移動（スイープ本番）と待機。
+     * 6. 完了後、速度設定をデフォルトに復帰させる。
+     */
     const handleSweep = async () => {
         const { pulsesPerDegree, minSpeedPPS, accelTimeMS, maxSpeedLimitPPS } = stageSettings;
 
@@ -235,6 +284,7 @@ export function ManualView() {
 
         if (!sweepStartVal.success || !sweepEndVal.success || !speedResult.success) {
             toast.error("Invalid input values");
+            systemApi.postLogs("ERROR", "Sweep validation failed: Invalid input values").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             return;
         }
 
@@ -256,6 +306,7 @@ export function ManualView() {
             // Zodで補正された場合は通知
             if (isAdjusted) {
                 toast.warning(`Speed adjusted to ${rawPPS} PPS to match 100PPS unit.`);
+                systemApi.postLogs("WARNING", `Sweep speed adjusted to ${rawPPS} PPS to match 100PPS unit.`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             }
 
             // 安全リミット (Zodで計算済みのPPSを使用し、上限チェックのみ行う)
@@ -264,6 +315,7 @@ export function ManualView() {
             const actualSpeedDeg = safePPS / pulsesPerDegree;
             //速度設定
             toast.info(`Setting speed to ${actualSpeedDeg.toFixed(2)} deg/s (${safePPS} PPS)`);
+            systemApi.postLogs("INFO", `Setting speed to ${actualSpeedDeg.toFixed(2)} deg/s (${safePPS} PPS)`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             await stageApi.setSpeed(minSpeedPPS, safePPS, accelTimeMS);
 
             // 【物理計算】助走距離（Approach Margin）の算出
@@ -301,12 +353,14 @@ export function ManualView() {
             // 助走開始位置（actualStart）へ移動します。
             const distToStart = Math.abs(actualStart - currentAngle); //タイムアウトの計算のために、移動距離（角度）を計算
             toast.info(`Moving to Approach Position (${actualStart.toFixed(4)}°)...`);
+            systemApi.postLogs("INFO", `Sweep: Moving to Approach Position (${actualStart.toFixed(4)}°)`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             await stageApi.moveAbsolute(actualStart);
             await waitForIdle(calcTimeout(distToStart)); // 計算したタイムアウト値を使用
 
             // 途中でストップボタンが押されていたら、ここで中断
             if (stopSignal.current) {
                 toast.warning("Sweep Cancelled by User");
+                systemApi.postLogs("WARNING", "Sweep Cancelled by User during approach").catch((e) => console.debug("※ログ送信も失敗しました:", e));
                 return;
             }
 
@@ -323,6 +377,7 @@ export function ManualView() {
                 const sweepDurationMS = (sweepDist / actualSpeedDeg) * 1000; //録画継続時間
 
                 toast.info(`Auto Rec: Starts in ${(delayToStartMS / 1000).toFixed(2)}s`);
+                systemApi.postLogs("INFO", `Sweep Auto Rec scheduled: Starts in ${(delayToStartMS / 1000).toFixed(2)}s`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
 
                 recordStartTimer.current = setTimeout(() => {
                     if (!stopSignal.current) setIsRecording(true);
@@ -334,6 +389,7 @@ export function ManualView() {
             }
 
             toast.info(`Sweeping from ${start}° to ${end}° (Speed: ${actualSpeedDeg.toFixed(2)} deg/s)...`);
+            systemApi.postLogs("INFO", `Sweeping from ${start}° to ${end}° (Speed: ${actualSpeedDeg.toFixed(2)} deg/s)`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             // 2. エンド位置へ移動 (Sweep本番)
             // 助走終了位置まで一気に移動することで、Start~End間は等速で通過します。
             const distSweep = Math.abs(actualEnd - actualStart); //タイムアウト計算に使用する移動距離（角度）
@@ -342,12 +398,15 @@ export function ManualView() {
 
             if (stopSignal.current) {
                 toast.warning("Sweep Stopped mid-way");
+                systemApi.postLogs("WARNING", "Sweep Stopped mid-way by user").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             } else {
                 toast.success("Sweep All Finished");
+                systemApi.postLogs("INFO", "Sweep All Finished successfully").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             }
         } catch (e) {
             console.error(e);
             toast.error("Sweep interrupted or failed");
+            systemApi.postLogs("ERROR", `Sweep interrupted or failed: ${e}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
             setIsSweeping(false);
             setIsSystemBusy(false);
@@ -368,7 +427,10 @@ export function ManualView() {
         }
     }
 
-    // 減速停止（Stop）: モーターを安全に止める
+    /**
+     * 減速停止（Stop）
+     * モーターのパルス出力を徐々に落とし、安全に停止させます。実行中のシーケンスや録画予約もキャンセルします。
+     */
     const handleStop = async () => {
         try {
             stopSignal.current = true; // 停止ボタンが押されたことを記録（waitForIdle後の処理をキャンセルするため）
@@ -381,26 +443,34 @@ export function ManualView() {
             const res = await stageApi.stop(false); // immediate = false (減速停止)
             setCurrentAngle(res.current_angle);
             toast.info("Stopping...");
+            systemApi.postLogs("INFO", "Manual deceleration stop executed").catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (e) {
             console.error(e);
             toast.error("Stop Command Failed");
+            systemApi.postLogs("ERROR", `Stop Command Failed: ${e}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         }
     }
 
-    // 非常停止（Emergency Stop）: モーターを即座に切る
+    /**
+     * 非常停止（Emergency Stop）
+     * ハードウェアレベルで即座にモーターの動作をカットします。急停止によりパルスがズレるため、再Homingが必要です。
+     */
     const handleEmergencyStop = async () => {
         try {
             stopSignal.current = true;
             const res = await stageApi.stop(true); // immediate = true (即停止)
             setCurrentAngle(res.current_angle);
             toast.info("EMERGENCY STOP EXECUTED");
-            setTimeout(() => toast.warning("Please re-home the stage."), 1000) //原点復帰を促すtoastを1000 ms後に
+            systemApi.postLogs("WARNING", "EMERGENCY STOP EXECUTED").catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            setTimeout(() => {
+                toast.warning("Please re-home the stage.");
+                systemApi.postLogs("INFO", "Prompted user to re-home after emergency stop").catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            }, 1000) //原点復帰を促すtoastを1000 ms後に
         } catch (e) {
             console.error(e);
+            systemApi.postLogs("ERROR", `Emergency Stop Command Failed: ${e}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         }
     }
-
-    // 内部コンポーネント定義を削除（関数の外へ移動するか、直接記述）
 
     return (
         // 全体レイアウト: 画面いっぱいに広がり、モバイルでは縦並び、デスクトップでは横並びになるフレックスコンテナ
@@ -698,7 +768,10 @@ export function ManualView() {
     )
 }
 
-// コンポーネント定義を関数の外に移動
+/**
+ * ローカルの補助コンポーネント: ツールチップ付きボタンのラッパー
+ * マウスホバー時に説明文(label)をポップアップ表示します。
+ */
 const TooltipButton = ({ label, children }: { label: string, children: React.ReactNode }) => (
     <Tooltip>
         <TooltipTrigger asChild>

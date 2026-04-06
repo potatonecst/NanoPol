@@ -23,7 +23,14 @@ import { SettingsView } from "./components/views/SettingsView";
 
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
+import { cameraApi, systemApi } from "./api/client";
+import { save } from "@tauri-apps/plugin-dialog";
+import { readTextFile, writeTextFile, mkdir, BaseDirectory, exists } from "@tauri-apps/plugin-fs";
+import { join } from "@tauri-apps/api/path";
 import { LogPanel } from "./components/shared/LogPanel";
+
+// 共通の定数ファイルから設定ファイル名をインポート
+import { CONFIG_FILENAME, DEFAULT_SETTINGS, getDefaultOutputDirectory } from "./constants/constants";
 
 function App() {
   const {
@@ -56,6 +63,47 @@ function App() {
     // [isDark] は依存配列です。この中の値が変化した時だけ、このuseEffectの中身が実行されます。
   }, [isDark]);
 
+  // 【アプリ起動時の初期設定同期】
+  // アプリが起動した直後（最初の1回だけ）に、保存されている設定をバックエンドに送信します。
+  // これをやらないと、Settings画面を開くまでの間、バックエンドがデフォルトの保存先(backend直下)を使ってしまいます。
+  useEffect(() => {
+    const syncInitialSettings = async () => {
+      try {
+        let settings;
+        const configExists = await exists(CONFIG_FILENAME, { baseDir: BaseDirectory.AppConfig });
+
+        if (configExists) {
+          const contents = await readTextFile(CONFIG_FILENAME, { baseDir: BaseDirectory.AppConfig });
+          settings = JSON.parse(contents);
+        } else {
+          // 【初回起動時】config.jsonが存在しない場合、デフォルト設定を生成して保存する
+          const defaultPath = await getDefaultOutputDirectory();
+
+          settings = {
+            // constantsからデフォルト設定を展開（コピー）し、パスだけ動的に設定する
+            ...DEFAULT_SETTINGS,
+            outputDirectory: defaultPath || "",
+          };
+
+          // AppConfigディレクトリがなければ作成し、デフォルトのconfig.jsonを書き込む
+          if (!(await exists("", { baseDir: BaseDirectory.AppConfig }))) {
+            await mkdir("", { baseDir: BaseDirectory.AppConfig, recursive: true });
+          }
+          await writeTextFile(CONFIG_FILENAME, JSON.stringify(settings, null, 2), { baseDir: BaseDirectory.AppConfig });
+          console.log("Created default config.json at AppConfig directory.");
+        }
+
+        // バックエンドに設定（読み込んだもの、または新規作成したもの）を適用
+        await systemApi.updateSettings(settings);
+        systemApi.postLogs("INFO", "Settings synced to backend on startup.").catch(() => { });
+      } catch (error) {
+        console.warn("Failed to sync settings on startup:", error);
+      }
+    };
+
+    syncInitialSettings();
+  }, []); // 空の依存配列により、マウント時のみ実行
+
   // 【安全装置】カメラ切断時の録画停止処理
   // 録画中にケーブルが抜けるなどしてカメラ接続が切れた場合、
   // 録画中フラグが立ったままだとUIと内部状態が矛盾するため、強制的にOFFにします。
@@ -70,16 +118,116 @@ function App() {
   }, [isCameraConnected, isRecording, setIsRecording]);
 
   // 録画ボタンが押された時の処理
-  const toggleRecording = () => {
-    if (isRecording) {
-      console.log("Stop Recording...")
-      // TODO: ここにバックエンド(Python/Rust)への録画停止リクエストを実装予定
-    } else {
-      console.group("Start Recording...")
-      // TODO: ここにバックエンドへの録画開始リクエストを実装予定
+  const toggleRecording = async () => {
+    try {
+      if (isRecording) {
+        // 録画停止リクエスト
+        const res = await cameraApi.stopRecording();
+
+        // 成功したら状態をOFFにする
+        setIsRecording(false);
+        toast.success(`Recording stopped: ${res.filepath}`);
+        systemApi.postLogs("INFO", `Recording stopped: ${res.filepath}`).catch(() => { });
+      } else {
+        // 録画開始リクエスト
+        const res = await cameraApi.startRecording();
+
+        // 成功したら状態をONにする
+        setIsRecording(true);
+        toast.success(`Recording started: ${res.filepath}`);
+        systemApi.postLogs("INFO", `Recording started: ${res.filepath}`).catch(() => { });
+      }
+    } catch (error) {
+      console.error("Recording error:", error);
+      // エラーが起きた場合は状態を反転させず、警告を出す
+      const action = isRecording ? "stop" : "start";
+      toast.error(`Failed to ${action} recording`);
+      systemApi.postLogs("ERROR", `Failed to ${action} recording: ${error}`).catch(() => { });
     }
-    // 状態を反転させる（true -> false, false -> true）
-    setIsRecording(!isRecording);
+  };
+
+  /**
+   * スナップショット撮影ボタンのハンドラー
+   * 
+   * 1. バックエンドに撮影リクエスト（takeSnapshot）を送信します。
+   * 2. 設定(askSavePath)がOFFの場合、バックエンドが自動で保存し `saved` ステータスを返すので、完了通知を出します。
+   * 3. 設定(askSavePath)がONの場合、バックエンドはメモリに画像を保持して `pending` を返すので、
+   *    フロントエンド側でOSの保存ダイアログを開き、ユーザーが指定したパスをバックエンドに送信して保存を確定させます。
+   */
+  const handleSnapshot = async () => {
+    if (!isCameraConnected) return; // カメラ未接続時は何もしない
+
+    try {
+      // バックエンドに撮影を指示
+      const res = await cameraApi.takeSnapshot();
+
+      if (res.status === "saved") {
+        toast.success(`Snapshot saved: ${res.filepath}`);
+        systemApi.postLogs("INFO", `Snapshot saved automatically to ${res.filepath}`).catch(() => { });
+      } else if (res.status === "pending") {
+        // 1. 設定ファイル(config.json)から現在の設定を読み込む
+        // Zustand等のグローバル状態には保存先設定を持たせていないため、TauriのAPIで直接OSのファイルシステムから読み取ります。
+        // BaseDirectory.AppConfig を指定することで、SettingsViewで保存した時と全く同じ
+        // OS標準のアプリ設定フォルダ（Windows: AppData/Roaming/nanopol, macOS: Library/Application Support/nanopol 等）
+        // にある config.json を自動的に参照します。
+        let defaultDir = "";
+        let prefix = "snapshot_";
+        let ext = "tif";
+        let formatName = "TIFF Image";
+
+        try {
+          // TauriのセキュアなファイルアクセスAPIを使用します。
+          // baseDir: BaseDirectory.AppConfig を指定することで、OS標準のアプリ設定フォルダを起点とし、
+          // その中にある CONFIG_FILENAME (config.json) を読み込みます。
+          // これにより、OSのパス区切り文字の違いやアクセス権限の問題をTauriが自動で解決してくれます。
+          const contents = await readTextFile(CONFIG_FILENAME, { baseDir: BaseDirectory.AppConfig });
+          const settings = JSON.parse(contents);
+
+          defaultDir = settings.outputDirectory || "";
+          prefix = settings.snapshotPrefix || "snapshot_";
+
+          // 設定画面で選ばれている Image Format に応じて、強制的に使用する拡張子を1つに絞ります。
+          // これにより、バックエンド（Python）が生成する画像形式と、保存されるファイルの拡張子が一致することを保証します。
+          if (settings.imageFormat === "JPEG") { ext = "jpg"; formatName = "JPEG Image"; }
+          else if (settings.imageFormat === "PNG") { ext = "png"; formatName = "PNG Image"; }
+        } catch (e) {
+          console.warn("Could not read config.json, using defaults.", e);
+        }
+
+        // 2. タイムスタンプ文字列の生成 (例: 20260404_185733)
+        const now = new Date();
+        const timestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
+        const defaultFilename = `${prefix}${timestamp}.${ext}`;
+
+        // 3. Tauriのネイティブ保存ダイアログを開く
+        const filePath = await save({
+          title: "Save Snapshot",
+          // join関数を使うことで、Mac(/)やWindows(\)の区切り文字の違いを気にせず安全にパスを結合できます。
+          defaultPath: defaultDir ? await join(defaultDir, defaultFilename) : defaultFilename,
+          filters: [{
+            // filtersに複数の拡張子を渡すとOSのダイアログでユーザーが自由に変更できてしまうため、
+            // ここでは config.json から読み取った1つの拡張子（ext）だけを渡し、フォーマットをロックします。
+            name: formatName,
+            extensions: [ext] // ここで拡張子を一つに絞ることで、OSのダイアログでも他の形式を選べなくなります
+          }]
+        });
+
+        if (filePath) {
+          // ユーザーがパスを選択したら、バックエンドに送って保存を実行
+          const saveRes = await cameraApi.saveSnapshot(filePath);
+          toast.success("Snapshot saved successfully");
+          systemApi.postLogs("INFO", `Snapshot saved to ${saveRes.filepath} via dialog`).catch(() => { });
+        } else {
+          // ユーザーがダイアログで「キャンセル」を押した場合
+          toast.info("Snapshot saving cancelled");
+          systemApi.postLogs("INFO", "User cancelled snapshot save dialog").catch(() => { });
+        }
+      }
+    } catch (error) {
+      console.error("Snapshot error:", error);
+      toast.error("Failed to take snapshot");
+      systemApi.postLogs("ERROR", `Failed to take snapshot: ${error}`).catch(() => { });
+    }
   };
 
   // 現在のモード（currentMode）に応じて、メインエリアに表示するコンポーネントを切り替える関数
@@ -193,6 +341,7 @@ function App() {
                 className="gap-2 flex md:w-28 justify-center"
                 disabled={!isCameraConnected}
                 aria-label="Snapshot"
+                onClick={handleSnapshot}
               >
                 <Camera className="size-4" />
                 <span className="hidden md:flex">Snapshot</span>
