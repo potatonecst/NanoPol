@@ -35,6 +35,11 @@
     ],
     "externalBin": [
       "bin/backend"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
   }
 }

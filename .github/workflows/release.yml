@@ -92,7 +92,11 @@ jobs:
         with:
           tagName: v__VERSION__ # package.jsonのバージョン(例: 0.1.0)を読み取って自動で「v0.1.0」というタグを作ります
           releaseName: 'Version __VERSION__ Release' # リリースのタイトル
-          releaseBody: '最新のリリースです。下の `nanopol_X.X.X_x64_en-US.msi` をダウンロードしてインストールしてください。'
+          releaseBody: |
+            最新のリリースです。
+            基本的には `.exe` のインストーラーをご利用ください。
+            - 通常のインストール（推奨）: `nanopol___VERSION___x64-setup.exe`
+            - コマンド経由での一括・サイレントインストール用: `nanopol___VERSION___x64_en-US.msi`
           # true にしておくと、ビルド完了後いきなり公開されず「下書き(Draft)」として保存されます。
           # 開発者がGitHubの画面でダウンロードして動作確認し、問題なければ「Publish」ボタンを押すという安全な運用ができます。
           releaseDraft: true
