@@ -21,7 +21,6 @@ import { DevicesView } from "./components/views/DevicesView";
 import { ManualView } from "./components/views/ManualView";
 import { SettingsView } from "./components/views/SettingsView";
 
-import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { cameraApi, systemApi } from "./api/client";
 import { save } from "@tauri-apps/plugin-dialog";
