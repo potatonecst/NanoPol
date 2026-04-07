@@ -1,6 +1,12 @@
 name: Build and Release Windows App
 
 # ==========================================
+# 【環境変数】Node.js 20 の非推奨警告を消すための設定
+# ==========================================
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# ==========================================
 # 【発動条件】この自動ビルドがいつ走るかの設定
 # ==========================================
 on:
@@ -23,7 +29,7 @@ jobs:
     steps:
       # 【Step 0】まずはクラウド上のWindows PCに、GitHubから最新のソースコードをダウンロードします。
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # ==========================================
       # 【Step 1】Pythonバックエンドのビルド
@@ -31,15 +37,14 @@ jobs:
       # 超高速なPythonパッケージマネージャー「uv」をインストールします。
       # enable-cache: true により、2回目以降のビルドが早くなります。
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
+        uses: astral-sh/setup-uv@v8.0.0
+        # GitHubのキャッシュ障害(400エラー)を回避するため一時的にキャッシュ無効化
 
       # クラウド上のWindows PCに指定したバージョンのPythonをインストールします。
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: '3.13'
 
       # バックエンドを動かすために必要なライブラリ(FastAPI, OpenCVなど)をインストールします。
       - name: Install Python dependencies
@@ -69,16 +74,16 @@ jobs:
       # ==========================================
       # Reactなどの画面を作るためのパッケージマネージャー「pnpm」をインストールします。
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
         with:
           version: 9
 
       # pnpmを動かすためのNode.js環境をインストールします。
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
-          cache: 'pnpm'
+          node-version: '24'
+          # GitHubのキャッシュ障害(400エラー)を回避するため一時的にキャッシュ無効化
 
       # package.json に書かれているReactやTailwindなどのライブラリをインストールします。
       - name: Install frontend dependencies
