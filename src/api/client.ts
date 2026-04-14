@@ -98,7 +98,7 @@ export const stageApi = {
 
     // 現在の角度と、移動中（Busy）かどうかのステータスを取得します（ポーリング用）
     getPosition: () =>
-        request<{ status: string, current_angle: number, is_busy?: boolean }>("/stage/position", { method: "GET" }),
+        request<{ status: string, current_angle: number, is_busy: boolean, is_measuring: boolean }>("/stage/position", { method: "GET" }),
 }
 
 // ==========================================
@@ -164,7 +164,7 @@ export const cameraApi = {
 export const systemApi = {
     // 起動時にバックエンドの生存確認と各デバイスの接続状態を取得します
     health: () =>
-        request<{ status: string }>("/health"),
+        request<{ status: string, stage_connected: boolean, camera_connected: boolean, mode: string }>("/health"),
 
     // 全デバイスの接続を強制切断し、システムを初期状態に戻します
     reset: () =>

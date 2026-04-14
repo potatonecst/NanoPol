@@ -153,6 +153,12 @@ class StageController:
     
     def move_absolute(self, target_angle: float):
         """絶対角度[deg]を指定してステージを移動させます（移動量設定後、駆動開始）"""
+        
+        # ソフトリミット（安全装置）: 絶対角度は 0.0 〜 360.0度 の範囲内のみ許可
+        if not (0.0 <= target_angle <= 360.0):
+            logger.error(f"{self.log_tag} Move Abs Error: Target angle {target_angle} is out of bounds (0-360).")
+            return False
+            
         # GSC-01の仕様: 移動するには「移動量の設定(Aコマンド)」と「駆動開始(Gコマンド)」の2段階が必要
         
         target_pulse = self._deg_to_pulse(target_angle)
@@ -188,6 +194,20 @@ class StageController:
     
     def move_relative(self, delta_angle: float):
         """現在の位置から指定した角度[deg]だけ相対移動させます"""
+        
+        # ソフトリミット（安全装置）: 1回の相対移動は -360.0 〜 +360.0度 の範囲内のみ許可（誤入力での無限回転防止）
+        if not (-360.0 <= delta_angle <= 360.0):
+            logger.error(f"{self.log_tag} Move Rel Error: Delta angle {delta_angle} is too large. Must be between -360 and 360.")
+            return False
+            
+        # 累計パルスの上限超過を防ぐための安全装置（約80周でストップ）
+        # 動かす前に「今の角度」を聞き、予測される移動先の角度を計算する
+        current_angle, _ = self.get_status()
+        predicted_angle = current_angle + delta_angle
+        if abs(predicted_angle) > 30000.0:
+            logger.error(f"{self.log_tag} Move Rel Error: Cumulative angle {predicted_angle:.1f} exceeds safe limit of ±30000 deg. Please Home the stage.")
+            return False
+            
         # M:1+Pxxx -> G:（相対移動パルス数設定命令 -> 駆動命令）
         delta_pulse = self._deg_to_pulse(delta_angle)
         

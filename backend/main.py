@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from serial.tools import list_ports
 import sys
 import os
+import asyncio
 
 from utils.logger import logger, log_buffer
 from devices.stage_controller import StageController
@@ -16,6 +17,34 @@ from devices.camera_controller import CameraController
 # これにより、どのAPIエンドポイントから呼び出されても、常に同じハードウェア状態を操作・参照できます。
 stage = StageController()
 camera = CameraController()
+
+class SystemState:
+    """フロントエンドへ即座に返すための状態キャッシュ（メモリ）"""
+    def __init__(self):
+        self.current_angle = 0.0
+        self.is_busy = False       # ハードウェア: ステージが物理的に移動・回転中か
+        self.is_measuring = False  # ソフトウェア: Sweep等の自動測定シーケンスが実行中か
+
+app_state = SystemState()
+
+async def stage_monitor_loop():
+    """【常時監視タスク】0.1秒ごとにステージの角度を聞き、キャッシュとカメラに最新値を配る"""
+    logger.info("[SYSTEM] Stage monitor loop started.")
+    while True:
+        try:
+            await asyncio.sleep(0.1)
+            if stage.is_connected:
+                # シリアル通信はI/O待ちが発生するため、to_threadで別スレッドとして実行しAPIをブロックさせない
+                pos, busy = await asyncio.to_thread(stage.get_status)
+                app_state.current_angle = pos
+                app_state.is_busy = busy
+                
+                # カメラのCSV記録用にも常に最新の角度を供給し続ける
+                camera.current_angle = pos
+        except asyncio.CancelledError:
+            break # サーバー終了時にタスクがキャンセルされたらループを抜ける
+        except Exception as e:
+            logger.debug(f"[SYSTEM] Monitor error: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,12 +60,18 @@ async def lifespan(app: FastAPI):
     """
     logger.info("[SYSTEM] Backend Starting...")
     
+    # 常時監視タスクの起動
+    monitor_task = asyncio.create_task(stage_monitor_loop())
+    
     # ここでサーバーが起動し、リクエストの受付を開始します。
     yield # ここでサーバーがリクエストを受け付け続ける（稼働状態）
     
     # サーバー終了時(shutdown)の処理
     # Ctrl+Cなどで停止した際に、開いているリソース（COMポート、カメラ）を確実に閉じます。
     logger.info("[SYSTEM] Backend Shutting Down...")
+    
+    # 監視タスクの停止
+    monitor_task.cancel()
     
     # 強制的に切断処理
     logger.info("[SYSTEM] Releasing Stage Conection...")
@@ -347,21 +382,23 @@ def stage_set_speed(req: SetSpeedRequest):
 @app.get("/stage/position")
 def stage_get_position():
     """
-    ステージの現在の絶対角度と、移動中（Busy）かどうかのステータスを取得します。
-    フロントエンドから高頻度（例: 500msごと）でポーリングされることを想定しています。
+    システム（ステージ等）の最新のステータスを取得します。
+    フロントエンドから高頻度（例: 200msごと）でポーリングされることを想定しています。
     """
     if not stage.is_connected:
         return {
             "status": "disconnected",
-            "current_angle": "--"
+            "current_angle": "--",
+            "is_busy": False,
+            "is_measuring": False
         }
     
-    pos, is_busy = stage.get_status()
-    
+    # 【超重要】シリアル通信を叩かず、常時監視タスクが更新しているキャッシュを即座に返す！
     return {
         "status": "success",
-        "current_angle": pos,
-        "is_busy": is_busy,
+        "current_angle": app_state.current_angle,
+        "is_busy": app_state.is_busy,
+        "is_measuring": app_state.is_measuring,
     }
 
 # ==========================================

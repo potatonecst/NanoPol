@@ -77,11 +77,11 @@
 
 `src/store/useAppStore.ts` (Zustand) にて管理される一時的なUI状態。
 
-*   **接続状態:** `isStageConnected`, `isCameraConnected`, `stagePort`, `cameraId`.
+*   **接続・監視状態:** `isBackendConnected`, `isStageConnected`, `isCameraConnected`, `stagePort`, `cameraId`.
 *   **カメラ制御:** `exposureTime`, `gain`, `cameraResolution`.
 *   **ビュー制御:** `zoomLevel`, `panOffset`.
 *   **ステージ設定:** `stageSettings` (StepMode, PulsesPerDegree, Speed config).
-*   **システム状態:** `isSystemBusy` (排他制御用).
+*   **システム状態:** `isSystemBusy` (排他制御用), `isStageBusy` (ステージ物理動作中), `isMeasuring` (自動測定中).
 
 ### 5.5 CSV形式
 

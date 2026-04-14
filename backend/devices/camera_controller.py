@@ -5,6 +5,7 @@ import time
 import ctypes
 import threading
 import queue
+import csv
 import os
 import datetime
 from typing import Tuple, Optional
@@ -40,6 +41,14 @@ class CameraController:
         self.is_recording = False # 現在録画中（TIFF直書き中）かどうかのフラグ
         self.tiff_writer = None # tifffileのTiffWriterオブジェクト。録画中のみインスタンス化される
         self.record_filepath = None # 現在録画中の動画ファイルの絶対パス
+        
+        self.csv_file = None # 同期記録用CSVのファイルオブジェクト
+        self.csv_writer = None # 同期記録用CSVのライター
+        self.record_frame_count = 0 # 現在の録画フレーム数
+        self.MAX_FRAMES = 10000 # 安全装置（Fail-safe）としての最大録画フレーム数
+        
+        # ステージの現在の角度（測定・Sweep中にFastAPIやStageController側から随時更新される想定）
+        self.current_angle = 0.0 
 
         # Camera settings
         self.exposure_ms = 10.0 # 露出時間（ミリ秒）
@@ -173,16 +182,22 @@ class CameraController:
 
             # --- 録画処理 (特急レーン: 巨大なTIFFファイルへの超高速・直書き) ---
             # 画像のエンコード等の重い処理は一切行わず、生データをそのまま追記する
-            if self.is_recording and self.tiff_writer is not None:
-                try:
-                    # tiff_writer.write(): 開いているマルチページTIFFファイルに新しいページ（画像）を追記する。
-                    # 引数:
-                    #   data: 保存するNumpy配列
-                    #   contiguous=True: メモリ上のデータが連続していることを前提とし、ディスク書き込み速度を最適化する。
-                    # contiguous=True によりディスクへの書き込み速度を最適化
-                    self.tiff_writer.write(frame_data, contiguous=True)
-                except Exception as e:
-                    logger.error(f"{self.log_tag} Error writing frame to TIFF: {e}")
+            if self.is_recording and self.tiff_writer is not None and self.csv_writer is not None:
+                if self.record_frame_count >= self.MAX_FRAMES:
+                    logger.warning(f"{self.log_tag} Max recording frames ({self.MAX_FRAMES}) reached! Auto-stopping for Fail-safe.")
+                    self.stop_recording()
+                else:
+                    try:
+                        # contiguous=True によりディスクへの書き込み速度を最適化
+                        self.tiff_writer.write(frame_data, contiguous=True)
+                        
+                        # タイムスタンプ(ms)をミリ秒精度で取得し、CSVに同期記録
+                        timestamp_ms = time.time() * 1000.0
+                        self.csv_writer.writerow([self.record_frame_count, f"{timestamp_ms:.3f}", f"{self.current_angle:.4f}"])
+                        
+                        self.record_frame_count += 1
+                    except Exception as e:
+                        logger.error(f"{self.log_tag} Error writing frame to TIFF/CSV: {e}")
 
             # CPU暴走防止（Mock環境のみ、計算が一瞬で終わるので待つ）
             if self.is_mock_env:
@@ -436,16 +451,29 @@ class CameraController:
         
         try:
             import tifffile
+            csv_filepath = os.path.join(out_dir, f"{prefix}{timestamp}.csv")
+            
             # append=True モードでライターを開きっぱなしにする
             # tifffile.TiffWriter(): マルチページTIFFファイルへ連続書き込みを行うためのライターオブジェクトを作成する。
             # 引数 append=True: 既存のファイルを開き、そこに新しい画像を追加していくモード。
             # 効果: 動画フレームごとに「ファイルを開く→閉じる」という重い処理を省略でき、SSDの限界速度で保存し続けられる。
             self.tiff_writer = tifffile.TiffWriter(self.record_filepath, append=True)
+            
+            # CSVファイルも同時に開き、ヘッダーを書き込む
+            self.csv_file = open(csv_filepath, mode='w', newline='', encoding='utf-8')
+            self.csv_writer = csv.writer(self.csv_file)
+            self.csv_writer.writerow(["Frame_Index", "Timestamp_ms", "Angle_deg"])
+            self.record_frame_count = 0
+            
+            # 全ての準備が成功した場合にのみ、録画中フラグを立てる（重要）
             self.is_recording = True
             logger.info(f"{self.log_tag} Recording started: {self.record_filepath}")
             return True
         except Exception as e:
             logger.error(f"{self.log_tag} Failed to start recording: {e}")
+            # 失敗した場合は、途中で開いたファイルをクリーンアップする
+            if self.tiff_writer: self.tiff_writer.close()
+            if self.csv_file: self.csv_file.close()
             return False
 
     def stop_recording(self) -> Optional[str]:
@@ -457,6 +485,12 @@ class CameraController:
         if self.tiff_writer is not None:
             self.tiff_writer.close()
             self.tiff_writer = None
+        
+        # CSVファイルも閉じて、ライターオブジェクトもリセットする
+        if self.csv_file is not None:
+            self.csv_file.close()
+            self.csv_file = None
+            self.csv_writer = None
             
         # 8-bit録画だった場合、待機モード(16-bit)に復帰させる
         if self.bpp == 8:

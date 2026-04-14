@@ -7,6 +7,10 @@ interface AppState {
     currentMode: AppMode; //今開いている画面
     setMode: (mode: AppMode) => void; //画面を切り替える関数
 
+    //バックエンド接続状態
+    isBackendConnected: boolean; //バックエンド（Pythonサーバー）が起動しているか
+    setIsBackendConnected: (connected: boolean) => void;
+
     //ステージコントローラ接続
     stagePort: string; //ステージコントローラのポート
     setStagePort: (port: string) => void; //ステージコントローラのポートを設定する関数
@@ -37,6 +41,9 @@ interface AppState {
     isSystemBusy: boolean; //システムがbusyかどうか
     setIsSystemBusy: (busy: boolean) => void; //システムがbusyかどうかを設定する関数
 
+    isStageBusy: boolean; // ステージが物理的に回転中か
+    isMeasuring: boolean; // 自動測定シーケンス中か
+
     //カメラ設定
     exposureTime: number; //カメラの露出時間
     setExposureTime: (time: number) => void; //カメラの露出時間を設定する関数
@@ -65,6 +72,9 @@ export const useAppStore = create<AppState>((set) => ({
     currentMode: "devices", //初期値は「デバイス接続画面」
     setMode: (mode) => set({ currentMode: mode }), //set関数でcurrentModeを書き換え
 
+    isBackendConnected: false, // 初期値
+    setIsBackendConnected: (connected) => set({ isBackendConnected: connected }),
+
     stagePort: "", //初期値は空文字
     setStagePort: (port) => set({ stagePort: port }), //set関数でstagePortを書き換え
 
@@ -90,6 +100,9 @@ export const useAppStore = create<AppState>((set) => ({
     isSystemBusy: false, //初期値
     setIsSystemBusy: (busy) => set({ isSystemBusy: busy }), //set関数でisBusyを書き換え
 
+    isStageBusy: false, //初期値
+    isMeasuring: false, //初期値
+
     exposureTime: 50, //初期値
     setExposureTime: (time) => set({ exposureTime: time }), //set関数
 
@@ -112,6 +125,8 @@ export const useAppStore = create<AppState>((set) => ({
         cameraResolution: { width: 1280, height: 1024 },
         isRecording: false,
         currentAngle: 0,
+        isStageBusy: false,
+        isMeasuring: false,
         isSystemBusy: false,
         exposureTime: 50,
         gain: 1,

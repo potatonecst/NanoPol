@@ -5,8 +5,22 @@ from logging.handlers import TimedRotatingFileHandler
 from collections import deque
 from datetime import datetime
 
-#ログ保存用ディレクトリ
-LOG_DIR = "logs"
+# Rust(Tauri)側から渡された「OS標準の安全なアプリデータディレクトリ」を取得
+app_data_dir = os.getenv("NANOPOL_APP_DATA_DIR")
+
+if app_data_dir:
+    # ビルド版、またはTauri経由で起動した場合は必ずこちらが使われます
+    LOG_DIR = os.path.join(app_data_dir, "logs")
+else:
+    # 開発中にPython単体で直接実行した時などのための保険（フォールバック）
+    if sys.platform == "win32":
+        base = os.getenv("APPDATA")
+        if not base:
+            base = os.path.expanduser("~")
+        LOG_DIR = os.path.join(base, "nanopol", "logs")
+    else:
+        LOG_DIR = os.path.join(os.path.expanduser("~"), ".nanopol", "logs")
+
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # フロントエンド表示用バッファ（直近200行）

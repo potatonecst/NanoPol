@@ -27,14 +27,20 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile, mkdir, BaseDirectory, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { LogPanel } from "./components/shared/LogPanel";
+import { useStagePolling } from "./hooks/useStagePolling";
 
 // 共通の定数ファイルから設定ファイル名をインポート
 import { CONFIG_FILENAME, DEFAULT_SETTINGS, getDefaultOutputDirectory } from "./constants/constants";
 
 function App() {
   const {
-    currentMode, isCameraConnected, // 現在選択されているモードと、カメラ接続状態
+    currentMode,
+    isBackendConnected,
+    isStageConnected,
+    isCameraConnected, // 現在選択されているモードと、カメラ接続状態
     isRecording, setIsRecording, // 録画中かどうかのフラグと、それを更新する関数
+    isStageBusy,
+    isMeasuring,
   } = useAppStore(
     // 【パフォーマンス最適化】
     // useShallow を使うことで、ここで取り出した値（currentModeなど）が変化した時だけ
@@ -43,11 +49,54 @@ function App() {
     // 画面全体が再描画されてしまい、動作が重くなる原因になります。
     useShallow((state) => ({
       currentMode: state.currentMode,
+      isBackendConnected: state.isBackendConnected,
+      isStageConnected: state.isStageConnected,
       isCameraConnected: state.isCameraConnected,
       isRecording: state.isRecording,
       setIsRecording: state.setIsRecording,
+      isStageBusy: state.isStageBusy,
+      isMeasuring: state.isMeasuring,
     }))
   );
+
+  // 1. 【監視タイマーのスタンバイ】
+  // ここで呼び出しておくだけで、ステージが接続された瞬間に勝手にタイマーが回り始めます。
+  useStagePolling();
+
+  // 2. 【バックエンドの死活監視 (ハートビート) と状態復元】
+  useEffect(() => {
+    const checkSystemHealth = async () => {
+      try {
+        const data = await systemApi.health();
+        const state = useAppStore.getState(); // 現在の状態を取得
+
+        // オフラインから復帰した瞬間だけログを出す（毎秒コンソールが埋まるのを防ぐ）
+        if (!state.isBackendConnected) {
+          console.log("Backend is back online!", data);
+        }
+
+        // バックエンドが生きている場合は、接続状態を常に最新に同期する
+        useAppStore.setState({
+          isBackendConnected: true,
+          isStageConnected: data.stage_connected,
+          isCameraConnected: data.camera_connected,
+        });
+      } catch (error) {
+        const state = useAppStore.getState();
+
+        // オンラインから落ちた瞬間だけエラーログを出す
+        if (state.isBackendConnected) {
+          console.error("Backend went offline!", error);
+          useAppStore.setState({ isBackendConnected: false });
+        }
+      }
+    };
+
+    checkSystemHealth(); // 初回起動時に即座に実行
+    const intervalId = setInterval(checkSystemHealth, 3000); // 以降、3秒ごとに生存確認を繰り返す
+
+    return () => clearInterval(intervalId); // コンポーネントが破棄される時にタイマーを片付ける
+  }, []);
 
   // ダークモードの状態管理（trueならダークモード、falseならライトモード）
   const [isDark, setIsDark] = useState(true);
@@ -266,6 +315,61 @@ function App() {
     </Tooltip>
   );
 
+  // ヘッダーのステータス表示ロジック
+  let systemStatusText = "Backend Offline";
+  let shortStatusText = "Offline";
+  let badgeClasses = "border-red-500/20 bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20";
+  let dotClasses = "bg-red-500";
+  let pingClasses = "bg-red-400";
+  let showPing = false;
+
+  if (!isBackendConnected) {
+    // バックエンドが落ちている場合は赤色（デフォルト設定のまま）で警告
+    showPing = true;
+  } else if (isMeasuring) {
+    systemStatusText = "Measuring (Auto Mode)...";
+    shortStatusText = "Measuring";
+    badgeClasses = "border-yellow-500/20 bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/20";
+    dotClasses = "bg-yellow-500";
+    pingClasses = "bg-yellow-400";
+    showPing = true;
+  } else if (isStageBusy) {
+    systemStatusText = "Stage Moving...";
+    shortStatusText = "Moving";
+    badgeClasses = "border-blue-500/20 bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-500/20";
+    dotClasses = "bg-blue-500";
+    pingClasses = "bg-blue-400";
+    showPing = true;
+  } else if (isStageConnected && isCameraConnected) {
+    systemStatusText = "All Devices Ready";
+    shortStatusText = "All Rdy";
+    badgeClasses = "border-green-500/20 bg-green-500/10 text-green-600 dark:text-green-400 hover:bg-green-500/20";
+    dotClasses = "bg-green-500";
+    pingClasses = "bg-green-400";
+    showPing = true;
+  } else if (isStageConnected) {
+    systemStatusText = "Stage Ready";
+    shortStatusText = "Stage Rdy";
+    badgeClasses = "border-green-500/20 bg-green-500/10 text-green-600 dark:text-green-400 hover:bg-green-500/20";
+    dotClasses = "bg-green-500";
+    pingClasses = "bg-green-400";
+    showPing = true;
+  } else if (isCameraConnected) {
+    systemStatusText = "Camera Ready";
+    shortStatusText = "Cam Rdy";
+    badgeClasses = "border-green-500/20 bg-green-500/10 text-green-600 dark:text-green-400 hover:bg-green-500/20";
+    dotClasses = "bg-green-500";
+    pingClasses = "bg-green-400";
+    showPing = true;
+  } else {
+    // バックエンドは元気だが、デバイスは未接続（平和な待機状態）
+    systemStatusText = "System Ready";
+    shortStatusText = "Ready";
+    badgeClasses = "border-slate-500/20 bg-slate-500/10 text-slate-600 dark:text-slate-400 hover:bg-slate-500/20";
+    dotClasses = "bg-slate-500";
+    pingClasses = "bg-slate-400";
+  }
+
   return (
     // 画面の大枠レイアウト（全体を縦並び flex-col）
     <TooltipProvider>
@@ -287,14 +391,14 @@ function App() {
             <div className="ml-4">
               <Badge
                 variant="outline"
-                className="gap-1.5 py-1 px-3 border-green-500/20 bg-green-500/10 text-green-600 dark:text-green-400 font-medium hover:bg-green-500/20"
+                className={`gap-1.5 py-1 px-3 font-medium transition-colors ${badgeClasses}`}
               >
                 <span className="relative flex size-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full size-2 bg-green-500" />
+                  {showPing && <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${pingClasses}`} />}
+                  <span className={`relative inline-flex rounded-full size-2 ${dotClasses}`} />
                 </span>
-                <div className="hidden md:inline-flex">System Ready</div>
-                <div className="md:hidden">Ready</div>
+                <div className="hidden md:inline-flex">{systemStatusText}</div>
+                <div className="md:hidden">{shortStatusText}</div>
               </Badge>
             </div>
           </div>
