@@ -80,7 +80,7 @@
           * 実行中は `[Stop]` ボタンで中断可能。
       * **Emergency Stop:** `[⚠️]` ボタンで即時停止 (`L:E`). 減速なし。
   * **Camera View:**
-      * 現在は `CameraPanel` コンポーネントがあるが、実映像は表示されない (Placeholder)。
+      * `CameraPanel` コンポーネントにてバックエンドからのMJPEGストリーム (`/camera/video_feed`) を表示する。ズームやパン操作に対応。
 
 #### ③ 📉 Auto Mode (自動測定) - **Planned**
 
@@ -89,7 +89,7 @@
 **【State 0: セッション開始 (Session Entry)】**
 Autoモードに入った最初の状態。サイドバーに表示。
 
-  * **Base Folder:** `D:\Data` (設定から自動反映)
+  * **Base Folder:** `~/Documents/NanoPol` (設定から自動反映)
   * **Date Folder:** `YYYYMMDD` (当日日付で自動生成)
   * **[ 📄 新規測定 (New) ]**
       * `Sample Name`: `Sample_1` (自動採番で重複回避。編集可)。
@@ -144,3 +144,8 @@ Autoモードに入った最初の状態。サイドバーに表示。
   * **Persistence & Sync:**
       * 設定は `AppConfig` ディレクトリ（OS標準のアプリ設定場所）にある `config.json` に保存され、次回起動時に自動的に読み込まれる。
       * 保存時 (`[Save Settings]`) およびアプリ起動時、バックエンドの `/system/settings` APIにJSONを送信し、ハードウェアの設定（プレビューのColor/Monoモードなど）に即時反映させる。
+
+#### ⑤ ❓ Help Mode (ヘルプ) - **Planned**
+
+  * **用途:** ソフトウェアの操作マニュアル、ショートカットキー一覧、およびトラブルシューティングの表示。
+  * **現状:** UIレイアウト（サイドバーの `HelpCircle` アイコン）のみ存在し、ルーティングおよび画面コンポーネントは未接続。

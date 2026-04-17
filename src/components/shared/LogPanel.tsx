@@ -60,6 +60,8 @@ export function LogPanel() {
 
     // Smart Auto-Scroll: ログ更新時、ユーザーが底にいる場合のみスクロール
     // これにより、ユーザーが過去のログを読んでいる最中に勝手にスクロールされるのを防ぎます。
+    // isMaximized を依存に含める理由: パネルの高さ切り替え直後にも最下部追従を再実行し、
+    // 「最新ログの張り付き」が中途半端になるのを防ぐためです。
     useEffect(() => {
         if (isOpen && isAtBottom && scrollRef.current) {
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;

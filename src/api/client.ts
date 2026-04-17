@@ -9,7 +9,12 @@ import { LogEntry } from "../types";
  * 開発中はローカルの8000番ポートを使用します。
  * 本番環境（ビルド後）やポートが変わる場合は、ここを一箇所変更するだけで済みます。
  */
-export const API_BASE = "http://127.0.0.1:8000";
+export let API_BASE = "http://127.0.0.1:14201"; // 初期値（フォールバック用）
+
+export const setApiBase = (port: number) => {
+    API_BASE = `http://127.0.0.1:${port}`;
+    console.log(`[API Client] Base URL dynamically updated to: ${API_BASE}`);
+};
 
 /**
  * 共通のフェッチ（HTTP通信）ラッパー関数。

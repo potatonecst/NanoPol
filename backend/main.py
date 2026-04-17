@@ -90,7 +90,7 @@ app = FastAPI(title="NanoPol Backend", version="0.1.0", lifespan=lifespan)
 # CORS (Cross-Origin Resource Sharing) の設定
 # ==========================================
 # Tauriのフロントエンド（React: 通常は localhost:1420 や tauri://localhost）から、
-# このバックエンドサーバー（localhost:8000）へのHTTPリクエストを許可するためのセキュリティ設定です。
+# このバックエンドサーバー（localhost:14201）へのHTTPリクエストを許可するためのセキュリティ設定です。
 # 
 # 【重要】allow_credentials=True（認証情報の送信許可）に設定する場合、
 # Web標準のセキュリティ仕様により allow_origins=["*"]（全許可）は使用できずエラーになります。
@@ -551,8 +551,25 @@ def post_log(req: LogPostRequest):
     return {"status": "success"}
 
 if __name__ == "__main__":
-    # 開発用サーバー起動（ポート8000）
-    # uvicornは、FastAPIのような非同期フレームワークを動作させるための「超高速なWebサーバー(ASGI)」です。
-    # `host="127.0.0.1"` により、このPC内からのみアクセスを受け付ける安全な状態で起動します。
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    import socket
+    import os
+    
+    # Tauri(Rust)経由で起動されたかどうかの判定（環境変数の有無）
+    is_tauri = os.getenv("NANOPOL_APP_DATA_DIR") is not None
+    
+    if is_tauri:
+        # 1. OSに完全に空いているポートを自動で探させる
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0)) # ポート0を指定するとOSが空きポートを割り当てます
+        port = sock.getsockname()[1] # 割り当てられたポート番号を取得
+        sock.close() # 一旦ソケットを閉じて、Uvicornに席を譲ります
+        # 2. 確保したポート番号を標準出力に書き出す（ここでTauri/Rustが検知する）
+        # flush=True をつけることで、バッファに溜めずに即座にパイプに流し込みます。
+        print(f"[PORT] {port}", flush=True)
+    else:
+        # 開発中の手動起動時は、固定ポート(14201)を使用する
+        port = 14201
+    
+    # 3. 決定したポートでFastAPIサーバーを起動
+    uvicorn.run(app, host="127.0.0.1", port=port)

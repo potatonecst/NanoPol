@@ -1,3 +1,4 @@
+use std::sync::Mutex;
 // tauri-plugin-shellの機能（Sidecarの起動など）を使えるようにするための宣言
 use tauri_plugin_shell::ShellExt;
 // 起動したPythonからの出力（Printなど）を受け取るための型
@@ -5,10 +6,19 @@ use tauri_plugin_shell::process::CommandEvent;
 // app.path() などのTauriの機能を使うための宣言
 use tauri::Manager;
 
+// Reactからいつでも聞けるように、バックエンドのポート番号を保存しておく「共有メモリ」の型を定義
+struct BackendPort(Mutex<Option<u16>>);
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+#[tauri::command]
+fn get_backend_port(state: tauri::State<'_, BackendPort>) -> Option<u16> {
+    // Reactから「ポート何番？」と聞かれたら、共有メモリの中身を返す
+    *state.0.lock().unwrap()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -21,6 +31,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         // setupは、Tauriアプリのウィンドウが立ち上がる「前」に1回だけ実行される初期化処理です
         .setup(|app| {
+            // 空っぽの「共有メモリ」を作成して、Tauriアプリ全体で使えるように登録（manage）する
+            app.manage(BackendPort(Mutex::new(None)));
+
             // OS標準の安全なアプリデータ保存先（AppDataなど）の絶対パスを取得
             let app_data_dir = app
                 .path()
@@ -45,6 +58,9 @@ pub fn run() {
                 .spawn()
                 .expect("Failed to spawn backend sidecar");
 
+            // 別のスレッドでTauriの共有メモリを触るために、アプリの「ハンドル（操縦桿）」を複製しておく
+            let app_handle = app.handle().clone();
+
             // 画面の動きを止めないように、別のスレッド（裏作業）でPythonのログを監視し続ける
             // `async move` の中に `child` を移動させることで、スレッドが生きている間プロセスも維持されます
             tauri::async_runtime::spawn(async move {
@@ -56,8 +72,26 @@ pub fn run() {
                 // Pythonから何か文字（ログ）が送られてくるたびにループが回る
                 while let Some(event) = rx.recv().await {
                     if let CommandEvent::Stdout(line) = event {
+                        let log_line = String::from_utf8_lossy(&line);
+
+                        // 【動的ポート検知】ログの中に "[PORT]" という目印が含まれているか？
+                        if log_line.contains("[PORT]") {
+                            if let Some(port_str) = log_line.split("[PORT]").nth(1) {
+                                // 余計な空白を消して、数字(u16)に変換
+                                if let Ok(port) = port_str.trim().parse::<u16>() {
+                                    println!(
+                                        "💡 Python Backend dynamically assigned port: {}",
+                                        port
+                                    );
+                                    // Tauriの共有メモリにポート番号を書き込む
+                                    let state = app_handle.state::<BackendPort>();
+                                    *state.0.lock().unwrap() = Some(port);
+                                }
+                            }
+                        }
+
                         // 通常のプリント出力をMac/Windowsのターミナルに表示（バイト列を文字列に変換）
-                        println!("[Backend] {}", String::from_utf8_lossy(&line));
+                        println!("[Backend] {}", log_line);
                     } else if let CommandEvent::Stderr(line) = event {
                         // エラー出力を表示
                         eprintln!("[Backend Error] {}", String::from_utf8_lossy(&line));
@@ -68,7 +102,7 @@ pub fn run() {
             // 初期化がすべて無事に完了したことをTauriに伝える
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![greet, get_backend_port])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -22,7 +22,8 @@ import { ManualView } from "./components/views/ManualView";
 import { SettingsView } from "./components/views/SettingsView";
 
 import "./App.css";
-import { cameraApi, systemApi } from "./api/client";
+import { cameraApi, systemApi, setApiBase } from "./api/client";
+import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile, mkdir, BaseDirectory, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
@@ -65,6 +66,9 @@ function App() {
 
   // 2. 【バックエンドの死活監視 (ハートビート) と状態復元】
   useEffect(() => {
+    let healthIntervalId: number;
+    let portIntervalId: number;
+
     const checkSystemHealth = async () => {
       try {
         const data = await systemApi.health();
@@ -92,14 +96,56 @@ function App() {
       }
     };
 
-    checkSystemHealth(); // 初回起動時に即座に実行
-    const intervalId = setInterval(checkSystemHealth, 3000); // 以降、3秒ごとに生存確認を繰り返す
+    // 【動的ポート取得フェーズ】
+    let retryCount = 0;
+    const fetchPortAndConnect = async () => {
+      try {
+        // Rustの共有メモリにポート番号が書き込まれているか尋ねる
+        const port = await invoke<number | null>("get_backend_port");
+        if (port !== null) {
+          // ポート番号が取得できたら、待機タイマーを解除
+          if (portIntervalId) window.clearInterval(portIntervalId);
 
-    return () => clearInterval(intervalId); // コンポーネントが破棄される時にタイマーを片付ける
+          // APIクライアントの接続先を動的に書き換え
+          setApiBase(port);
+
+          // ここから通常のヘルスチェック（死活監視）を開始
+          checkSystemHealth();
+          healthIntervalId = window.setInterval(checkSystemHealth, 3000); // 以降、3秒ごとに生存確認を繰り返す
+        } else {
+          // Rustからの返答がnull（まだPythonがポートを叫んでいない）場合
+          retryCount++;
+          // 開発環境(DEV)は手動起動を想定して5秒(10回)でフォールバック。
+          // 実機環境(PROD)はPythonの解凍が遅いだけかもしれないので30秒(60回)まで気長に待つ。
+          const maxRetries = import.meta.env.DEV ? 10 : 60;
+          if (retryCount > maxRetries) {
+            console.warn(`Backend port not received via Tauri after ${maxRetries * 0.5}s. Falling back to default 14201.`);
+            if (portIntervalId) window.clearInterval(portIntervalId);
+            checkSystemHealth();
+            healthIntervalId = window.setInterval(checkSystemHealth, 3000);
+          }
+        }
+      } catch (err) {
+        // ブラウザ（localhost:1420等）での開発時など、Tauriのinvoke自体が使えない場合のフォールバック
+        console.warn("Not running in Tauri environment. Falling back to default port 14201.");
+        if (portIntervalId) window.clearInterval(portIntervalId);
+        checkSystemHealth();
+        healthIntervalId = window.setInterval(checkSystemHealth, 3000);
+      }
+    };
+
+    // アプリ起動時、Rustからポート番号が返ってくるまで0.5秒おきに尋ね続ける
+    fetchPortAndConnect();
+    portIntervalId = window.setInterval(fetchPortAndConnect, 500);
+
+    return () => {
+      window.clearInterval(portIntervalId);
+      if (healthIntervalId) window.clearInterval(healthIntervalId);
+    };
   }, []);
 
   // ダークモードの状態管理（trueならダークモード、falseならライトモード）
-  const [isDark, setIsDark] = useState(true);
+  const [isDark, setIsDark] = useState(false);
 
   // 【副作用 (Side Effect) の制御】
   // テーマ切り替え処理：isDark の値が変わるたびに実行されます。
