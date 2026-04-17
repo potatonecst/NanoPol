@@ -29,14 +29,17 @@ export const setApiBase = (port: number) => {
  * @returns バックエンドから返ってきたJSONデータを、指定された型 `T` として返すPromise
  */
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
+    const headers = new Headers(options?.headers);
+    // GET/HEAD 等のボディなしリクエストでは Content-Type を付けない。
+    // WebView環境で不要な preflight(OPTIONS) を避け、CORS切り分けを容易にする。
+    if (options?.body != null && !headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json");
+    }
+
     // window.fetch を使用してバックエンドと通信します。
     const response = await window.fetch(`${API_BASE}${endpoint}`, {
         ...options,
-        headers: {
-            // 特に指定がなくても、送信データはJSON形式であるとバックエンドに伝えます。
-            "Content-Type": "application/json",
-            ...options?.headers,
-        },
+        headers,
     });
 
     // HTTPステータスコードが 200番台(成功) 以外の場合（例: 400 Bad Request, 500 Internal Server Error）

@@ -232,9 +232,13 @@ function App() {
         if (!import.meta.env.DEV) {
           const hintedPort = await readPortHintFromAppData();
           if (hintedPort !== null) {
-            // 本番ではIPC失敗時でもヒント経路が取れれば復旧させる
-            startHealthChecks(hintedPort, "port-hint");
-            return;
+            // 例外経路でもヒントを無条件採用せず、必ず疎通確認してから使う
+            const healthy = await probeBackendPort(hintedPort);
+            if (healthy) {
+              // 本番ではIPC失敗時でもヒント経路が取れれば復旧させる
+              startHealthChecks(hintedPort, "port-hint");
+              return;
+            }
           }
         }
 
