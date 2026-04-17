@@ -49,7 +49,9 @@ pub fn run() {
                 .env(
                     "NANOPOL_APP_DATA_DIR",
                     app_data_dir.to_string_lossy().to_string(),
-                );
+                )
+                // Pythonの標準出力バッファリングを完全に無効化して即座にログを流させる
+                .env("PYTHONUNBUFFERED", "1");
 
             // 実際にバックグラウンドでPythonのexeを起動（spawn）する
             // rx: バックエンドからの出力（プリント）を受け取るためのパイプ（受信機）
@@ -71,30 +73,31 @@ pub fn run() {
 
                 // Pythonから何か文字（ログ）が送られてくるたびにループが回る
                 while let Some(event) = rx.recv().await {
-                    if let CommandEvent::Stdout(line) = event {
-                        let log_line = String::from_utf8_lossy(&line);
+                    match event {
+                        // Stdout と Stderr の両方を監視する（どちらに [PORT] が流れてきても拾えるように）
+                        CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
+                            let log_line = String::from_utf8_lossy(&line);
 
-                        // 【動的ポート検知】ログの中に "[PORT]" という目印が含まれているか？
-                        if log_line.contains("[PORT]") {
-                            if let Some(port_str) = log_line.split("[PORT]").nth(1) {
-                                // 余計な空白を消して、数字(u16)に変換
-                                if let Ok(port) = port_str.trim().parse::<u16>() {
-                                    println!(
-                                        "💡 Python Backend dynamically assigned port: {}",
-                                        port
-                                    );
-                                    // Tauriの共有メモリにポート番号を書き込む
-                                    let state = app_handle.state::<BackendPort>();
-                                    *state.0.lock().unwrap() = Some(port);
+                            if log_line.contains("[PORT]") {
+                                if let Some(port_str) = log_line.split("[PORT]").nth(1) {
+                                    if let Ok(port) = port_str.trim().parse::<u16>() {
+                                        let state = app_handle.state::<BackendPort>();
+                                        // すでに取得済みでなければ書き込む（重複書き込み防止）
+                                        if state.0.lock().unwrap().is_none() {
+                                            println!(
+                                                "💡 Python Backend dynamically assigned port: {}",
+                                                port
+                                            );
+                                            *state.0.lock().unwrap() = Some(port);
+                                        }
+                                    }
                                 }
                             }
-                        }
 
-                        // 通常のプリント出力をMac/Windowsのターミナルに表示（バイト列を文字列に変換）
-                        println!("[Backend] {}", log_line);
-                    } else if let CommandEvent::Stderr(line) = event {
-                        // エラー出力を表示
-                        eprintln!("[Backend Error] {}", String::from_utf8_lossy(&line));
+                            // Terminal出力用（Tauriの開発環境用）
+                            println!("[Backend] {}", log_line);
+                        }
+                        _ => {}
                     }
                 }
             });

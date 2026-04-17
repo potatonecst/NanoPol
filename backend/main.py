@@ -567,6 +567,8 @@ if __name__ == "__main__":
         # 2. 確保したポート番号を標準出力に書き出す（ここでTauri/Rustが検知する）
         # flush=True をつけることで、バッファに溜めずに即座にパイプに流し込みます。
         print(f"[PORT] {port}", flush=True)
+        import sys
+        print(f"[PORT] {port}", file=sys.stderr, flush=True)
     else:
         # 開発中の手動起動時は、固定ポート(14201)を使用する
         port = 14201

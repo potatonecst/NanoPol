@@ -116,8 +116,8 @@ function App() {
           // Rustからの返答がnull（まだPythonがポートを叫んでいない）場合
           retryCount++;
           // 開発環境(DEV)は手動起動を想定して5秒(10回)でフォールバック。
-          // 実機環境(PROD)はPythonの解凍が遅いだけかもしれないので30秒(60回)まで気長に待つ。
-          const maxRetries = import.meta.env.DEV ? 10 : 60;
+          // 実機環境(PROD)はPyInstallerの解凍(Windows Defenderのスキャン等)で非常に時間がかかるため、120秒(240回)まで気長に待つ。
+          const maxRetries = import.meta.env.DEV ? 10 : 240;
           if (retryCount > maxRetries) {
             console.warn(`Backend port not received via Tauri after ${maxRetries * 0.5}s. Falling back to default 14201.`);
             if (portIntervalId) window.clearInterval(portIntervalId);
@@ -126,11 +126,15 @@ function App() {
           }
         }
       } catch (err) {
-        // ブラウザ（localhost:1420等）での開発時など、Tauriのinvoke自体が使えない場合のフォールバック
-        console.warn("Not running in Tauri environment. Falling back to default port 14201.");
-        if (portIntervalId) window.clearInterval(portIntervalId);
-        checkSystemHealth();
-        healthIntervalId = window.setInterval(checkSystemHealth, 3000);
+        console.warn("Failed to invoke get_backend_port:", err);
+        // ブラウザ（localhost:1420等）での開発時はTauriのinvoke自体が使えないため即フォールバック
+        if (import.meta.env.DEV) {
+          console.warn("Running in DEV mode without Tauri. Falling back to 14201.");
+          if (portIntervalId) window.clearInterval(portIntervalId);
+          checkSystemHealth();
+          healthIntervalId = window.setInterval(checkSystemHealth, 3000);
+        }
+        // 本番環境(PROD)では、Tauri IPCの準備遅延等の可能性があるため、即フォールバックはせず再試行を継続する
       }
     };
 
