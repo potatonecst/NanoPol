@@ -6,7 +6,13 @@ use tauri_plugin_shell::process::CommandEvent;
 // app.path() などのTauriの機能を使うための宣言
 use tauri::Manager;
 
-// Reactからいつでも聞けるように、バックエンドのポート番号を保存しておく「共有メモリ」の型を定義
+/// React側から参照するバックエンド待受ポートを保持する共有状態です。
+///
+/// - `None`: まだPython側の動的ポート通知を受信していない状態
+/// - `Some(port)`: `[PORT]` ログから取得済みの状態
+///
+/// `Mutex` により、非同期ログ監視タスク（書き込み）と
+/// Tauri command（読み取り）の同時アクセスを安全に直列化します。
 struct BackendPort(Mutex<Option<u16>>);
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -15,6 +21,14 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+/// フロントエンドから現在のバックエンドポートを問い合わせるTauri commandです。
+///
+/// # Parameters
+/// - `state`: アプリ全体で共有している `BackendPort` 状態
+///
+/// # Returns
+/// - `Some(port)`: 受信済みの動的ポート
+/// - `None`: まだポート通知を受信していない
 #[tauri::command]
 fn get_backend_port(state: tauri::State<'_, BackendPort>) -> Option<u16> {
     // Reactから「ポート何番？」と聞かれたら、共有メモリの中身を返す
@@ -76,19 +90,26 @@ pub fn run() {
                     match event {
                         // Stdout と Stderr の両方を監視する（どちらに [PORT] が流れてきても拾えるように）
                         CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
+                            // バイト列で届くため、UTF-8文字列として安全にデコードする
                             let log_line = String::from_utf8_lossy(&line);
 
+                            // Python側が出力する "[PORT] 51348" 形式の通知を検出
                             if log_line.contains("[PORT]") {
+                                // [PORT] の右側だけを取り出す（例: " 51348"）
                                 if let Some(port_str) = log_line.split("[PORT]").nth(1) {
+                                    // 文字列 -> u16 に変換できた場合だけ有効値として採用
                                     if let Ok(port) = port_str.trim().parse::<u16>() {
                                         let state = app_handle.state::<BackendPort>();
+                                        // 共有状態への書き込みは1回のlockで完結させる
+                                        let mut guard = state.0.lock().unwrap();
+
                                         // すでに取得済みでなければ書き込む（重複書き込み防止）
-                                        if state.0.lock().unwrap().is_none() {
+                                        if guard.is_none() {
                                             println!(
                                                 "💡 Python Backend dynamically assigned port: {}",
                                                 port
                                             );
-                                            *state.0.lock().unwrap() = Some(port);
+                                            *guard = Some(port);
                                         }
                                     }
                                 }

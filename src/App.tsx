@@ -68,9 +68,95 @@ function App() {
   useEffect(() => {
     let healthIntervalId: number;
     let portIntervalId: number;
+    // 初期化が複数経路（IPC / ヒント / フォールバック）から重複実行されるのを防ぐ
+    let hasConnected = false;
 
+    /**
+     * AppData に保存された `backend_port.json` を読み取り、候補ポートを返します。
+     *
+     * JSON には `port` / `pid` / `startedAt` を持たせますが、
+     * この関数ではまず `port` の妥当性だけを厳密に検証します。
+     *
+     * @returns 候補ポートが読めた場合は `number`、それ以外は `null`。
+     */
+    const readPortHintFromAppData = async (): Promise<number | null> => {
+      try {
+        // ヒントファイルがなければ「未確定」と同義なのでnullを返す
+        const hintExists = await exists("backend_port.json", { baseDir: BaseDirectory.AppData });
+        if (!hintExists) return null;
+
+        // JSON文字列を読み取り、port だけを候補として抽出する
+        const raw = await readTextFile("backend_port.json", { baseDir: BaseDirectory.AppData });
+        const parsed = JSON.parse(raw) as { port?: unknown };
+        const port = Number(parsed.port);
+
+        // TCPポート範囲外・非数値は無効値として破棄
+        if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+          return null;
+        }
+
+        return port;
+      } catch (error) {
+        console.warn("Failed to read backend_port.json hint:", error);
+        return null;
+      }
+    };
+
+    /**
+     * バックエンド接続初期化を一度だけ確定し、ヘルスチェックの定期実行を開始します。
+     *
+     * @param port 接続先バックエンドのポート番号。
+     * @param source ポート取得元 (`tauri-ipc` | `port-hint` | `fallback`)。
+     * @returns 戻り値はありません。重複呼び出し時は何もせず終了します。
+     */
+    const startHealthChecks = (port: number, source: "tauri-ipc" | "port-hint" | "fallback") => {
+      // すでに初期化済みなら、二重でtimerを作らない
+      if (hasConnected) return;
+      hasConnected = true;
+
+      // ポート探索ループはここで終了（これ以降はhealth監視フェーズへ移行）
+      if (portIntervalId) window.clearInterval(portIntervalId);
+      // APIクライアントのベースURLを最終確定したポートへ切り替える
+      setApiBase(port);
+      console.log(`Using backend port ${port} via ${source}.`);
+
+      // 1回目は即時に疎通確認し、以降は3秒ごとに定期監視する
+      checkSystemHealth();
+      healthIntervalId = window.setInterval(checkSystemHealth, 3000);
+    };
+
+    /**
+     * 候補ポートに対して `/health` を1回だけ問い合わせ、
+     * 本当に接続先として使ってよいかを確認します。
+     *
+     * ヒントファイルが古くても、ここで失敗したら採用しないことで
+     * 誤接続や Offline 固定を避けます。
+     *
+     * @param port 検証したい候補ポート。
+     * @returns `true` なら疎通可能、`false` なら無効。
+     */
+    const probeBackendPort = async (port: number): Promise<boolean> => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/health`, {
+          method: "GET",
+          cache: "no-store",
+        });
+        return response.ok;
+      } catch (error) {
+        console.warn(`Health probe failed for candidate port ${port}:`, error);
+        return false;
+      }
+    };
+
+    /**
+     * 現在設定されたAPIベースURLに対して `/health` を実行し、
+     * グローバルストアの接続状態を最新化します。
+     *
+     * @returns Promise<void>
+     */
     const checkSystemHealth = async () => {
       try {
+        // ここで使われるURLは setApiBase で確定済みのもの
         const data = await systemApi.health();
         const state = useAppStore.getState(); // 現在の状態を取得
 
@@ -98,41 +184,65 @@ function App() {
 
     // 【動的ポート取得フェーズ】
     let retryCount = 0;
+
+    /**
+     * ポート確定までの接続ハンドシェイクを担当します。
+     * 優先順は `tauri-ipc` -> `port-hint` -> `fallback(DEV/timeout時)` です。
+     *
+     * @returns Promise<void>
+     */
     const fetchPortAndConnect = async () => {
+      // すでに接続初期化が完了したら何もしない
+      if (hasConnected) return;
+
       try {
         // Rustの共有メモリにポート番号が書き込まれているか尋ねる
         const port = await invoke<number | null>("get_backend_port");
         if (port !== null) {
-          // ポート番号が取得できたら、待機タイマーを解除
-          if (portIntervalId) window.clearInterval(portIntervalId);
-
-          // APIクライアントの接続先を動的に書き換え
-          setApiBase(port);
-
-          // ここから通常のヘルスチェック（死活監視）を開始
-          checkSystemHealth();
-          healthIntervalId = window.setInterval(checkSystemHealth, 3000); // 以降、3秒ごとに生存確認を繰り返す
+          // 正規経路: Rust IPCでポートが取得できた
+          startHealthChecks(port, "tauri-ipc");
+          return;
         } else {
+          // 保険経路: AppDataのヒントファイルを参照
+          const hintedPort = await readPortHintFromAppData();
+          if (hintedPort !== null) {
+            // 古いヒントを掴みっぱなしにしないため、先に疎通確認してから採用する
+            const healthy = await probeBackendPort(hintedPort);
+            if (healthy) {
+              startHealthChecks(hintedPort, "port-hint");
+              return;
+            }
+          }
+
           // Rustからの返答がnull（まだPythonがポートを叫んでいない）場合
           retryCount++;
           // 開発環境(DEV)は手動起動を想定して5秒(10回)でフォールバック。
           // 実機環境(PROD)はPyInstallerの解凍(Windows Defenderのスキャン等)で非常に時間がかかるため、120秒(240回)まで気長に待つ。
           const maxRetries = import.meta.env.DEV ? 10 : 240;
           if (retryCount > maxRetries) {
+            // 最後の手段: 既定ポートへ切り替えて接続可否を確認
             console.warn(`Backend port not received via Tauri after ${maxRetries * 0.5}s. Falling back to default 14201.`);
-            if (portIntervalId) window.clearInterval(portIntervalId);
-            checkSystemHealth();
-            healthIntervalId = window.setInterval(checkSystemHealth, 3000);
+            startHealthChecks(14201, "fallback");
           }
         }
       } catch (err) {
         console.warn("Failed to invoke get_backend_port:", err);
+
+        // 本番環境では、Rust側からの受け渡しが遅延していてもヒントファイルで復旧を試みる
+        if (!import.meta.env.DEV) {
+          const hintedPort = await readPortHintFromAppData();
+          if (hintedPort !== null) {
+            // 本番ではIPC失敗時でもヒント経路が取れれば復旧させる
+            startHealthChecks(hintedPort, "port-hint");
+            return;
+          }
+        }
+
         // ブラウザ（localhost:1420等）での開発時はTauriのinvoke自体が使えないため即フォールバック
         if (import.meta.env.DEV) {
           console.warn("Running in DEV mode without Tauri. Falling back to 14201.");
-          if (portIntervalId) window.clearInterval(portIntervalId);
-          checkSystemHealth();
-          healthIntervalId = window.setInterval(checkSystemHealth, 3000);
+          // 開発時は手動起動(固定ポート)を想定して即フォールバック
+          startHealthChecks(14201, "fallback");
         }
         // 本番環境(PROD)では、Tauri IPCの準備遅延等の可能性があるため、即フォールバックはせず再試行を継続する
       }

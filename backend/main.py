@@ -7,6 +7,9 @@ from serial.tools import list_ports
 import sys
 import os
 import asyncio
+import json
+from pathlib import Path
+from datetime import datetime, timezone
 
 from utils.logger import logger, log_buffer
 from devices.stage_controller import StageController
@@ -550,6 +553,44 @@ def post_log(req: LogPostRequest):
     
     return {"status": "success"}
 
+def write_backend_port_hint(app_data_dir: str | None, port: int) -> None:
+    """
+    Tauri連携用のポートヒントファイル (`backend_port.json`) をAppDataに保存します。
+
+    Rustのログ受信が遅延/取りこぼしした場合でも、フロントエンドが
+    AppData経由でポート番号を取得して復旧できるようにする保険経路です。
+    JSONにすることで、ポート番号だけでなく更新時刻やPIDも持たせられます。
+
+    Args:
+        app_data_dir: `NANOPOL_APP_DATA_DIR` の値。None/空なら何もしません。
+        port: 動的割り当てされたバックエンドの待受ポート。
+
+    Returns:
+        None
+    """
+    # 起動元がTauriでない場合はAppDataの保存先がないため何もしない
+    if not app_data_dir:
+        return
+
+    # AppData配下にヒントファイルを作成（上書き）して最新ポートを共有する
+    os.makedirs(app_data_dir, exist_ok=True)
+
+    # 一時ファイルへ完全なJSONを書き、最後に置き換えることで途中書き込みを避ける
+    hint_path = Path(app_data_dir) / "backend_port.json"
+    tmp_path = hint_path.with_suffix(".json.tmp")
+
+    hint_payload = {
+        "port": port,
+        "pid": os.getpid(),
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(hint_payload, f, ensure_ascii=False)
+
+    os.replace(tmp_path, hint_path)
+    logger.info(f"[SYSTEM] Wrote backend port hint to {hint_path}")
+
 if __name__ == "__main__":
     import uvicorn
     import socket
@@ -561,6 +602,7 @@ if __name__ == "__main__":
     if is_tauri:
         # 1. OSに完全に空いているポートを自動で探させる
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # port=0 指定でOSに空きポート割り当てを委譲する
         sock.bind(("127.0.0.1", 0)) # ポート0を指定するとOSが空きポートを割り当てます
         port = sock.getsockname()[1] # 割り当てられたポート番号を取得
         sock.close() # 一旦ソケットを閉じて、Uvicornに席を譲ります
@@ -568,7 +610,17 @@ if __name__ == "__main__":
         # flush=True をつけることで、バッファに溜めずに即座にパイプに流し込みます。
         print(f"[PORT] {port}", flush=True)
         import sys
+        # 出力先差異に備えてstderrにも同じ通知を流す
         print(f"[PORT] {port}", file=sys.stderr, flush=True)
+
+        # 3. Rust側のログ受信取りこぼしに備え、AppDataにポートヒントを書き込む
+        try:
+            app_data_dir = os.getenv("NANOPOL_APP_DATA_DIR")
+            # React側の保険経路が読めるよう、ポートヒントを永続化
+            write_backend_port_hint(app_data_dir, port)
+        except Exception as e:
+            # ヒント書き込み失敗は致命ではないため起動継続する
+            logger.warning(f"[SYSTEM] Failed to write backend port hint: {e}")
     else:
         # 開発中の手動起動時は、固定ポート(14201)を使用する
         port = 14201
