@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -161,7 +161,7 @@ class LogPostRequest(BaseModel):
 # ==========================================
 
 @app.get("/health")
-def health_check():
+def health_check(request: Request):
     """
     【フロントエンド起動時の生存確認用API】
     バックエンドサーバーが正常に起動しているか、および各ハードウェアの現在の接続状態を返します。
@@ -173,6 +173,15 @@ def health_check():
         
         dict: ステータス、ステージの接続状態、カメラの接続状態、動作モード（Mock/Real）。
     """
+    # 接続切り分け用: UI/WebViewから到達しているかを system.log だけで判定できるようにする
+    logger.info(
+        "[HEALTH] %s %s origin=%s host=%s",
+        request.method,
+        request.url.path,
+        request.headers.get("origin", "-"),
+        request.headers.get("host", "-"),
+    )
+
     return {
         "status": "OK",
         "stage_connected": stage.is_connected,

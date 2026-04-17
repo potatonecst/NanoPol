@@ -68,8 +68,29 @@ function App() {
   useEffect(() => {
     let healthIntervalId: number;
     let portIntervalId: number;
+    let healthFailureCount = 0;
     // 初期化が複数経路（IPC / ヒント / フォールバック）から重複実行されるのを防ぐ
     let hasConnected = false;
+
+    /**
+     * Release環境でDevToolsが使えない場合に備え、接続初期化の要点をAppDataへ追記します。
+     */
+    const appendConnectionTrace = async (message: string) => {
+      try {
+        const traceFile = "frontend_connection_trace.log";
+        const now = new Date().toISOString();
+        const line = `[${now}] ${message}\n`;
+
+        const fileExists = await exists(traceFile, { baseDir: BaseDirectory.AppData });
+        const previous = fileExists ? await readTextFile(traceFile, { baseDir: BaseDirectory.AppData }) : "";
+
+        await writeTextFile(traceFile, previous + line, {
+          baseDir: BaseDirectory.AppData,
+        });
+      } catch {
+        // トレース出力失敗は本体処理に影響させない
+      }
+    };
 
     /**
      * AppData に保存された `backend_port.json` を読み取り、候補ポートを返します。
@@ -119,6 +140,7 @@ function App() {
       // APIクライアントのベースURLを最終確定したポートへ切り替える
       setApiBase(port);
       console.log(`Using backend port ${port} via ${source}.`);
+      void appendConnectionTrace(`startHealthChecks source=${source} port=${port}`);
 
       // 1回目は即時に疎通確認し、以降は3秒ごとに定期監視する
       checkSystemHealth();
@@ -141,9 +163,13 @@ function App() {
           method: "GET",
           cache: "no-store",
         });
+        if (!response.ok) {
+          void appendConnectionTrace(`probeBackendPort failed port=${port} status=${response.status}`);
+        }
         return response.ok;
       } catch (error) {
         console.warn(`Health probe failed for candidate port ${port}:`, error);
+        void appendConnectionTrace(`probeBackendPort exception port=${port} error=${String(error)}`);
         return false;
       }
     };
@@ -158,11 +184,13 @@ function App() {
       try {
         // ここで使われるURLは setApiBase で確定済みのもの
         const data = await systemApi.health();
+        healthFailureCount = 0;
         const state = useAppStore.getState(); // 現在の状態を取得
 
         // オフラインから復帰した瞬間だけログを出す（毎秒コンソールが埋まるのを防ぐ）
         if (!state.isBackendConnected) {
           console.log("Backend is back online!", data);
+          void appendConnectionTrace("checkSystemHealth success backend online");
         }
 
         // バックエンドが生きている場合は、接続状態を常に最新に同期する
@@ -172,7 +200,15 @@ function App() {
           isCameraConnected: data.camera_connected,
         });
       } catch (error) {
+        healthFailureCount += 1;
         const state = useAppStore.getState();
+
+        // 初期起動直後の失敗も追えるように、先頭数回と定期サンプルを記録する
+        if (healthFailureCount <= 5 || healthFailureCount % 20 === 0) {
+          void appendConnectionTrace(
+            `checkSystemHealth failure count=${healthFailureCount} error=${String(error)}`
+          );
+        }
 
         // オンラインから落ちた瞬間だけエラーログを出す
         if (state.isBackendConnected) {
@@ -200,18 +236,24 @@ function App() {
         const port = await invoke<number | null>("get_backend_port");
         if (port !== null) {
           // 正規経路: Rust IPCでポートが取得できた
+          void appendConnectionTrace(`invoke get_backend_port -> ${port}`);
           startHealthChecks(port, "tauri-ipc");
           return;
         } else {
           // 保険経路: AppDataのヒントファイルを参照
+          if (retryCount === 0 || retryCount % 20 === 0) {
+            void appendConnectionTrace(`invoke get_backend_port -> null retry=${retryCount}`);
+          }
           const hintedPort = await readPortHintFromAppData();
           if (hintedPort !== null) {
             // 古いヒントを掴みっぱなしにしないため、先に疎通確認してから採用する
             const healthy = await probeBackendPort(hintedPort);
             if (healthy) {
+              void appendConnectionTrace(`hint accepted port=${hintedPort}`);
               startHealthChecks(hintedPort, "port-hint");
               return;
             }
+            void appendConnectionTrace(`hint rejected port=${hintedPort}`);
           }
 
           // Rustからの返答がnull（まだPythonがポートを叫んでいない）場合
@@ -222,11 +264,13 @@ function App() {
           if (retryCount > maxRetries) {
             // 最後の手段: 既定ポートへ切り替えて接続可否を確認
             console.warn(`Backend port not received via Tauri after ${maxRetries * 0.5}s. Falling back to default 14201.`);
+            void appendConnectionTrace(`fallback to default port=14201 after retries=${retryCount}`);
             startHealthChecks(14201, "fallback");
           }
         }
       } catch (err) {
         console.warn("Failed to invoke get_backend_port:", err);
+        void appendConnectionTrace(`invoke get_backend_port exception error=${String(err)}`);
 
         // 本番環境では、Rust側からの受け渡しが遅延していてもヒントファイルで復旧を試みる
         if (!import.meta.env.DEV) {
@@ -236,9 +280,11 @@ function App() {
             const healthy = await probeBackendPort(hintedPort);
             if (healthy) {
               // 本番ではIPC失敗時でもヒント経路が取れれば復旧させる
+              void appendConnectionTrace(`hint accepted on invoke exception port=${hintedPort}`);
               startHealthChecks(hintedPort, "port-hint");
               return;
             }
+            void appendConnectionTrace(`hint rejected on invoke exception port=${hintedPort}`);
           }
         }
 
@@ -246,6 +292,7 @@ function App() {
         if (import.meta.env.DEV) {
           console.warn("Running in DEV mode without Tauri. Falling back to 14201.");
           // 開発時は手動起動(固定ポート)を想定して即フォールバック
+          void appendConnectionTrace("dev mode fallback to default port=14201");
           startHealthChecks(14201, "fallback");
         }
         // 本番環境(PROD)では、Tauri IPCの準備遅延等の可能性があるため、即フォールバックはせず再試行を継続する
