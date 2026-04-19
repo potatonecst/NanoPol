@@ -102,7 +102,30 @@ const result = await request<{ status: string }>("/stage/connect");
     *   **エラー検知:** 通信エラー時は即座に Zustand の `isBackendConnected` を `false` とし、UIを Offline に切り替えます。
     *   **自己修復 (Self-Healing):** バックエンドが再起動・復帰した際、自動的に最新のデバイス接続状態を再取得し、ユーザーの操作なしで完全な Ready 状態へ復元します。
 
-### 2.4 バックグラウンドポーリング分離 (`useStagePolling.ts`)
+### 2.4 APIクライアントのWebView互換設定 (`client.ts`)
+
+`request()` では、Tauri WebView 環境での通信挙動を安定させるため、以下のルールを固定しています。
+
+*   **GET/HEAD 等のボディなしリクエスト**: `Content-Type` を付与しません。
+    *   不要な preflight(OPTIONS) の発生を抑え、切り分けを容易にします。
+*   **ボディありリクエスト (主に POST)**: `Content-Type: application/json` を自動付与します。
+*   **fetch オプション**: `mode: "cors"`, `credentials: "include"` を明示し、WebView の暗黙挙動差を減らします。
+
+このため、`/health` のようなGET監視APIはシンプルな条件で送信されますが、ブラウザ側のセキュリティ判定で失敗した場合は `TypeError: Failed to fetch` になり得ます。
+
+#### 補足: cross-origin 通信とは
+
+「cross-origin 通信」は、アクセス元のページと、通信先の URL の `origin` が一致しない通信を指します。
+`origin` は通常、`scheme + host + port` の組み合わせで決まります。
+
+例:
+
+*   `https://tauri.localhost` から `http://127.0.0.1:60371` へアクセスする
+*   `tauri://localhost` から `http://127.0.0.1:60371` へアクセスする
+
+これらは見た目はローカル通信でも、WebView から見ると「別 origin への通信」なので、CORS の許可設定が必要です。
+
+### 2.5 バックグラウンドポーリング分離 (`useStagePolling.ts`)
 
 ステージの角度 (`currentAngle`) など、高頻度で更新される値はReactのメイン描画サイクルに負荷をかけないよう、専用のカスタムフックに分離しています。
 `isStageConnected` が `true` の間、0.1秒(100ms)間隔で `/stage/position` をポーリングし、Zustandストアを直接 (`setState` で) 書き換え続けることで、パフォーマンスとリアルタイム性を両立しています。

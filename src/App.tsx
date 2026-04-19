@@ -33,6 +33,13 @@ import { useStagePolling } from "./hooks/useStagePolling";
 // 共通の定数ファイルから設定ファイル名をインポート
 import { CONFIG_FILENAME, DEFAULT_SETTINGS, getDefaultOutputDirectory } from "./constants/constants";
 
+/**
+ * ルートコンポーネントです。
+ *
+ * バックエンド接続初期化、テーマ同期、設定同期、UI全体の状態表示をまとめて管理します。
+ *
+ * @returns 画面全体を構成する React 要素。
+ */
 function App() {
   const {
     currentMode,
@@ -73,15 +80,24 @@ function App() {
     let hasConnected = false;
 
     /**
-     * Release環境でDevToolsが使えない場合に備え、接続初期化の要点をAppDataへ追記します。
+     * 接続初期化の要点を AppData のログファイルへ追記します。
+     *
+     * Release 環境では DevTools が使えないため、どの経路でポートを採用したかを
+     * 後から追跡できるようにします。
+     *
+     * @param message 追記する1行のトレースメッセージ。
+     * @returns Promise<void>。失敗しても本体処理には影響しません。
      */
     const appendConnectionTrace = async (message: string) => {
       try {
         const traceFile = "frontend_connection_trace.log";
+        // new Date() は現在時刻を表す標準 JavaScript オブジェクトです。
         const now = new Date().toISOString();
         const line = `[${now}] ${message}\n`;
 
+        // Tauri の fs プラグインで、AppData 直下に既存ログがあるかを確認します。
         const fileExists = await exists(traceFile, { baseDir: BaseDirectory.AppData });
+        // readTextFile / writeTextFile はファイルの文字列読み書きを行う Tauri API です。
         const previous = fileExists ? await readTextFile(traceFile, { baseDir: BaseDirectory.AppData }) : "";
 
         await writeTextFile(traceFile, previous + line, {
@@ -95,8 +111,8 @@ function App() {
     /**
      * AppData に保存された `backend_port.json` を読み取り、候補ポートを返します。
      *
-     * JSON には `port` / `pid` / `startedAt` を持たせますが、
-     * この関数ではまず `port` の妥当性だけを厳密に検証します。
+     * JSON には `port` / `pid` / `startedAt` を持たせますが、この関数では
+     * まず `port` の妥当性だけを厳密に検証します。
      *
      * @returns 候補ポートが読めた場合は `number`、それ以外は `null`。
      */
@@ -108,6 +124,7 @@ function App() {
 
         // JSON文字列を読み取り、port だけを候補として抽出する
         const raw = await readTextFile("backend_port.json", { baseDir: BaseDirectory.AppData });
+        // JSON.parse は文字列を JavaScript オブジェクトへ変換する標準関数です。
         const parsed = JSON.parse(raw) as { port?: unknown };
         const port = Number(parsed.port);
 
@@ -148,8 +165,8 @@ function App() {
     };
 
     /**
-     * 候補ポートに対して `/health` を1回だけ問い合わせ、
-     * 本当に接続先として使ってよいかを確認します。
+     * 候補ポートに対して `/health` を1回だけ問い合わせ、本当に接続先として
+     * 使ってよいかを確認します。
      *
      * ヒントファイルが古くても、ここで失敗したら採用しないことで
      * 誤接続や Offline 固定を避けます。
@@ -159,6 +176,7 @@ function App() {
      */
     const probeBackendPort = async (port: number): Promise<boolean> => {
       try {
+        // fetch で localhost の health エンドポイントを直接確認します。
         const response = await fetch(`http://127.0.0.1:${port}/health`, {
           method: "GET",
           cache: "no-store",
@@ -175,10 +193,10 @@ function App() {
     };
 
     /**
-     * 現在設定されたAPIベースURLに対して `/health` を実行し、
-     * グローバルストアの接続状態を最新化します。
+     * 現在設定されたAPIベースURLに対して `/health` を実行し、グローバルストアの
+     * 接続状態を最新化します。
      *
-     * @returns Promise<void>
+     * @returns Promise<void>。
      */
     const checkSystemHealth = async () => {
       try {
@@ -223,9 +241,10 @@ function App() {
 
     /**
      * ポート確定までの接続ハンドシェイクを担当します。
+     *
      * 優先順は `tauri-ipc` -> `port-hint` -> `fallback(DEV/timeout時)` です。
      *
-     * @returns Promise<void>
+     * @returns Promise<void>。
      */
     const fetchPortAndConnect = async () => {
       // すでに接続初期化が完了したら何もしない

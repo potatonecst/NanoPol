@@ -11,6 +11,12 @@ import { LogEntry } from "../types";
  */
 export let API_BASE = "http://127.0.0.1:14201"; // 初期値（フォールバック用）
 
+/**
+ * API クライアント全体で参照するベースURLを、動的ポートに合わせて更新します。
+ *
+ * @param port 接続先バックエンドの待受ポート番号。
+ * @returns 戻り値はありません。更新後のURLは `API_BASE` に反映されます。
+ */
 export const setApiBase = (port: number) => {
     API_BASE = `http://127.0.0.1:${port}`;
     console.log(`[API Client] Base URL dynamically updated to: ${API_BASE}`);
@@ -29,26 +35,34 @@ export const setApiBase = (port: number) => {
  * @returns バックエンドから返ってきたJSONデータを、指定された型 `T` として返すPromise
  */
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
+    // Fetch API の Headers オブジェクトを作り、既存ヘッダの参照や追加をしやすくします。
     const headers = new Headers(options?.headers);
     // GET/HEAD 等のボディなしリクエストでは Content-Type を付けない。
     // WebView環境で不要な preflight(OPTIONS) を避け、CORS切り分けを容易にする。
+    // body があるときだけ JSON 送信として扱い、既存の Content-Type があればそれを優先します。
     if (options?.body != null && !headers.has("Content-Type")) {
         headers.set("Content-Type", "application/json");
     }
 
-    // window.fetch を使用してバックエンドと通信します。
+    // window.fetch はブラウザ/WebView 標準の HTTP 通信 API です。
+    // RequestInit で method, body, headers, credentials などの通信条件をまとめて渡します。
+    // mode: "cors" は「別オリジンとの通信として扱う」指定、credentials: "include" は
+    // Cookie などの認証情報も送る指定です。
     const response = await window.fetch(`${API_BASE}${endpoint}`, {
         ...options,
+        mode: "cors",
+        credentials: "include",
         headers,
     });
 
-    // HTTPステータスコードが 200番台(成功) 以外の場合（例: 400 Bad Request, 500 Internal Server Error）
+    // Response.ok は HTTP 2xx かどうかを表す標準プロパティです。
+    // ここで false の場合は、ステータスコードを含むエラーとして呼び出し元に返します。
     if (!response.ok) {
         // エラーを投げて、呼び出し元（UIコンポーネントの try-catch）に処理を任せます。
         throw new Error(`API Error: ${response.status} ${response.statusText}`);
     }
 
-    // レスポンスのJSON文字列をJavaScriptのオブジェクトに変換して返します。
+    // Response.json() はレスポンスボディを JSON として解析し、JavaScript のオブジェクトへ変換します。
     return response.json();
 }
 
@@ -170,7 +184,11 @@ export const cameraApi = {
 // アプリケーション全体の状態管理、ログ、設定の同期を行うAPI群です。
 
 export const systemApi = {
-    // 起動時にバックエンドの生存確認と各デバイスの接続状態を取得します
+    /**
+     * バックエンドの生存確認を行い、各デバイスの接続状態を取得します。
+     *
+     * @returns `/health` の JSON 応答。
+     */
     health: () =>
         request<{ status: string, stage_connected: boolean, camera_connected: boolean, mode: string }>("/health"),
 

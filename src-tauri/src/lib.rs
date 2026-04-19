@@ -32,12 +32,18 @@ fn greet(name: &str) -> String {
 #[tauri::command]
 fn get_backend_port(state: tauri::State<'_, BackendPort>) -> Option<u16> {
     // Reactから「ポート何番？」と聞かれたら、共有メモリの中身を返す
+    // Mutex の lock() は排他制御用の鍵を取る操作です。
     *state.0.lock().unwrap()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Tauri アプリの初期化と、Python sidecar の起動・監視を行います。
+///
+/// # Returns
+/// - `()` : 正常終了時は戻り値なし。`run()` 内でエラーになった場合は panic します。
 pub fn run() {
     tauri::Builder::default()
+        // Tauri の各プラグインは、fs / dialog / shell など外部機能を有効化します。
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -59,6 +65,7 @@ pub fn run() {
                 .shell()
                 .sidecar("backend")
                 .expect("Failed to create sidecar command") // 万が一 "backend" の設定が見つからない場合はエラーを出して止める
+                // env() は子プロセスに環境変数を追加する標準的な仕組みです。
                 // Python側に保存先のパスを「環境変数」として渡してあげる（超重要！）
                 .env(
                     "NANOPOL_APP_DATA_DIR",
@@ -90,14 +97,15 @@ pub fn run() {
                     match event {
                         // Stdout と Stderr の両方を監視する（どちらに [PORT] が流れてきても拾えるように）
                         CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
-                            // バイト列で届くため、UTF-8文字列として安全にデコードする
+                            // from_utf8_lossy は、壊れた UTF-8 が混ざっても落ちにくい安全な変換です。
                             let log_line = String::from_utf8_lossy(&line);
 
                             // Python側が出力する "[PORT] 51348" 形式の通知を検出
                             if log_line.contains("[PORT]") {
                                 // [PORT] の右側だけを取り出す（例: " 51348"）
                                 if let Some(port_str) = log_line.split("[PORT]").nth(1) {
-                                    // 文字列 -> u16 に変換できた場合だけ有効値として採用
+                                    // trim() は前後の空白を取り除き、parse::<u16>() は整数に変換します。
+                                    // 変換できた場合だけ有効値として採用します。
                                     if let Ok(port) = port_str.trim().parse::<u16>() {
                                         let state = app_handle.state::<BackendPort>();
                                         // 共有状態への書き込みは1回のlockで完結させる

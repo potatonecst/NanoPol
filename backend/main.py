@@ -31,10 +31,15 @@ class SystemState:
 app_state = SystemState()
 
 async def stage_monitor_loop():
-    """【常時監視タスク】0.1秒ごとにステージの角度を聞き、キャッシュとカメラに最新値を配る"""
+    """【常時監視タスク】0.1秒ごとにステージの角度を聞き、キャッシュとカメラに最新値を配ります。
+
+    Returns:
+        None
+    """
     logger.info("[SYSTEM] Stage monitor loop started.")
     while True:
         try:
+            # asyncio.sleep はイベントループを止めずに待機する標準の非同期関数です。
             await asyncio.sleep(0.1)
             if stage.is_connected:
                 # シリアル通信はI/O待ちが発生するため、to_threadで別スレッドとして実行しAPIをブロックさせない
@@ -60,10 +65,14 @@ async def lifespan(app: FastAPI):
     
     Args:
         app (FastAPI): FastAPIのアプリケーションインスタンス。
+
+    Returns:
+        AsyncGenerator: 起動・終了処理を管理するコンテキスト。
     """
     logger.info("[SYSTEM] Backend Starting...")
     
     # 常時監視タスクの起動
+    # asyncio.create_task は、非同期関数をバックグラウンドで並行実行させる標準機能です。
     monitor_task = asyncio.create_task(stage_monitor_loop())
     
     # ここでサーバーが起動し、リクエストの受付を開始します。
@@ -166,14 +175,14 @@ def health_check(request: Request):
     【フロントエンド起動時の生存確認用API】
     バックエンドサーバーが正常に起動しているか、および各ハードウェアの現在の接続状態を返します。
     
+    Args:
+        request (Request): 呼び出し元の HTTP リクエスト。origin や host の記録に使います。
+
     Returns:
-        【FastAPIの自動JSONシリアライズ】
-        Pythonの辞書(dict)を `return` するだけで、FastAPIが自動的に
-        Content-Type: application/json のレスポンスに変換してフロントエンドに送信します。
-        
         dict: ステータス、ステージの接続状態、カメラの接続状態、動作モード（Mock/Real）。
     """
     # 接続切り分け用: UI/WebViewから到達しているかを system.log だけで判定できるようにする
+    # Request.headers は受信した HTTP ヘッダ群へのアクセス手段です。
     logger.info(
         "[HEALTH] %s %s origin=%s host=%s",
         request.method,
@@ -195,9 +204,13 @@ def system_reset():
     【強制リセットAPI】
     システムに異常が発生した際などに、すべてのハードウェアデバイス（ステージ・カメラ）の
     接続を強制的に切断し、リソースを解放します。
+
+    Returns:
+        dict: リセット結果のステータスとメッセージ。
     """
     logger.warning("[SYSTEM] FORCE RESET TRIGGERD")
     
+    # Python では if obj: で None/空/False 相当をまとめて判定できます。
     if stage:
         stage.close()
     if camera:
@@ -238,6 +251,9 @@ def update_system_settings(req: SystemSettingsRequest):
 
     Args:
         req (SystemSettingsRequest): フロントエンドの config.json の内容。
+
+    Returns:
+        dict: 更新結果のステータス。
     """
     camera.update_settings(req.settings)
     
