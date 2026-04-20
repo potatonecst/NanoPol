@@ -141,6 +141,8 @@ Autoモードに入った最初の状態。サイドバーに表示。
       * 速度 (Min/Max PPS), 加減速時間 (Accel Time) のデフォルト値設定。
   * **Camera Defaults:**
       * 露光時間 (Exposure), ゲイン (Gain) のデフォルト値設定。
+      * これらは主に「起動時/接続直後の初期値」であり、測定中の最終値を直接保証する設定ではない。
+      * 測定中（Auto実行中、Step & Shoot 実行中、録画中）は Camera Panel 側の編集UIをロックする。
   * **Persistence & Sync:**
       * 設定は `AppConfig` ディレクトリ（OS標準のアプリ設定場所）にある `config.json` に保存され、次回起動時に自動的に読み込まれる。
       * 保存時 (`[Save Settings]`) およびアプリ起動時、バックエンドの `/system/settings` APIにJSONを送信し、ハードウェアの設定（プレビューのColor/Monoモードなど）に即時反映させる。

@@ -115,7 +115,7 @@ jobs:
       # Step 4: GitHub Release には公開せず Artifact のみ保存
       # ==========================================
       - name: Upload Windows bundles as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # ダウンロード時に識別しやすい名前
           name: nanopol-windows-qa-${{ github.run_number }}

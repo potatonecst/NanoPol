@@ -44,11 +44,13 @@ async def stage_monitor_loop():
             if stage.is_connected:
                 # シリアル通信はI/O待ちが発生するため、to_threadで別スレッドとして実行しAPIをブロックさせない
                 pos, busy = await asyncio.to_thread(stage.get_status)
+                sampled_at_ms = datetime.now(timezone.utc).timestamp() * 1000.0
                 app_state.current_angle = pos
                 app_state.is_busy = busy
                 
                 # カメラのCSV記録用にも常に最新の角度を供給し続ける
                 camera.current_angle = pos
+                camera.current_angle_timestamp_ms = sampled_at_ms
         except asyncio.CancelledError:
             break # サーバー終了時にタスクがキャンセルされたらループを抜ける
         except Exception as e:
@@ -107,17 +109,70 @@ app = FastAPI(title="NanoPol Backend", version="0.1.0", lifespan=lifespan)
 # 【重要】allow_credentials=True（認証情報の送信許可）に設定する場合、
 # Web標準のセキュリティ仕様により allow_origins=["*"]（全許可）は使用できずエラーになります。
 # そのため、Tauriアプリが使用する固有のオリジンを明示的にリストアップして許可します。
+# CORSの許可オリジンを一元管理します。
+# この配列を CORSMiddleware 設定と起動時ログ出力の両方で共通利用することで、
+# 「実際に許可している値」と「ログで表示している値」の不一致を防ぎます。
+allowed_origins = [
+    "http://localhost:1420",  # 開発中のTauriフロントエンド (Viteローカルサーバー)
+    "tauri://localhost",      # ビルド後のTauriアプリ (macOS / Linux)
+    "https://tauri.localhost",# ビルド後のTauriアプリ (Windows HTTPS)
+    "http://tauri.localhost"  # ビルド後のTauriアプリ (Windows HTTP)
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:1420",  # 開発中のTauriフロントエンド (Viteローカルサーバー)
-        "tauri://localhost",      # ビルド後のTauriアプリ (macOS / Linux)
-        "https://tauri.localhost" # ビルド後のTauriアプリ (Windows)
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True, # クッキーや認証情報の送信を許可します。
     allow_methods=["*"], # GET, POST, OPTIONSなど、全てのHTTPメソッドを許可します。
     allow_headers=["*"], # 全てのHTTPヘッダーの送信を許可します。
 )
+
+# ==========================================
+# CORS ログ出力（スタートアップ確認用）
+# ==========================================
+# 起動直後に「現在のCORS許可設定」を必ず1回表示します。
+# 運用時に問題が発生した際、設定ファイルや環境変数を追わなくても
+# コンソールログだけで有効なオリジン一覧を確認できるようにするためです。
+logger.info("[STARTUP] CORS allow_origins configured:")
+for origin in allowed_origins:
+    logger.info(f"[STARTUP] [OK] {origin}")
+
+# ==========================================
+# OPTIONS リクエスト ログ用ミドルウェア
+# ==========================================
+@app.middleware("http")
+async def log_cors_requests(request: Request, call_next):
+    """CORS preflight（OPTIONS）リクエストの往復情報をログに出力する。"""
+    # CORS障害の初動切り分けでは、まず「どのOriginが来たか」を確認する必要があります。
+    # ここで request.headers["origin"] を記録することで、
+    # フロント実際のOriginと allow_origins の不一致を即座に判断できます。
+    origin = request.headers.get("origin", "N/A")
+    method = request.method
+    path = request.url.path
+    
+    if method == "OPTIONS":
+        # preflight受信ログ: ブラウザが本リクエスト前に送る検証要求。
+        # ここが出ない場合は、クライアント側で到達していない可能性が高いです。
+        logger.debug(f"[CORS PREFLIGHT] {method} {path} Origin={origin}")
+    
+    response = await call_next(request)
+    
+    if method == "OPTIONS":
+        # preflight応答ログ: ステータスと Access-Control-Allow-Origin を確認します。
+        # Status が 400/500、または Allow-Origin が NOT SET の場合は CORS 設定不整合の可能性が高いです。
+        allow_origin = response.headers.get("access-control-allow-origin", "NOT SET")
+        if response.status_code >= 400 or allow_origin == "NOT SET":
+            logger.warning(
+                f"[CORS RESPONSE] Status={response.status_code} Allow-Origin={allow_origin} "
+                f"Method={method} Path={path} Origin={origin}"
+            )
+        else:
+            logger.debug(
+                f"[CORS RESPONSE] Status={response.status_code} Allow-Origin={allow_origin} "
+                f"Method={method} Path={path} Origin={origin}"
+            )
+    
+    return response
 
 # ==========================================
 # リクエストボディの型定義 (Pydantic Models)

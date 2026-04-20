@@ -49,6 +49,8 @@ class CameraController:
         
         # ステージの現在の角度（測定・Sweep中にFastAPIやStageController側から随時更新される想定）
         self.current_angle = 0.0 
+        # current_angle が更新された時刻（UNIX epoch ms）
+        self.current_angle_timestamp_ms = 0.0
 
         # Camera settings
         self.exposure_ms = 10.0 # 露出時間（ミリ秒）
@@ -190,10 +192,23 @@ class CameraController:
                     try:
                         # contiguous=True によりディスクへの書き込み速度を最適化
                         self.tiff_writer.write(frame_data, contiguous=True)
-                        
-                        # タイムスタンプ(ms)をミリ秒精度で取得し、CSVに同期記録
-                        timestamp_ms = time.time() * 1000.0
-                        self.csv_writer.writerow([self.record_frame_count, f"{timestamp_ms:.3f}", f"{self.current_angle:.4f}"])
+
+                        # フレーム保存時刻（ms）を記録し、角度サンプルの鮮度を同時に出力する
+                        frame_timestamp_ms = time.time() * 1000.0
+                        angle_sample_timestamp_ms = self.current_angle_timestamp_ms
+
+                        # ステージ未接続などで角度サンプル時刻が未設定のときは、同時刻扱いにする
+                        if angle_sample_timestamp_ms <= 0.0:
+                            angle_sample_timestamp_ms = frame_timestamp_ms
+
+                        angle_age_ms = max(0.0, frame_timestamp_ms - angle_sample_timestamp_ms)
+                        self.csv_writer.writerow([
+                            self.record_frame_count,
+                            f"{frame_timestamp_ms:.3f}",
+                            f"{self.current_angle:.4f}",
+                            f"{angle_sample_timestamp_ms:.3f}",
+                            f"{angle_age_ms:.3f}",
+                        ])
                         
                         self.record_frame_count += 1
                     except Exception as e:
@@ -462,7 +477,13 @@ class CameraController:
             # CSVファイルも同時に開き、ヘッダーを書き込む
             self.csv_file = open(csv_filepath, mode='w', newline='', encoding='utf-8')
             self.csv_writer = csv.writer(self.csv_file)
-            self.csv_writer.writerow(["Frame_Index", "Timestamp_ms", "Angle_deg"])
+            self.csv_writer.writerow([
+                "Frame_Index",
+                "Frame_Timestamp_ms",
+                "Angle_deg_nearest",
+                "Angle_Sample_Timestamp_ms",
+                "Angle_Age_ms",
+            ])
             self.record_frame_count = 0
             
             # 全ての準備が成功した場合にのみ、録画中フラグを立てる（重要）

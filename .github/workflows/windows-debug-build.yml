@@ -1,23 +1,37 @@
-name: Build Windows Debug Artifact (Manual)
+name: Build Windows Debug Artifact (No Release)
 
 # ==========================================
 # 【発動条件】
 # ==========================================
 on:
-  # 解析用は原則手動実行のみ。
-  # （毎 push で回すと重くなるため）
+  # 1) Actions 画面から手動実行できるようにする
   workflow_dispatch:
+
+  # 2) develop ブランチへの push で自動実行（デバッグビルド用）
+  push:
+    branches:
+      - "develop"
+    # ドキュメントのみ更新の push ではビルドを走らせない
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "backend/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - ".github/workflows/windows-debug-build.yml"
 
 jobs:
   build-windows-debug:
     # クラウド上の Windows ランナーでビルドする
     runs-on: windows-latest
 
-    # Release は作らないため最小権限
+    # Release を作らないため最小権限（読み取りのみ）
     permissions:
       contents: read
 
-    # 手動連打時に古いジョブを止める
+    # 同一ブランチで新しい push が来たら古い実行はキャンセルし、待ち時間を減らす
     concurrency:
       group: windows-debug-${{ github.ref }}
       cancel-in-progress: true
@@ -35,6 +49,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
+          # 依存キャッシュで2回目以降を高速化
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
 
@@ -45,13 +60,16 @@ jobs:
 
       - name: Install Python dependencies
         working-directory: ./backend
+        # lockfile 固定で再現性を担保
         run: uv sync --frozen
 
       - name: Build Python executable
         working-directory: ./backend
+        # backend.exe を生成
         run: uv run python build_exe.py
 
       - name: Move backend executable for Tauri
+        # Tauri が期待する命名に合わせて sidecar 実行ファイルを配置
         run: |
           New-Item -ItemType Directory -Force -Path src-tauri/bin
           Move-Item -Path backend/dist/backend.exe -Destination src-tauri/bin/backend-x86_64-pc-windows-msvc.exe
@@ -84,20 +102,24 @@ jobs:
             src-tauri -> target
 
       # ==========================================
-      # Step 3: Debug バンドル作成
+      # Step 3: Windows 向け Tauri デバッグバンドルを作成
       # ==========================================
       - name: Build Tauri app (Debug bundle)
-        # --debug を付けて解析向けビルドを作成
+        env:
+          NANOPOL_LOG_LEVEL: DEBUG
         run: pnpm tauri build --debug --target x86_64-pc-windows-msvc
 
       # ==========================================
-      # Step 4: Artifact として保存（公開しない）
+      # Step 4: GitHub Release には公開せず Artifact のみ保存
       # ==========================================
       - name: Upload Windows debug bundles as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
+          # ダウンロード時に識別しやすい名前
           name: nanopol-windows-debug-${{ github.run_number }}
+          # 生成された bundle 一式を保存（exe/msi など）
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/debug/bundle/**
           if-no-files-found: error
+          # 保持期間（必要に応じて延長可）
           retention-days: 14

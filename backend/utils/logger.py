@@ -1,9 +1,11 @@
 import logging
 import sys
 import os
+import json
 from logging.handlers import TimedRotatingFileHandler
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 
 # Rust(Tauri)側から渡された「OS標準の安全なアプリデータディレクトリ」を取得
 app_data_dir = os.getenv("NANOPOL_APP_DATA_DIR")
@@ -46,7 +48,55 @@ class ListHandler(logging.Handler):
 
 def setup_logger(name: str = "NanoPol"):
     logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
+    # ログレベル決定ポリシー:
+    # 通常運用は INFO、障害調査時のみ DEBUG を有効化する。
+    #
+    # 優先順位 (上ほど優先):
+    # 1) 環境変数 NANOPOL_LOG_LEVEL
+    #    - 例: DEBUG / INFO / WARNING / ERROR
+    #    - これは「外部から注入される値」であり、このファイル内では設定しない。
+    #      具体的には、開発時のシェル、起動スクリプト、CI、またはTauri(Rust)側から設定される想定。
+    # 2) <LOG_DIR>/logging_flags.json の内容方式フォールバック
+    #    - debug_logging: true  -> DEBUG
+    #    - debug_logging: false -> INFO
+    # 3) 最終フォールバック
+    #    - 設定読み込み失敗時は安全側で INFO
+    log_level_name = os.getenv("NANOPOL_LOG_LEVEL", "").upper().strip()
+
+    if not log_level_name:
+        logging_flags_path = Path(LOG_DIR) / "logging_flags.json"
+        default_flags = {"debug_logging": False}
+
+        # 設定ファイルが無い場合は自動生成する。
+        # これにより「ファイル名を忘れて再設定できない」運用上の詰まりを防ぐ。
+        if not logging_flags_path.exists():
+            try:
+                logging_flags_path.write_text(
+                    json.dumps(default_flags, ensure_ascii=True, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                # 設定ファイルが作れなくても、ログ自体は INFO で継続する
+                pass
+
+        try:
+            # JSONの最小要件は「dictであること」。
+            # それ以外（配列/文字列/壊れたJSON）は例外または無効値として INFO に倒す。
+            flags = default_flags
+            if logging_flags_path.exists():
+                loaded = json.loads(logging_flags_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    flags = loaded
+
+            debug_logging = bool(flags.get("debug_logging", False))
+            log_level_name = "DEBUG" if debug_logging else "INFO"
+        except Exception:
+            # 設定ファイルが壊れている場合も安全側（INFO）で継続する
+            log_level_name = "INFO"
+
+    log_level = getattr(logging, log_level_name, logging.INFO)
+    # 不正なレベル文字列（例: "VERBOSE"）は getattr の default で INFO へ収束させる。
+    logger.setLevel(log_level)
     
     # 既にハンドラが設定されている場合は何もしない（二重追加防止）
     if logger.handlers:
@@ -89,6 +139,8 @@ def setup_logger(name: str = "NanoPol"):
     list_handler = ListHandler()
     # UI側で自由に整形するため、ここではFormatterを通さずに辞書データをそのまま渡します
     logger.addHandler(list_handler)
+
+    logger.info(f"[SYSTEM] Logger initialized (level={logging.getLevelName(log_level)})")
     
     return logger
 
