@@ -67,6 +67,14 @@ class CameraController:
         self._capture_thread = None # 特急レーン（最速で画像を取得し続ける）のバックグラウンドスレッド
         self._mock_angle = 0.0 # Mock画像生成用の内部状態
         self._pending_snapshot = None # Snapshot時に「保存先を聞く」設定の場合、一時的に画像データを保持するメモリ
+
+        # 起動時にカメラ実行モードの判定根拠を明示する（切り分け用）
+        logger.info(
+            "[CAMERA INIT] mode=%s os=%s HAS_PYUEYE=%s",
+            "Mock" if self.is_mock_env else "Real",
+            platform.system(),
+            HAS_PYUEYE,
+        )
         
     def connect(self, camera_id: int = 0) -> bool:
         """
@@ -541,6 +549,10 @@ class CameraController:
         Returns a list of available cameras.
         """
         if self.is_mock_env:
+            logger.info(
+                "[CAMERA ENUM] mode=Mock reason=%s",
+                "Darwin" if platform.system() == "Darwin" else "pyueye-unavailable",
+            )
             return [
                 {"id": 0, "name": "Mock Camera A (Virtual)", "model": "Simulated-100", "serial": "SIM001"},
             ]
@@ -550,7 +562,8 @@ class CameraController:
 
         # 実機の実装: 接続されているカメラの数を取得
         num_cameras = ueye.int()
-        if ueye.is_GetNumberOfCameras(num_cameras) == ueye.IS_SUCCESS:
+        ret = ueye.is_GetNumberOfCameras(num_cameras)
+        if ret == ueye.IS_SUCCESS:
             n = int(num_cameras)
             cameras = []
             
@@ -587,8 +600,12 @@ class CameraController:
                             "model": info.Model.decode('utf-8', errors='ignore'), # バイト列を文字列にデコード
                             "serial": info.SerNo.decode('utf-8', errors='ignore') # シリアルナンバー
                         })
+                else:
+                    logger.warning("[CAMERA ENUM] is_GetCameraList failed")
+            logger.info("[CAMERA ENUM] mode=Real count=%d", len(cameras))
             return cameras
-        
+
+        logger.warning("[CAMERA ENUM] is_GetNumberOfCameras failed ret=%s", ret)
         return []
 
     def generate_frames(self):

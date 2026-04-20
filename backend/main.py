@@ -282,6 +282,7 @@ def get_system_ports():
         dict: 利用可能なポート名のリスト（例: ["COM1", "COM3"]）。Mock環境時はダミーを返します。
     """
     if stage.is_mock_env:
+        logger.info("[PORT ENUM] mode=Mock")
         return {
             "ports": [
                 "COM1（Mock）",
@@ -292,6 +293,7 @@ def get_system_ports():
     
     # 実機環境ならOSからCOMポート一覧を取得
     ports = [p.device for p in list_ports.comports()]
+    logger.info("[PORT ENUM] mode=Real count=%d", len(ports))
     
     if not ports:
         return {"ports": []}
@@ -529,6 +531,11 @@ def get_cameras():
     PCに接続されている対応カメラ（Thorlabs/uEye）の一覧を取得します。
     """
     cameras_list = camera.get_available_cameras()
+    logger.info(
+        "[CAMERA API] mode=%s count=%d",
+        "Mock" if camera.is_mock_env else "Real",
+        len(cameras_list),
+    )
     return {"cameras": cameras_list}
 
 @app.get("/camera/video_feed")

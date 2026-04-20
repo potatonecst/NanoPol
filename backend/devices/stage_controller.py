@@ -30,6 +30,13 @@ class StageController:
         self.speed_accel_ms = 200
         
         self._mock_pulse = 0 #Mock用の内部変数
+
+        # 起動時にステージ実行モードの判定根拠を残す（切り分け用）
+        logger.info(
+            "[STAGE INIT] mode=%s os=%s",
+            "Mock" if self.is_mock_env else "Real",
+            platform.system(),
+        )
     
     def update_settings(self, pulses_per_degree: int):
         """分解能（1度あたりのパルス数）の設定を更新します"""
