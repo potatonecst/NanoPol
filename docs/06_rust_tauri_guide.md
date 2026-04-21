@@ -123,6 +123,86 @@ tauri::async_runtime::spawn(async move {
 
 ---
 
+## 7. ウィンドウイベント処理とプロセス停止
+
+### 7.1 デュアルイベントハンドラの必要性
+
+Tauriアプリの終了時、ウィンドウの破棄タイミングはOS（Windows/macOS）の実装差により異なります。このため、以下の**2つのイベント**を同時に監視する必要があります：
+
+| イベント | 発火タイミング | 特性 |
+|---------|---------------|------|
+| `CloseRequested` | ユーザーが×ボタンを押すか、`window.close()` が呼ばれた時 | ウィンドウ閉鎖**要求**。ここで処理をブロック可能（キャンセルできる） |
+| `Destroyed` | ウィンドウがOSから完全に破棄された時 | ウィンドウ破棄**確定**。ここでの処理キャンセルは不可 |
+
+```rust
+// 【実装パターン】
+app.on_window_event(move |event| {
+    match event.event() {
+        // パターン1: CloseRequested → フォーカスウィンドウを取得して停止開始
+        tauri::WindowEvent::CloseRequested => {
+            if let Some(window) = app.get_webview_window("main") {
+                stop_backend_sidecar(&window);
+            }
+        },
+        // パターン2: Destroyed → 念のため再度停止を試みる（二重安全装置）
+        tauri::WindowEvent::Destroyed => {
+            if let Some(window) = app.get_webview_window("main") {
+                stop_backend_sidecar(&window);
+            }
+        },
+        _ => {}
+    }
+});
+```
+
+### 7.2 共有ハンドルと `take()` による二重停止防止
+
+Pythonプロセスのハンドルは、Rust側の `State<BackendProcess>` に格納されます。
+
+```rust
+pub struct BackendProcess(pub Mutex<Option<Child>>);
+```
+
+**重要な設計ポイント:**
+- 第1回目のイベント発火（例: `CloseRequested`）で、`take()` が `Some(child)` を取り出し、それを `kill()` します。
+- 内部の `Option` は `None` に変わります。
+- 第2回目のイベント発火（例: `Destroyed`）で同じ `stop_backend_sidecar()` が呼ばれても、`take()` は `None` を返すため、何も起きません（idempotent）。
+
+```rust
+pub fn stop_backend_sidecar(window: &Window) {
+    if let Ok(backend_process) = window.state::<BackendProcess>().0.lock() {
+        // take() で所有権を取り出す → Some(child) → kill() 実行
+        // 2回目呼び出し時は None を返す（二重実行防止）
+        if let Some(mut child) = backend_process.take() {
+            let _ = child.kill();
+        }
+    }
+}
+```
+
+### 7.3 なぜ両イベントが必要か（OS別動作）
+
+**Windows:**
+- `CloseRequested` と `Destroyed` がほぼ同時に発火する場合が多い
+- しかし、例外的なタイミング（UI高負荷など）では遅延する可能性がある
+
+**macOS:**
+- `CloseRequested` 発火 → 若干の遅延 → `Destroyed` 発火（明確に分かれる）
+- macOS特有の ウィンドウマネージャー挙動の差
+
+**デュアルハンドラの効果:**
+どちらのOS/タイミングであっても、最低1回は確実に `stop_backend_sidecar()` が実行され、Pythonプロセスは正しく停止されます。
+
+### 7.4 実装上の注意点
+
+1. **例外安全性:** `stop_backend_sidecar()` 内で例外が発生しても、アプリ終了フロー全体が中断しないよう、エラーハンドリングは限定的です（`let _ = child.kill()` など）。
+
+2. **タイムアウト不要:** `kill()` は即座に完了し、プロセスの確実な終了を保証します。タイムアウトロジックは通常不要です。
+
+3. **ログ出力のタイミング:** アプリが終了する段階ではログシステムが既にシャットダウンしている可能性があるため、ログ出力は控えめにします。
+
+---
+
 ## まとめ
 
 このアプリの `lib.rs` を修正する際、以下のポイントだけ押さえておけば大抵のエラーは防げます。
@@ -131,3 +211,4 @@ tauri::async_runtime::spawn(async move {
 2. 関数が `Result` を返す場合、とりあえず `.expect("エラー理由")` をつけて中身を取り出す。
 3. 別のスレッドに変数を渡すときは `move` を使う。
 4. スレッド間で共有したいデータは `Mutex` で包み、使う直前に `.lock().unwrap()` する。
+5. ウィンドウイベント処理時は **`CloseRequested` と `Destroyed` の両イベント**を監視し、プロセス停止を確実にする。

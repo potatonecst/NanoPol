@@ -128,6 +128,38 @@ const result = await request<{ status: string }>("/stage/connect");
 ### 2.5 バックグラウンドポーリング分離 (`useStagePolling.ts`)
 
 ステージの角度 (`currentAngle`) など、高頻度で更新される値はReactのメイン描画サイクルに負荷をかけないよう、専用のカスタムフックに分離しています。
+
+#### ポーリング失敗時の自動切断（フェイルセーフ）
+
+**課題:** USB抜きなどでバックエンド通信が断絶した場合、フロントエンドのポーリングが無限にリトライし続け、エラーログが蓄積され、UIが反応不能になる可能性がありました。
+
+**実装:**
+```typescript
+useMountEffect(() => {
+    const pollingInterval = setInterval(async () => {
+        try {
+            const result = await stageApi.getStatus();
+            useAppStore.setState({
+                currentAngle: result.angle,
+                isStageBusy: result.is_busy,
+            });
+        } catch (error) {
+            // ★ ポーリング失敗時の自動フェイルセーフ
+            console.error("Stage polling failed:", error);
+            useAppStore.setState({
+                isStageConnected: false,  // ← 接続状態を即座に切断
+                isStageBusy: false,       // ← 移動中状態もクリア
+            });
+        }
+    }, 100);
+    return () => clearInterval(pollingInterval);
+}, []);
+```
+
+**効果:**
+- バックエンド通信失敗 → 即座に UI の接続状態が `false` に切り替わる
+- ポーリングは継続するが、次回のポーリングで `/health` の成功を待つ（自己修復）
+- エラーログの無限蓄積を防ぎ、UIの応答性を保証
 `isStageConnected` が `true` の間、0.1秒(100ms)間隔で `/stage/position` をポーリングし、Zustandストアを直接 (`setState` で) 書き換え続けることで、パフォーマンスとリアルタイム性を両立しています。
 
 ---

@@ -50,9 +50,13 @@
 *   backend の `/health` は到達確認のため、`origin` と `host` を system.log に出力すること。
 *   API クライアントは GET/HEAD リクエスト時に不要な `Content-Type` を送らないこと。
 *   API クライアントは WebView 差異を減らすため `mode: "cors"` と `credentials: "include"` を明示すること。
+*   アプリ終了時は Rust 側で sidecar backend プロセスを明示停止し、ゾンビ化による次回起動時の競合を防ぐこと（`CloseRequested`/`Destroyed` の両経路で停止を試みる）。
 
 ## 5. 障害時の判定規約（運用）
 
 *   `frontend_connection_trace.log` に `startHealthChecks ...` があり、同時刻帯で `system.log` に `[HEALTH] GET /health ...` がある場合、ポート受け渡しは成立していると判定する。
 *   上記成立にもかかわらず frontend 側が `TypeError: Failed to fetch` を継続する場合、障害点は「送信前」ではなく「レスポンス受理層（CORS/WebView）」とみなして切り分ける。
 *   本判定で CORS/WebView 層が疑われる場合は、`fetch` と `XMLHttpRequest` の比較試験を次段対応とする。
+
+---
+*Last Updated: 2026-04-21*

@@ -142,10 +142,19 @@ export function DevicesView() {
      */
     const handleStageConnect = async () => {
         if (isStageConnected) {
-            //切断処理（Mockなので状態を変えるだけ）
-            setIsStageConnected(false);
-            toast.info("Disconnected Stage");
-            systemApi.postLogs("INFO", "Disconnected Stage (Mock state updated)").catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            try {
+                setIsStageLoading(true);
+                await stageApi.disconnect();
+                setIsStageConnected(false);
+                toast.info("Disconnected Stage");
+                systemApi.postLogs("INFO", "Disconnected Stage successfully").catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            } catch (error) {
+                console.error(error);
+                toast.error("Failed to disconnect stage.");
+                systemApi.postLogs("ERROR", `Failed to disconnect stage: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            } finally {
+                setIsStageLoading(false);
+            }
             return;
         }
 

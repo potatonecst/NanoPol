@@ -28,6 +28,11 @@ export const useStagePolling = () => {
                 });
             } catch (error) {
                 console.error("Stage polling failed:", error);
+                // 通信断やAPI失敗時に接続状態を落とし、UIの操作不能状態を避ける
+                useAppStore.setState({
+                    isStageConnected: false,
+                    isStageBusy: false,
+                });
             }
         }, 100);
 

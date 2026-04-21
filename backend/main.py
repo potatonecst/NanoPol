@@ -356,6 +356,13 @@ def connect_stage(req: ConnectStageRequest):
         logger.error(f"Stage Connection Failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/stage/disconnect")
+def disconnect_stage():
+    """ステージ接続を明示的に切断します。"""
+    stage.disconnect()
+    logger.info("[STAGE] Disconnected by API request")
+    return {"status": "success", "message": "Stage disconnected"}
+
 @app.post("/stage/config")
 def stage_update_config(req: UpdateConfigRequest):
     """

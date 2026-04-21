@@ -49,6 +49,30 @@ fn get_backend_port(state: tauri::State<'_, BackendPort>) -> Option<u16> {
     *state.0.lock().unwrap()
 }
 
+/// backend sidecar を明示的に停止します。
+///
+/// この関数を共通化しておく理由:
+/// - `CloseRequested` と `Destroyed` の両方から呼び出しても、同じ処理を再利用できる
+/// - `take()` により 2 回目以降は `None` になるため、kill の二重実行を自然に防げる
+///
+/// 実際にやっていること:
+/// 1. `BackendChildState` から `CommandChild` の所有権を取り出す
+/// 2. その場で `kill()` を呼んで Python sidecar を終了させる
+/// 3. 失敗した場合でもアプリ終了処理自体は止めず、ログだけ残す
+fn stop_backend_sidecar(app_handle: &tauri::AppHandle) {
+    let child_state = app_handle.state::<BackendChildState>();
+    let mut guard = child_state.0.lock().unwrap();
+
+    if let Some(child) = guard.take() {
+        // ここで `take()` 済みなので、同じ window イベントがもう一度来ても
+        // `guard` の中身は `None` のままになり、二重 kill を避けられます。
+        println!("[SYSTEM] Stopping backend sidecar before app exit...");
+        if let Err(e) = child.kill() {
+            eprintln!("[SYSTEM] Failed to kill backend sidecar on close: {e}");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Tauri アプリの初期化と、Python sidecar の起動・監視を行います。
 ///
@@ -167,16 +191,22 @@ pub fn run() {
         // - `kill()` を1回だけ実行（2回目以降は `None` なので何もしない）
         // - kill失敗時もアプリ終了処理を止めず、stderrへ記録のみ行う
         .on_window_event(|window, event| {
-            if matches!(event, WindowEvent::Destroyed) {
-                let app_handle = window.app_handle();
-                let child_state = app_handle.state::<BackendChildState>();
-                let mut guard = child_state.0.lock().unwrap();
-
-                if let Some(child) = guard.take() {
-                    if let Err(e) = child.kill() {
-                        eprintln!("[SYSTEM] Failed to kill backend sidecar on close: {e}");
-                    }
+            match event {
+                // Xボタンやウィンドウ終了操作の最初の入口。
+                // ここで止めておくと、後続の破棄処理より先に backend を片付けやすい。
+                WindowEvent::CloseRequested { .. } => {
+                    // 通常の「ユーザーがウィンドウを閉じた」経路。
+                    // ここで backend を止めるのが第一優先です。
+                    stop_backend_sidecar(&window.app_handle());
                 }
+                // CloseRequested を通らない終了経路への保険。
+                // 2段構えにしておくことで、OS側の破棄順序差異に強くする。
+                WindowEvent::Destroyed => {
+                    // 何らかの理由で CloseRequested を経由せずに破棄された場合の保険。
+                    // 既に stop_backend_sidecar() 済みなら何も起きません。
+                    stop_backend_sidecar(&window.app_handle());
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![greet, get_backend_port])

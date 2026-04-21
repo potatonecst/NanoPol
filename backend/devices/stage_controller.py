@@ -37,6 +37,17 @@ class StageController:
             "Mock" if self.is_mock_env else "Real",
             platform.system(),
         )
+
+    def _mark_disconnected(self, reason: str):
+        """通信異常時に接続状態を確実に落として、上位の状態表示を同期させる。"""
+        logger.error(f"{self.log_tag} Disconnected due to communication failure: {reason}")
+        try:
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+        except Exception:
+            pass
+        self.ser = None
+        self.is_connected = False
     
     def update_settings(self, pulses_per_degree: int):
         """分解能（1度あたりのパルス数）の設定を更新します"""
@@ -95,6 +106,10 @@ class StageController:
         
         self.ser = None
         self.is_connected = False
+
+    def disconnect(self):
+        """APIから明示的に呼びやすい切断メソッド（closeの別名）。"""
+        self.close()
     
     def _send_command(self, cmd: str):
         """
@@ -118,11 +133,15 @@ class StageController:
             # readline()は改行コードが来るまで待機します（またはタイムアウト）
             response = self.ser.readline().decode("ascii").strip()
             #logger.debug(f"[STAGE] Send: {cmd} / Recv: {response}")
+
+            if response == "":
+                self._mark_disconnected(f"No response for command '{cmd}'")
+                raise Exception("Empty response from stage controller")
             
             return response
         except Exception as e:
             logger.error(f"{self.log_tag} Communication Error: {e}")
-            
+            self._mark_disconnected(str(e))
             raise e
     
     #---座標変換---
@@ -323,3 +342,4 @@ class StageController:
                 return 0.0, False
         except Exception as e:
             logger.error(f"Status parse error: {e}, Raw: {resp}")
+            return 0.0, False

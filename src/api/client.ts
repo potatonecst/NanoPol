@@ -79,6 +79,10 @@ export const stageApi = {
             body: JSON.stringify({ port })
         }),
 
+    // ステージ接続を切断します
+    disconnect: () =>
+        request<{ status: string, message: string }>("/stage/disconnect", { method: "POST" }),
+
     // ステージの分解能（1度あたりのパルス数）を更新します
     updateConfig: (pulsesPerDegree: number) =>
         request<{ status: string }>("/stage/config", {
