@@ -131,6 +131,45 @@ Content-Type: application/json
 ※ 実装上、開発環境では `invoke` 失敗時に固定ポートへ即フォールバックしますが、本番環境では即フォールバックせず再試行を継続します。
 ※ ヒント経由でポートを採用する場合も、フロントエンド側で `/health` probe を通過したものだけを使います。
 
+### 2.7 診断エンドポイント (`/stage/diagnostics`, `/camera/diagnostics`)
+
+実機環境での「接続候補が見えない」「Mockに落ちる」問題を短時間で切り分けるため、診断専用APIを追加しています。
+
+#### `GET /stage/diagnostics`
+
+主な返却項目:
+
+*   `stage_connected`, `stage_mode`, `serial_is_open`
+*   `has_pyserial`, `pyserial_import_error`
+*   `last_error`, `last_connected_port`, `last_baudrate`
+*   `available_ports`（現在OSが列挙しているCOMポート一覧）
+*   `python_executable`, `is_frozen`
+
+用途:
+
+*   ステージ未接続時に「そもそもCOMポートが見えていない」のか
+*   「ポートは見えるが接続失敗」なのか
+*   「pyserial import失敗でMock動作」なのか
+
+を即座に判定できます。
+
+#### `GET /camera/diagnostics`
+
+主な返却項目:
+
+*   `camera_connected`, `camera_mode`
+*   `has_pyueye`, `pyueye_import_error`, `pyueye_module_file`
+*   `windows_dll_candidates`（uEye DLL 候補パスの存在確認）
+*   `python_executable`, `is_frozen`
+
+用途:
+
+*   `pyueye` パッケージ不在と `ueye_api` DLL 解決失敗の分離
+*   配布ビルド（`is_frozen=true`）で実行中の実体確認
+*   共用PCで環境を壊さずに「どこが足りないか」を可視化
+
+> 注意: `windows_dll_candidates` は**診断表示用の候補一覧**であり、`pyueye` の内部探索経路そのものではありません。
+
 ---
 
 ## 3. ロギングシステム (Logging)
