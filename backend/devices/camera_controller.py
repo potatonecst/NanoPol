@@ -12,13 +12,20 @@ from typing import Tuple, Optional
 
 # pyueyeライブラリのインポートを試みる
 # インストールされていない場合や、DLLが見つからない場合はMockモードに移行するためのフラグを立てる
+PYUEYE_IMPORT_ERROR = None
+PYUEYE_MODULE_FILE = None
 try:
     from pyueye import ueye
     HAS_PYUEYE = True
-except ImportError:
+    PYUEYE_MODULE_FILE = getattr(ueye, "__file__", None)
+except ImportError as e:
     HAS_PYUEYE = False
+    PYUEYE_IMPORT_ERROR = str(e)
 
 from utils.logger import logger
+
+if PYUEYE_IMPORT_ERROR:
+    logger.warning(f"[CAMERA INIT] pyueye import failed: {PYUEYE_IMPORT_ERROR}")
 
 class CameraController:
     def __init__(self):
@@ -31,6 +38,9 @@ class CameraController:
         self.pitch = 0 # 画像1行あたりのバイト数（パディング含む）
         
         self.is_connected = False # カメラが現在接続されているかどうかのフラグ
+        self.has_pyueye = HAS_PYUEYE # pyueye import 成功可否（診断API用）
+        self.pyueye_import_error = PYUEYE_IMPORT_ERROR # import失敗理由（診断API用）
+        self.pyueye_module_file = PYUEYE_MODULE_FILE # import済みpyueyeモジュールファイル位置（診断API用）
         # pyueyeがない、またはMac環境（ドライバ非対応）の場合はMockモードにする
         # uEyeのドライバは主にWindows/Linux向けで、Mac対応は限定的であるため。
         self.is_mock_env = not HAS_PYUEYE or platform.system() == "Darwin"

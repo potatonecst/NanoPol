@@ -493,6 +493,39 @@ def stage_get_position():
         "is_measuring": app_state.is_measuring,
     }
 
+@app.get("/stage/diagnostics")
+def stage_diagnostics():
+    """
+    ステージの初期化・接続不具合の切り分けに必要な診断情報を返します。
+    """
+    try:
+        available_ports = [p.device for p in list_ports.comports()]
+    except Exception as e:
+        available_ports = []
+        logger.warning(f"[STAGE DIAG] Failed to enumerate ports: {e}")
+
+    return {
+        "status": "success",
+        "stage_connected": stage.is_connected,
+        "stage_mode": "Mock" if stage.is_mock_env else "Real",
+        "has_pyserial": stage.has_pyserial,
+        "pyserial_import_error": stage.pyserial_import_error,
+        "serial_is_open": bool(stage.ser and stage.ser.is_open),
+        "last_error": stage.last_error,
+        "last_connected_port": stage.last_connected_port,
+        "last_baudrate": stage.last_baudrate,
+        "pulses_per_degree": stage.pulses_per_degree,
+        "speed_min_pps": stage.speed_min_pps,
+        "speed_max_pps": stage.speed_max_pps,
+        "speed_accel_ms": stage.speed_accel_ms,
+        "cached_current_angle": app_state.current_angle,
+        "cached_is_busy": app_state.is_busy,
+        "available_ports": available_ports,
+        "platform": sys.platform,
+        "python_executable": sys.executable,
+        "is_frozen": bool(getattr(sys, "frozen", False)),
+    }
+
 # ==========================================
 # カメラ制御・画像保存関連 API
 # ==========================================
@@ -544,6 +577,38 @@ def get_cameras():
         len(cameras_list),
     )
     return {"cameras": cameras_list}
+
+@app.get("/camera/diagnostics")
+def camera_diagnostics():
+    """
+    カメラ初期化の切り分けに必要な診断情報を返します。
+    研究室PCでの原因調査をAPI経由で完結させるためのエンドポイントです。
+    """
+    windows_dll_candidates = []
+    if sys.platform.startswith("win"):
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        candidate_paths = [
+            os.path.join(program_files, "IDS", "uEye", "Bin", "ueye_api_64.dll"),
+            os.path.join(system_root, "System32", "ueye_api_64.dll"),
+            os.path.join(system_root, "SysWOW64", "ueye_api.dll"),
+        ]
+        windows_dll_candidates = [
+            {"path": p, "exists": os.path.exists(p)} for p in candidate_paths
+        ]
+
+    return {
+        "status": "success",
+        "camera_connected": camera.is_connected,
+        "camera_mode": "Mock" if camera.is_mock_env else "Real",
+        "has_pyueye": camera.has_pyueye,
+        "pyueye_import_error": camera.pyueye_import_error,
+        "pyueye_module_file": camera.pyueye_module_file,
+        "python_executable": sys.executable,
+        "is_frozen": bool(getattr(sys, "frozen", False)),
+        "platform": sys.platform,
+        "windows_dll_candidates": windows_dll_candidates,
+    }
 
 @app.get("/camera/video_feed")
 def video_feed():

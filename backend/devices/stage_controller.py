@@ -1,8 +1,16 @@
-import serial
 import time
 #import logging
 import platform
 from typing import Tuple
+
+PYSERIAL_IMPORT_ERROR = None
+try:
+    import serial
+    HAS_PYSERIAL = True
+except ImportError as e:
+    serial = None
+    HAS_PYSERIAL = False
+    PYSERIAL_IMPORT_ERROR = str(e)
 
 from utils.logger import logger
 
@@ -12,9 +20,14 @@ class StageController:
     def __init__(self):
         self.ser = None
         # Windows以外のOS（Mac/Linux）ではドライバがないため、自動的にMock（シミュレータ）環境とみなす
-        self.is_mock_env = platform.system() != "Windows" 
+        self.is_mock_env = platform.system() != "Windows" or not HAS_PYSERIAL
         self.is_connected = False
         self.log_tag = "[STAGE-MOCK]" if self.is_mock_env else "[STAGE]"
+        self.has_pyserial = HAS_PYSERIAL
+        self.pyserial_import_error = PYSERIAL_IMPORT_ERROR
+        self.last_error = None
+        self.last_connected_port = None
+        self.last_baudrate = None
         
         #ステージ仕様 (OSMS-60YAW)
         #分解能: Full=0.005deg/pulse, Half=0.0025deg/pulse 
@@ -33,14 +46,19 @@ class StageController:
 
         # 起動時にステージ実行モードの判定根拠を残す（切り分け用）
         logger.info(
-            "[STAGE INIT] mode=%s os=%s",
+            "[STAGE INIT] mode=%s os=%s HAS_PYSERIAL=%s",
             "Mock" if self.is_mock_env else "Real",
             platform.system(),
+            HAS_PYSERIAL,
         )
+
+        if self.pyserial_import_error:
+            logger.warning(f"[STAGE INIT] pyserial import failed: {self.pyserial_import_error}")
 
     def _mark_disconnected(self, reason: str):
         """通信異常時に接続状態を確実に落として、上位の状態表示を同期させる。"""
         logger.error(f"{self.log_tag} Disconnected due to communication failure: {reason}")
+        self.last_error = reason
         try:
             if self.ser and self.ser.is_open:
                 self.ser.close()
@@ -59,12 +77,20 @@ class StageController:
         指定されたCOMポートを開き、ステージコントローラと接続します。
         Mac/Linux環境の場合は、自動的にMock（シミュレータ）接続として成功を返します。
         """
+        self.last_connected_port = port
+        self.last_baudrate = baudrate
+        self.last_error = None
+
         if self.is_mock_env:
             self.is_connected = True
             logger.info(f"[STAGE-MOCK] Connected to Virtual Device (OS: {platform.system()})")
             # Mockでも設定適用ログを出すために呼び出す
             self.set_speed(self.speed_min_pps, self.speed_max_pps, self.speed_accel_ms)
             return True
+
+        if not self.has_pyserial:
+            self.last_error = "pyserial is not available"
+            raise RuntimeError(self.last_error)
         
         # Windows実機環境: pyserialを使ってCOMポートを開く
         try:
@@ -96,6 +122,7 @@ class StageController:
             logger.error(f"[STAGE-REAL] Connection Failed: {e}")
             self.ser = None
             self.is_connected = False
+            self.last_error = str(e)
             raise e
     
     def close(self):
