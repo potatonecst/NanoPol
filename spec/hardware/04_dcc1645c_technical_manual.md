@@ -50,7 +50,7 @@
 
 ## 5. ソフトウェア・制御
 
-PCからの制御には、Thorlabsが提供する **ThorCam** ソフトウェア、または **uc480 SDK** (旧・IDS Imaging社互換ドライバ) を使用します。
+PCからの制御には、**IDS Imaging Systems の uc480 SDK** およびそのPythonラッパー（`pylablib.devices.uc480` など）を使用します。
 
 ### SDK (uc480)
 
@@ -63,20 +63,9 @@ PCからの制御には、Thorlabsが提供する **ThorCam** ソフトウェア
     * `is_CaptureVideo()`: ライブキャプチャ開始
     * `is_FreezeVideo()`: スナップショット撮影
 
-### Python制御 (PyuEye)
+### Python制御 (pylablib / uc480ドライバ)
 
-Pythonからは `pyueye` (IDS Imaging社のラッパー) を使用して制御可能です。
-
-```python
-from pyueye import ueye
-
-# カメラハンドルの初期化
-h_cam = ueye.HIDS(0)
-ret = ueye.is_InitCamera(h_cam, None)
-
-# カラーモード設定 (例: RGB8)
-ueye.is_SetColorMode(h_cam, ueye.IS_CM_BGR8_PACKED)
-```
+Pythonからは、uc480 SDKのラッパーライブラリ（`pylablib.devices.uc480` など）を通じて制御可能です。実装詳細については [01_backend_devices.md](../../docs/01_backend_devices.md) を参照してください。
 
 ## 6. 機械的仕様
 

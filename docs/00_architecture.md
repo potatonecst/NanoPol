@@ -27,7 +27,7 @@ graph TD
 
     subgraph "Hardware / Mock"
         Stage[(GSC-01 Stage)]
-        Camera[(DCC1645C Camera)]
+        Camera[(Thorlabs DCC1545M Camera)]
     end
 
     UI --> Store

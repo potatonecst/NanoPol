@@ -601,9 +601,8 @@ def camera_diagnostics():
         "status": "success",
         "camera_connected": camera.is_connected,
         "camera_mode": "Mock" if camera.is_mock_env else "Real",
-        "has_pyueye": camera.has_pyueye,
-        "pyueye_import_error": camera.pyueye_import_error,
-        "pyueye_module_file": camera.pyueye_module_file,
+        "has_uc480": camera.has_uc480,
+        "uc480_import_error": camera.uc480_import_error,
         "python_executable": sys.executable,
         "is_frozen": bool(getattr(sys, "frozen", False)),
         "platform": sys.platform,
@@ -751,38 +750,90 @@ def write_backend_port_hint(app_data_dir: str | None, port: int) -> None:
     logger.info(f"[SYSTEM] Wrote backend port hint to {hint_path}")
 
 if __name__ == "__main__":
+    # ------------------------------------------------------------------
+    # 開発用オプション（--reload）についての説明
+    # ------------------------------------------------------------------
+    # このスクリプトは2つの起動モードを想定しています。
+    # 1) Tauri (アプリバンドル) 経由で起動される本番相当モード
+    # 2) ローカル開発者が直接 python main.py で起動する開発モード
+    #
+    # 開発時はファイル変更を検知して自動でサーバーを再起動する
+    # `uvicorn --reload` 相当の振る舞いが便利なので、`--reload` フラグを用意しています。
+    #
+    # 実際に `--reload` を付けた場合は、Uvicorn にモジュール参照文字列
+    # ("main:app") を渡して再読み込み対象のモジュール解決を行わせます。
+    # これは Uvicorn の reload 機構がモジュール名ベースで監視を行うためです。
+    #
+    # 注意事項:
+    # - 本番運用や Tauri 経由の起動では `--reload` を使わないでください。
+    # - reload モードはファイル監視のために追加プロセスを起動するため、開発以外
+    #   の用途では予期しない副作用が出る可能性があります。
+    # ------------------------------------------------------------------
+
+    import argparse
     import uvicorn
     import socket
     import os
-    
+
+    parser = argparse.ArgumentParser(description="NanoPol backend runner")
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help=(
+            "Enable Uvicorn reload mode (development only). "
+            "When set, the server restarts on code changes."
+        ),
+    )
+    args = parser.parse_args()
+
     # Tauri(Rust)経由で起動されたかどうかの判定（環境変数の有無）
+    # Tauri 起動時は Rust 側がポートを監視するため、空きポートを先に確保して
+    # 親プロセスに通知する必要があります。このフローは production 相当です。
     is_tauri = os.getenv("NANOPOL_APP_DATA_DIR") is not None
-    
+
     if is_tauri:
-        # 1. OSに完全に空いているポートを自動で探させる
+        # 1) OSに空きポートを確保させ、そのポート番号を Tauri(Rust) 側に通知する
+        #    -> Rust 側がこのポートへ接続してバックエンドを利用できるようにする
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # port=0 指定でOSに空きポート割り当てを委譲する
-        sock.bind(("127.0.0.1", 0)) # ポート0を指定するとOSが空きポートを割り当てます
-        port = sock.getsockname()[1] # 割り当てられたポート番号を取得
-        sock.close() # 一旦ソケットを閉じて、Uvicornに席を譲ります
-        # 2. 確保したポート番号を標準出力に書き出す（ここでTauri/Rustが検知する）
-        # flush=True をつけることで、バッファに溜めずに即座にパイプに流し込みます。
+        sock.bind(("127.0.0.1", 0))  # port=0 で OS に任せる
+        port = sock.getsockname()[1]
+        sock.close()
+
+        # 2) Tauri に渡すための標準出力/標準エラーへポート番号を出力
+        #    flush=True により出力の遅延を避ける
         print(f"[PORT] {port}", flush=True)
         import sys
         # 出力先差異に備えてstderrにも同じ通知を流す
         print(f"[PORT] {port}", file=sys.stderr, flush=True)
 
-        # 3. Rust側のログ受信取りこぼしに備え、AppDataにポートヒントを書き込む
+        # 3) (任意) AppData にポートヒントを書き込み、他コンポーネントの保険とする
         try:
             app_data_dir = os.getenv("NANOPOL_APP_DATA_DIR")
             # React側の保険経路が読めるよう、ポートヒントを永続化
             write_backend_port_hint(app_data_dir, port)
         except Exception as e:
-            # ヒント書き込み失敗は致命ではないため起動継続する
+            # ヒント書き込みに失敗しても起動自体は継続させる
             logger.warning(f"[SYSTEM] Failed to write backend port hint: {e}")
     else:
-        # 開発中の手動起動時は、固定ポート(14201)を使用する
+        # 開発モード: 固定ポートを使うことでフロントエンドから直接アクセスしやすくする
         port = 14201
-    
-    # 3. 決定したポートでFastAPIサーバーを起動
-    uvicorn.run(app, host="127.0.0.1", port=port)
+
+    # ------------------------------------------------------------------
+    # Uvicorn を起動する際の挙動
+    # - 開発時に --reload を指定した場合、`uvicorn.run("main:app", ..., reload=True)`
+    #   のようにモジュール名で指定します。これにより、Uvicorn はソースファイルの
+    #   変更を検知してプロセスを再起動します。
+    # - reload_dirs に現在のディレクトリを渡すことで、監視対象フォルダを限定します。
+    # - 本番（Tauri）起動時は `app` オブジェクトを直接渡して起動します。
+    # ------------------------------------------------------------------
+    if args.reload:
+        # reload=True を有効にするため、文字列で参照（モジュール:attribute）を渡す
+        uvicorn.run(
+            "main:app",
+            host="127.0.0.1",
+            port=port,
+            reload=True,
+            reload_dirs=[os.path.dirname(__file__)],
+        )
+    else:
+        uvicorn.run(app, host="127.0.0.1", port=port)

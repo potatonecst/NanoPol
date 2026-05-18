@@ -1,4 +1,4 @@
-# USB 2.0 CMOSカメラ DCC1545M 技術仕様書
+# USB 2.0 CMOSモノクロカメラ DCC1545M 技術仕様書
 
 > **Reference:** `references/DCC1645C/DCC1645C-Manual.pdf`
 
@@ -47,12 +47,12 @@
     * USBバスパワー駆動 (外部電源不要)。
     * 消費電力: 約 1.1 W ～ 2.1 W (動作モードによる)。
 * **GPIO / トリガー:** **搭載なし**
-    * DCC1645Cと同様、小型化優先のため外部トリガー入力やGPIO端子（Hiroseコネクタやピンヘッダ）は物理的に搭載していません。
+    * 同シリーズのDCC1645Cと同様、小型化優先のため外部トリガー入力やGPIO端子（Hiroseコネクタやピンヘッダ）は物理的に搭載していません。
     * 制御はソフトウェアトリガーまたはフリーラン（連続取り込み）のみとなります。ハードウェア同期が必要な用途には不向きです。
 
 ## 5. ソフトウェア・制御
 
-PCからの制御には、Thorlabsが提供する **ThorCam** ソフトウェア、または **uc480 SDK** (旧・IDS Imaging社互換ドライバ) を使用します。
+PCからの制御には、**IDS Imaging Systems の uc480 SDK** およびそのPythonラッパー（`pylablib.devices.uc480` など）を使用します。
 
 ### SDK (uc480)
 
@@ -65,20 +65,9 @@ PCからの制御には、Thorlabsが提供する **ThorCam** ソフトウェア
     * `is_CaptureVideo()`: ライブキャプチャ開始
     * `is_FreezeVideo()`: スナップショット撮影
 
-### Python制御 (PyuEye)
+### Python制御 (pylablib / uc480ドライバ)
 
-Pythonからは `pyueye` (IDS Imaging社のラッパー) を使用して制御可能です。
-
-```python
-from pyueye import ueye
-
-# カメラハンドルの初期化
-h_cam = ueye.HIDS(0)
-ret = ueye.is_InitCamera(h_cam, None)
-
-# カラーモード設定 (モノクロモデルのため MONO8 を指定)
-ueye.is_SetColorMode(h_cam, ueye.IS_CM_MONO8)
-```
+Pythonからは、uc480 SDKのラッパーライブラリ（`pylablib.devices.uc480` など）を通じて制御可能です。実装詳細については [01_backend_devices.md](../../docs/01_backend_devices.md) を参照してください。
 
 ## 6. 機械的仕様
 

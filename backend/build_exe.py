@@ -24,7 +24,7 @@ if __name__ == '__main__':
         '--hidden-import=uvicorn.protocols.websockets.auto',
         '--hidden-import=uvicorn.lifespan.on',
         '--hidden-import=uvicorn.lifespan.off',
-        '--hidden-import=pyueye',
-        '--hidden-import=pyueye.ueye',
+        '--hidden-import=pylablib.devices.uc480',
+        '--hidden-import=pylablib.devices',
     ])
     print("==== Python Backend Build Completed! ====")

@@ -15,9 +15,10 @@
       * **動作モード:**
           * **Windows:** 実機接続を試行。接続失敗時はエラー (500) を返す。
           * **Non-Windows (Mac/Linux):** 自動的に **Mockモード** で動作し、仮想的な応答を返す。
-  * **カメラ (DCC1645C):**
+  * **カメラ (Thorlabs DCC1545M / モノクロ / uc480):**
       * **実装状況:** **実装済み (Implemented)**
-      * ドライバ: IDS uEye (`uc480`).
-      * ライブラリ: `pyueye` (Python).
+      * ドライバ: IDS `uc480`. Python 側のアクセスは `pylablib.devices.uc480` (pylablib) を用いて行います。
+      * ライブラリ移行メモ: 既存の `pyueye` ベース実装は `camera_controller_old.py` に残し、フォールバックとして保持しています。現在の本流は `pylablib` です。
+      * デフォルト設定: フロントエンドのデフォルト `cameraMode` は `Monochrome` です（`src/constants/constants.ts` やスキーマで一致確認済み）。
       * センサー: 1280x1024 CMOS, 10-bit ADC.
       * データ取得: **16-bit コンテナ** (`uint16`) として取得・保存。
