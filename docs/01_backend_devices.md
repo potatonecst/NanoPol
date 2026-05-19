@@ -6,10 +6,10 @@
 ## 1. モジュール構成
 OptoSigma製 GSC-01 (1軸ステージコントローラー) を制御するモジュールです。
 
-| ファイル名             | クラス名           | 役割                                       | 制御対象                            |
-| :--------------------- | :----------------- | :----------------------------------------- | :---------------------------------- |
-| `stage_controller.py`  | `StageController`  | 回転ステージの角度制御、原点復帰、状態監視 | Sigma Koki GSC-01 (OSMS-60YAW)      |
-| `camera_controller.py` | `CameraController` | 露光/ゲイン設定、画像キャプチャ、MJPEG配信 | Thorlabs DCC1545M (モノクロ, uc480) |
+| ファイル名             | クラス名           | 役割                                       | 制御対象                                            |
+| :--------------------- | :----------------- | :----------------------------------------- | :-------------------------------------------------- |
+| `stage_controller.py`  | `StageController`  | 回転ステージの角度制御、原点復帰、状態監視 | Sigma Koki GSC-01 (OSMS-60YAW)                      |
+| `camera_controller.py` | `CameraController` | 露光/ゲイン設定、画像キャプチャ、MJPEG配信 | Thorlabs DCC1545M (モノクロ, uc480 / `UC480Camera`) |
 
 ---
 
@@ -193,7 +193,7 @@ sequenceDiagram
 
 ## 3. CameraController (カメラ制御)
 
-Thorlabs (IDS Imaging) 製のモノクロUSBカメラ `DCC1545M` を制御します。現在は `pylablib.devices.uc480`（`pylablib`）を用いる uc480 ドライバ経由の実装をメインとしています。
+Thorlabs (IDS Imaging) 製のモノクロUSBカメラ `DCC1545M` を制御します。現在は `pylablib.devices.uc480`（`pylablib`）を用いる uc480 ドライバ経由の実装をメインとしています。実機ハンドルは `uc480.UC480Camera` で生成します（実装では `from pylablib.devices import uc480` でインポート済み）。
 
 ※移行期間中は既存の `pyueye` ベース実装を `camera_controller_old.py` として残し、環境によってフォールバックできる設計です。
 
@@ -206,6 +206,12 @@ Thorlabs (IDS Imaging) 製のモノクロUSBカメラ `DCC1545M` を制御しま
   - **Exposure:** 露光時間 (ms)。`set_exposure(ms)` にて制御。
   - **Gain:** ハードウェアゲイン (0-100)。`set_gain(val)` にて制御。
   - *(Note: Pixel Clock については、安定性のため現在ドライバのデフォルト値を使用しており手動制御は未実装です)*
+
+**互換性と追加API:**
+- 最近の修正で `CameraController` は既存の setter に加えて互換性のためのアクセサ `get_exposure()` と `get_gain()` を追加しました。これにより外部から現在の露光/ゲイン値を安全に取得できます。既存の UI や外部スクリプトがこれらの値を参照している場合、`get_*` 系の存在を前提にできます。
+
+**テストとドキュメント:**
+- 本プロジェクトでは実機がない環境でも早期に問題を検出するため、`pylablib` の `uc480` を置き換える Mock 実装を用いたユニットテスト群を用意しています。テスト実行手順や設計方針は `spec/12_testing.md` にまとめていますので、開発前にそちらを参照してください。
 
 ### 3.2 画像取得フローとコード解説
 
@@ -248,9 +254,11 @@ return image_data
 #### `connect(camera_id: int = 0) -> bool`
 *   **処理内容:**
     1.  ドライバ初期化 (`pylablib.devices.uc480` の初期化関数を呼びます)。
-    2.  画像モード（RAW16 / 8-bit 等）やカラーモードを設定して、取得フォーマットを決定します。
-    3.  画像バッファの確保と初期化を行います。
-    4.  画像取得の準備完了後は、以後の取得で `snap()` が配列を返す前提で扱います。
+    2.  実機接続時は `uc480.list_cameras()` で候補を列挙し、対象 `cam_id` を選択します。
+    3.  `self.camera = uc480.UC480Camera(cam_id=target_camera.cam_id)` として接続ハンドルを生成します（実装では `from pylablib.devices import uc480` でインポート済み）。
+    4.  画像モード（RAW16 / 8-bit 等）やカラーモードを設定して、取得フォーマットを決定します。
+    5.  画像バッファの確保と初期化を行います。
+    6.  画像取得の準備完了後は、以後の取得で `snap()` が配列を返す前提で扱います。
 
 > 注意: `_reallocate_memory` は旧 `pyueye` 実装側の説明です。現在の `uc480` 実装では、画像取得時に呼び出し側が明示的にメモリ再確保を行う想定ではありません。
 

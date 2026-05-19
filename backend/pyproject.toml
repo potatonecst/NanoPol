@@ -19,3 +19,6 @@ dev = [
     "pyinstaller>=6.19.0",
     "pyueye>=4.96.952",
 ]
+test = [
+    "pytest>=9.0.3",
+]

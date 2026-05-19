@@ -205,7 +205,8 @@ class CameraController:
                     return False
                 
                 # ここで実際の接続ハンドルを作る。
-                self.camera = uc480.Camera(camera_id)
+                # pylablib.devices.uc480 の公開APIは UC480Camera。
+                self.camera = uc480.UC480Camera(cam_id=target_camera.cam_id)
 
                 # --- デバイス検出ロジック（高レベルAPI優先、private補助は局所利用） ---
                 # 目的: 接続時にランタイムで取得可能な情報を順に試し、
@@ -453,6 +454,19 @@ class CameraController:
             logger.exception(f"{self.log_tag} Failed to set exposure")
             return None
 
+    def get_exposure(self) -> Optional[float]:
+        """
+        現在の露出時間（ミリ秒）を返すラッパー。
+
+        Returns:
+            Optional[float]: 設定済みの露出時間（ms）。未接続や不明な場合は None。
+        """
+        # 常に現在の内部状態を返す（Mock 環境でも有用）
+        try:
+            return float(self.exposure_ms)
+        except Exception:
+            return None
+
     def set_gain(self, val: float):
         """
         センサーのハードウェアゲインを設定します。
@@ -490,6 +504,18 @@ class CameraController:
             return self.gain
         except Exception:
             logger.exception(f"{self.log_tag} Failed to set gain")
+            return None
+
+    def get_gain(self) -> Optional[float]:
+        """
+        現在のゲイン値を返すラッパー。
+
+        Returns:
+            Optional[float]: 現在のゲイン（デバイス単位）。未設定の場合は None。
+        """
+        try:
+            return float(self.gain)
+        except Exception:
             return None
 
     def get_gain_range(self) -> tuple[float, float]:
