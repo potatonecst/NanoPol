@@ -211,7 +211,10 @@ Thorlabs (IDS Imaging) 製のモノクロUSBカメラ `DCC1545M` を制御しま
 - 最近の修正で `CameraController` は既存の setter に加えて互換性のためのアクセサ `get_exposure()` と `get_gain()` を追加しました。これにより外部から現在の露光/ゲイン値を安全に取得できます。既存の UI や外部スクリプトがこれらの値を参照している場合、`get_*` 系の存在を前提にできます。
 
 **テストとドキュメント:**
-- 本プロジェクトでは実機がない環境でも早期に問題を検出するため、`pylablib` の `uc480` を置き換える Mock 実装を用いたユニットテスト群を用意しています。テスト実行手順や設計方針は `spec/12_testing.md` にまとめていますので、開発前にそちらを参照してください。
+- 本プロジェクトでは実機がない環境でも早期に問題を検出するため、`pylablib` の `uc480` を置き換える Mock 実装を用いたユニットテスト群を用意しています。
+- デバイス層の主なテスト対象は、`backend/tests/devices/test_camera_controller.py`、`test_exposure_edge_cases.py`、`test_exposure_unit_mismatch.py`、`test_disconnect_during_recording.py` です。
+- これらでは `connect()` / `disconnect()`、露光・ゲインの往復、`get_exposure_range()`、録画停止時の競合、Bayer 変換の判定ロジックを確認します。
+- テスト実行手順や設計方針は `spec/12_testing.md` にまとめていますので、開発前にそちらを参照してください。
 
 ### 3.2 画像取得フローとコード解説
 
@@ -258,6 +261,13 @@ return image_data
     3.  `self.camera = uc480.UC480Camera(cam_id=target_camera.cam_id)` として接続ハンドルを生成します（実装では `from pylablib.devices import uc480` でインポート済み）。
     4.  画像モード（RAW16 / 8-bit 等）やカラーモードを設定して、取得フォーマットを決定します。
     5.  画像バッファの確保と初期化を行います。
+    6.  接続直後に露光/ゲイン範囲をキャッシュし、`set_exposure()` / `set_gain()` を初期適用します。
+*   **注意:** 接続直後のログで `Camera not connected, cannot set exposure/gain` が出る場合は、接続フラグの立て順または初期同期の失敗を疑います。
+
+#### `get_exposure_range() -> tuple[float, float, float] | None`
+*   **用途:** UI スライダーの min/max/step を決めるための能力値を返します。
+*   **実装方針:** 実機では `is_Exposure` 系 API から取得し、Mock では固定値を返します。
+*   **注意:** ここで得たレンジは `set_exposure()` のクランプ基準になります。レンジが極端に大きい場合は、単位変換ミスの疑いがあります。
     6.  画像取得の準備完了後は、以後の取得で `snap()` が配列を返す前提で扱います。
 
 > 注意: `_reallocate_memory` は旧 `pyueye` 実装側の説明です。現在の `uc480` 実装では、画像取得時に呼び出し側が明示的にメモリ再確保を行う想定ではありません。
@@ -285,9 +295,12 @@ return image_data
 
 #### `start_recording() -> bool`
 *   **役割:** マルチページTIFFとCSVへの超高速直書きを開始します。必要なビット深度や出力形式は `uc480` 側の取得設定に従います。
+*   **ログ:** `Recording save requested` → `Recording target path` → `Recording started` の順で追跡します。
+*   **注意:** 録画停止直後に `Error writing frame to TIFF/CSV` が1回だけ出ても、`Recording stopped` と `videos/` 内の実ファイルが残っていれば、停止と書き込みの競合ログである可能性があります。
 
 #### `stop_recording() -> Optional[str]`
 *   **役割:** TIFF書き込みを終了し、必要に応じて16-bit待機モードへ復帰します。自動MP4変換がONの場合は非同期の「貨物レーン」スレッドを起動します。
+*   **実装補足:** writer 参照はロックで保護され、停止中にキャプチャループが `NoneType` の writer を触らないようにしています。
 
 ---
 

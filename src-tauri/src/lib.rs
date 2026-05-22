@@ -69,7 +69,11 @@ fn stop_backend_sidecar(app_handle: &tauri::AppHandle) {
         println!("[SYSTEM] Stopping backend sidecar before app exit...");
         if let Err(e) = child.kill() {
             eprintln!("[SYSTEM] Failed to kill backend sidecar on close: {e}");
+        } else {
+            println!("[SYSTEM] Backend sidecar kill requested successfully.");
         }
+    } else {
+        println!("[SYSTEM] Backend sidecar already stopped or never started.");
     }
 }
 
@@ -197,6 +201,7 @@ pub fn run() {
                 WindowEvent::CloseRequested { .. } => {
                     // 通常の「ユーザーがウィンドウを閉じた」経路。
                     // ここで backend を止めるのが第一優先です。
+                    println!("[SYSTEM] WindowEvent::CloseRequested received.");
                     stop_backend_sidecar(&window.app_handle());
                 }
                 // CloseRequested を通らない終了経路への保険。
@@ -204,6 +209,7 @@ pub fn run() {
                 WindowEvent::Destroyed => {
                     // 何らかの理由で CloseRequested を経由せずに破棄された場合の保険。
                     // 既に stop_backend_sidecar() 済みなら何も起きません。
+                    println!("[SYSTEM] WindowEvent::Destroyed received.");
                     stop_backend_sidecar(&window.app_handle());
                 }
                 _ => {}

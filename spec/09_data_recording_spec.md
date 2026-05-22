@@ -10,7 +10,7 @@
 ### 2.1 背景と課題
 PCからのソフトウェアトリガーでカメラを制御する都合上、フレームの取得間隔は厳密な等間隔にはならず、数ミリ秒〜数十ミリ秒の揺らぎ（ジッタ）が生じる。これを無視して「一定間隔で撮影された」と仮定して解析を行うと、光強度のカーブが歪む原因となる。
 
-### 2.2 解決策（実装予定）
+### 2.2 解決策（実装済み）
 画像をマルチページTIFFに直書き保存する特急レーンの処理と完全に同期して、以下の情報を **CSVファイル等のテキストログとして並行記録** する。
 
 - **記録項目 (例):**
@@ -21,6 +21,37 @@ PCからのソフトウェアトリガーでカメラを制御する都合上、
   - `Angle_Age_ms`: `Frame_Timestamp_ms - Angle_Sample_Timestamp_ms`（角度情報の鮮度）
 
 > **Note:** 本システムはハードウェアトリガー同期ではないため、角度値は frame-exact な真値ではなく近傍観測値として扱う。
+
+### 2.3 保存先の分離
+
+保存生成物は `outputDirectory` 直下を汚さないように分離して保存する。
+
+- スナップショット: `outputDirectory/snapshots/`
+- 録画: `outputDirectory/videos/`
+
+これにより、測定ごとの出力をまとめて管理しやすくし、`outputDirectory` 直下のファイル衝突を避ける。
+
+### 2.4 録画の開始・停止ログ
+
+録画時は、API境界とデバイス境界の双方にログを残す。
+
+- 開始: `record start requested` → `Recording save requested` → `Recording target path` → `Recording started`
+- 停止: `Recording stopped`
+
+録画停止時は、キャプチャスレッドが writer を閉じた直後に書き込もうとして `NoneType` 参照になる競合を防ぐため、writer の参照をロックで保護する。
+
+### 2.5 終了時の判定
+
+録画停止直後に `Error writing frame to TIFF/CSV` が出ても、必ずしも保存失敗とは限らない。停止と書き込みが同時に走った結果、最後の1フレームが落ちただけの可能性がある。
+
+判定の優先順位は次のとおり。
+
+1. `Recording started` が出ているか。
+2. `Recording stopped` が出ているか。
+3. `Error writing frame to TIFF/CSV` が停止直後の1回だけか。
+4. 実ファイル（TIFF/CSV）が `videos/` に残っているか。
+
+この条件を満たす場合、測定データは保存済みとみなしてよい。
 
 ## 3. 解析時のデータ取り扱いポリシー
 

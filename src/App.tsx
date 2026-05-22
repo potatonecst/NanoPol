@@ -20,6 +20,7 @@ import { IconWaveSine } from "@tabler/icons-react"
 import { DevicesView } from "./components/views/DevicesView";
 import { ManualView } from "./components/views/ManualView";
 import { SettingsView } from "./components/views/SettingsView";
+import type { Settings } from "./schemas/settingsSchema";
 
 import "./App.css";
 import { cameraApi, systemApi, setApiBase } from "./api/client";
@@ -41,6 +42,10 @@ import { CONFIG_FILENAME, DEFAULT_SETTINGS, getDefaultOutputDirectory } from "./
  * @returns 画面全体を構成する React 要素。
  */
 function App() {
+  const [startupSettings, setStartupSettings] = useState<Settings | null>(null);
+  const [startupSettingsSynced, setStartupSettingsSynced] = useState(false);
+  const [startupSyncRetryToken, setStartupSyncRetryToken] = useState(0);
+
   const {
     currentMode,
     isBackendConnected,
@@ -349,14 +354,21 @@ function App() {
       try {
         let settings;
         const configExists = await exists(CONFIG_FILENAME, { baseDir: BaseDirectory.AppConfig });
+        const defaultPath = await getDefaultOutputDirectory();
 
         if (configExists) {
           const contents = await readTextFile(CONFIG_FILENAME, { baseDir: BaseDirectory.AppConfig });
-          settings = JSON.parse(contents);
+          const savedSettings = JSON.parse(contents) as Partial<Settings>;
+
+          // 既存 config.json に欠けている項目はデフォルトで補完し、
+          // outputDirectory は空文字よりも既定パスを優先して埋める。
+          settings = {
+            ...DEFAULT_SETTINGS,
+            ...savedSettings,
+            outputDirectory: savedSettings.outputDirectory || defaultPath || "",
+          };
         } else {
           // 【初回起動時】config.jsonが存在しない場合、デフォルト設定を生成して保存する
-          const defaultPath = await getDefaultOutputDirectory();
-
           settings = {
             // constantsからデフォルト設定を展開（コピー）し、パスだけ動的に設定する
             ...DEFAULT_SETTINGS,
@@ -371,9 +383,9 @@ function App() {
           console.log("Created default config.json at AppConfig directory.");
         }
 
-        // バックエンドに設定（読み込んだもの、または新規作成したもの）を適用
-        await systemApi.updateSettings(settings);
-        systemApi.postLogs("INFO", "Settings synced to backend on startup.").catch(() => { });
+        // 起動直後は backend 側がまだ接続完了していないことがあるため、
+        // 読み込んだ設定は state に保持し、接続後に再送できるようにする。
+        setStartupSettings(settings);
       } catch (error) {
         console.warn("Failed to sync settings on startup:", error);
       }
@@ -381,6 +393,43 @@ function App() {
 
     syncInitialSettings();
   }, []); // 空の依存配列により、マウント時のみ実行
+
+  // backend 接続後に起動時設定を送る。
+  // 初回送信が失敗しても、backend が生きている限り 1 秒おきに再試行する。
+  useEffect(() => {
+    if (!isBackendConnected || startupSettings == null || startupSettingsSynced) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncToBackend = async () => {
+      try {
+        await systemApi.updateSettings(startupSettings);
+        if (cancelled) {
+          return;
+        }
+        setStartupSettingsSynced(true);
+        systemApi.postLogs("INFO", "Settings synced to backend on startup.").catch(() => { });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        console.warn("Failed to sync startup settings to backend:", error);
+        window.setTimeout(() => {
+          if (!cancelled) {
+            setStartupSyncRetryToken((value) => value + 1);
+          }
+        }, 1000);
+      }
+    };
+
+    void syncToBackend();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isBackendConnected, startupSettings, startupSettingsSynced, startupSyncRetryToken]);
 
   // 【安全装置】カメラ切断時の録画停止処理
   // 録画中にケーブルが抜けるなどしてカメラ接続が切れた場合、

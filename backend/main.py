@@ -72,6 +72,7 @@ async def lifespan(app: FastAPI):
         AsyncGenerator: 起動・終了処理を管理するコンテキスト。
     """
     logger.info("[SYSTEM] Backend Starting...")
+    logger.debug(f"[SYSTEM] Backend PID={os.getpid()} PPID={os.getppid()}")
     
     # 常時監視タスクの起動
     # asyncio.create_task は、非同期関数をバックグラウンドで並行実行させる標準機能です。
@@ -86,6 +87,11 @@ async def lifespan(app: FastAPI):
     
     # 監視タスクの停止
     monitor_task.cancel()
+    logger.info("[SYSTEM] Stage monitor task cancellation requested.")
+    try:
+        await monitor_task
+    except asyncio.CancelledError:
+        logger.info("[SYSTEM] Stage monitor task cancelled cleanly.")
     
     # 強制的に切断処理
     logger.info("[SYSTEM] Releasing Stage Conection...")

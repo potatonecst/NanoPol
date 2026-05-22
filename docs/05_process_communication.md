@@ -101,3 +101,18 @@ React側は、Rustからポート番号が一定時間返ってこない場合�
     *   `mode: "cors"`, `credentials: "include"` を明示
 
 上記が一致していても `Failed to fetch` が継続する場合、次段の切り分けとして health チェック経路を `XMLHttpRequest` 実装で比較し、WebView固有の `fetch` 問題を除外します。
+
+## 6. 終了経路の読み方
+
+実機確認で backend が残留する場合は、次の順でログを追う。
+
+1. Rust 側に `WindowEvent::CloseRequested received.` が出ているか。
+2. `Backend sidecar kill requested successfully.` が出ているか。
+3. Python 側に `[SYSTEM] Backend Shutting Down...` が出ているか。
+4. その後に `[SYSTEM] Stage monitor task cancelled cleanly.` が出ているか。
+
+この4点のどこで止まるかで原因を切り分ける。
+
+* Rust のイベントが出ない: UI の閉じ方や Tauri 側イベント経路を疑う。
+* Rust は出るが Python shutdown が出ない: sidecar kill が効いていない、または別の backend プロセスが残っている。
+* Python shutdown は出るがプロセスが残る: 子スレッド/子プロセス、または別 PID の残留を疑う。

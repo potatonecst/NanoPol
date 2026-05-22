@@ -46,6 +46,45 @@ class ListHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
+
+class SuppressSystemLogsAccessFilter(logging.Filter):
+    """/system/logs の成功アクセスログを抑制するためのフィルタ。
+
+    このフィルタは Uvicorn のアクセスログにだけ作用し、
+    フロントエンドがデバッグ表示のために定期的に叩く /system/logs の
+    "POST ... 200 OK" だけを静かに破棄します。
+
+    目的は次のとおりです。
+    - 画面更新のために発生する正常系ログを、他の重要なログから切り離す
+    - 保存したい警告・エラー・例外ログを埋もれさせない
+    - ポーリング由来の大量ログで、コンソールや保存ログが読みにくくなるのを防ぐ
+
+    失敗時（4xx/5xx）や、/system/logs 以外のアクセスログはそのまま通します。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Uvicorn のアクセスログは、通常 logger 名が "uvicorn.access" になり、
+        # record.args に次のような情報が入ります。
+        # (client_addr, method, path, http_version, status_code)
+        #
+        # ここではその構造を利用して、/system/logs への POST かつ 200 OK の行だけを
+        # 取り除きます。これにより、ポーリングが頻繁でもログが埋もれません。
+        if record.name != "uvicorn.access":
+            return True
+
+        try:
+            client_addr, method, path, http_version, status_code = record.args
+        except Exception:
+            return True
+
+        # 成功系（2xx/3xx）の /system/logs はすべて抑制する。
+        # フロントエンドは GET で定期ポーリングするため、POST 限定にすると
+        # ノイズが残ってしまう。失敗系（4xx/5xx）はそのまま残す。
+        if path == "/system/logs" and int(status_code) < 400:
+            return False
+
+        return True
+
 def setup_logger(name: str = "NanoPol"):
     logger = logging.getLogger(name)
     # ログレベル決定ポリシー:
@@ -118,6 +157,14 @@ def setup_logger(name: str = "NanoPol"):
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
+
+    # /system/logs はフロントエンドのデバッグ画面が定期的に参照するポーリング用
+    # エンドポイントです。そのため、成功時の 200 OK を毎回出力すると、
+    # 本当に確認したい警告やエラーが大量の正常系アクセスログに埋もれてしまいます。
+    # そこで、このエンドポイントの成功アクセスだけを Uvicorn のアクセスログから
+    # 除外し、それ以外のアクセスログは従来どおり残すようにしています。
+    uvicorn_access_logger = logging.getLogger("uvicorn.access")
+    uvicorn_access_logger.addFilter(SuppressSystemLogsAccessFilter())
     
     # 2. ファイル出力ハンドラ (日付ごとのローテーション付き)
     log_filename = os.path.join(LOG_DIR, "system.log")

@@ -106,6 +106,19 @@ from backend.main import camera
 print(camera.has_uc480, camera.is_mock_env)
 PY
 
+```
+
+## テスト対象のAPI
+
+バックエンドの API は、デバイス層の単体テストに加えて HTTP レベルでも確認しています。
+
+- `backend/tests/api/test_camera_connect_http.py`: `/camera/connect` の応答に `exposure_range` と `gain_range` が含まれることを確認します。
+- `backend/tests/api/test_camera_config_and_disconnect_http.py`: `/camera/config` の前提条件と、`/camera/disconnect` の idempotency を確認します。
+- `backend/tests/test_logger_filter.py`: `/system/logs` の成功アクセスがノイズになりにくいことを確認します。
+
+また、録画停止まわりは `backend/tests/devices/test_disconnect_during_recording.py` で競合を再現して確認しています。
+
+```sh
 # 開発サーバー起動（自動再読み込み）
 PYTHONPATH=.. uv run python -m uvicorn main:app --reload --host 127.0.0.1 --port 14201
 ```
@@ -152,6 +165,28 @@ Content-Type: application/json
 
 ※ 実装上、開発環境では `invoke` 失敗時に固定ポートへ即フォールバックしますが、本番環境では即フォールバックせず再試行を継続します。
 ※ ヒント経由でポートを採用する場合も、フロントエンド側で `/health` probe を通過したものだけを使います。
+
+### 2.6.1 終了時ログの読み方
+
+backend の終了確認では、次のログを順に確認する。
+
+```text
+[SYSTEM] Backend Shutting Down...
+[SYSTEM] Stage monitor task cancellation requested.
+[SYSTEM] Stage monitor task cancelled cleanly.
+[SYSTEM] Releasing Stage Conection...
+[SYSTEM] Releasing Camera Conection...
+[SYSTEM] Cleanup Complete.
+```
+
+この並びが出ていれば、Python 側の shutdown 処理は正常に進んでいる。`Cleanup Complete` が出るのにプロセスが残る場合は、Python 内ではなく Tauri 側の kill 経路か、別プロセスの残留を疑う。
+
+### 2.6.2 録画ログの読み方
+
+録画開始時は `record start requested` → `Recording save requested` → `Recording target path` → `Recording started` の順で出る。
+停止時は `Recording stopped` が出る。
+
+`Error writing frame to TIFF/CSV` が停止直後に1回だけ出ても、実ファイルが `videos/` に保存されていれば、停止と書き込みの競合であり、保存失敗とは限らない。
 
 ### 2.7 診断エンドポイント (`/stage/diagnostics`, `/camera/diagnostics`)
 

@@ -1,34 +1,7 @@
-# 12. テスト仕様と実行手順 (Testing)
+# 12. テスト仕様 (Testing)
 
 ## 目的
-テスト仕様書では、開発環境・依存管理・実行手順、およびハードウェア抽象化コンポーネント（`CameraController` 等）の単体テスト方針をまとめます。
-
-## 環境準備
-- 推奨ワークフロー（ローカル開発）:
-  ```bash
-  cd backend
-  # プロジェクト仮想環境を作成/同期
-  uv sync
-  # venv を有効化してからテストを実行
-  source .venv/bin/activate
-  uv run pytest -q
-  ```
-
-- 依存のうち dev/test グループも同期したい場合は `uv` のグループオプションを使ってください（プロジェクトの uv 実装でフラグ名が異なります）。例:
-  ```bash
-  uv sync --group test --group dev
-  ```
-
-  実際の環境では `--group` が有効でした。`uv sync --help` の結果に従って、必要なグループを明示してください。
-
-## VS Code の推奨設定
-- ワークスペースにインタープリタを固定することで、ターミナルと拡張が一致します。例（.vscode/settings.json）:
-  ```json
-  {
-    "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/bin/python",
-    "python.terminal.activateEnvironment": true
-  }
-  ```
+テスト仕様書では、何をテスト対象とし、何を合格条件とするかをまとめます。実行コマンドやローカル環境の準備手順、実機ログの読み方は [docs/01_backend_devices.md](docs/01_backend_devices.md)、[docs/02_backend_server.md](docs/02_backend_server.md)、[docs/07_uc480_poc_results.md](docs/07_uc480_poc_results.md) を参照してください。
 
 ## テストの方針
 - ハードウェア依存コードは Mock を用いて検証します。Mock は `backend/tests/mocks/` に配置され、`conftest.py` の autouse fixture で差し替えられます。
@@ -45,20 +18,11 @@
 - `set_gain(val)` と `get_gain()` の相互運用性
 - `_get_bayer_color_conversion_code()` の判定ロジック（各 Bayer パターンごとに正しい cv2 コードが返ること）
 - `take_snapshot()` が最新フレームを返す・保存する振る舞い（Mock と実機の差は `GET /camera/diagnostics` で確認）
-
-## テストの実行例
-```bash
-cd backend
-source .venv/bin/activate
-uv run pytest tests/devices/test_camera_controller.py -q
-``` 
-
-## トラブルシュート（よくある事象）
-- `pytest` が見つからない：`uv sync` が dev/test グループをインストールしていない可能性があります。臨時対応として `python -m pip install pytest` を行った後、`uv sync` のグループオプションを検討してください。
-- アクティブな venv が別のパスを指している：`echo $VIRTUAL_ENV` と `which python` を確認し、`.venv` へ切り替えてください。
+- `start_recording()` が `videos/` 配下に TIFF/CSV を作成し、`stop_recording()` 後に `Recording stopped` が出ること
+- `stop_recording()` 後に writer が `None` になっても、キャプチャループが例外なく抜けること
 
 ## ドキュメント整合性
-- この仕様書を更新したら、`docs/01_backend_devices.md` の CameraController セクションにリンクを張り、変更履歴を残してください。
+- 実行手順・ログの読み方・PoC の検証結果は `docs/01_backend_devices.md`、`docs/02_backend_server.md`、`docs/07_uc480_poc_results.md` に分離して記載します。
 
 ---
-Last Updated: 2026-05-19
+Last Updated: 2026-05-22

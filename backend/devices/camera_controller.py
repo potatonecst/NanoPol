@@ -57,6 +57,7 @@ class CameraController:
         self.csv_writer = None  # 同期記録用CSVのライター
         self.record_frame_count = 0  # 現在の録画フレーム数
         self.MAX_FRAMES = 10000  # 安全装置（Fail-safe）としての最大録画フレーム数
+        self._recording_lock = threading.Lock()  # writer の生成/破棄/書き込みを守るロック
         
         # ステージの現在角度。撮像フレームと角度を後段で対応付けるために保持する。
         self.current_angle = 0.0
@@ -182,6 +183,7 @@ class CameraController:
             self.bayer_pattern = None
             self.input_bpp = 16
             logger.info(f"{self.log_tag} Connected to Virtual Camera (ID: {camera_id})")
+            self.is_connected = True
             # Mockでも exposure range をキャッシュしておく
             try:
                 # Mock 環境では get_exposure_range() が自己完結的にフォールバック値を返すため
@@ -377,6 +379,11 @@ class CameraController:
                     f"sensor_type={self.sensor_type}, bayer_pattern={self.bayer_pattern}, input_bpp={self.input_bpp} (exact={exact_bpp})"
                 )
 
+                # ここまで到達した時点で、以後の set_exposure / set_gain を許可する。
+                # これを is_connected=True より前に呼ぶと、接続直後の初期化処理が
+                # 「Camera not connected」で弾かれてしまう。
+                self.is_connected = True
+
                 # 接続直後にまず露光範囲を問い合わせしてキャッシュしておく（以後の set_exposure で使う）
                 try:
                     er = self.get_exposure_range()
@@ -404,7 +411,6 @@ class CameraController:
                 return False
 
         # 接続が完了したら、別スレッドで連続取得を開始する。
-        self.is_connected = True
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
 
@@ -679,10 +685,12 @@ class CameraController:
                     ctypes.c_double,
                 )
 
-                # 通常は秒単位で返るためミリ秒に換算する（ライブラリ実装によっては既にmsの可能性あり）
-                exp_min_ms = float(exp_min_sec) * 1000.0
-                exp_max_ms = float(exp_max_sec) * 1000.0
-                exp_inc_ms = float(exp_inc_sec) * 1000.0
+                # uc480 のこの API は、実測上ミリ秒単位の値を返すため、そのまま使う。
+                # 以前は秒→ミリ秒換算を入れていたが、その結果 100ms 前後の値が
+                # 100,000ms 級に膨らんでいた。今回のログの不自然な巨大レンジはこれが原因。
+                exp_min_ms = float(exp_min_sec)
+                exp_max_ms = float(exp_max_sec)
+                exp_inc_ms = float(exp_inc_sec)
 
                 # キャッシュしておく（以後の高頻度アクセスを避けるため）
                 try:
@@ -829,28 +837,29 @@ class CameraController:
         self.record_filepath = os.path.join(record_dir, f"{prefix}{timestamp}.tif")
         # 実際に作成される TIFF のフルパスを残し、CSV と合わせて後から追跡しやすくする。
         logger.info(f"{self.log_tag} Recording target path: {self.record_filepath}")
-        
+
         try:
             import tifffile
             csv_filepath = os.path.join(record_dir, f"{prefix}{timestamp}.csv")
-            
-            self.tiff_writer = tifffile.TiffWriter(self.record_filepath, append=True)
-            
-            # CSVファイルも同時に開き、ヘッダーを書き込む
-            self.csv_file = open(csv_filepath, mode='w', newline='', encoding='utf-8')
-            self.csv_writer = csv.writer(self.csv_file)
-            self.csv_writer.writerow([
-                "Frame_Index",
-                "Frame_Timestamp_ms",
-                "Angle_deg_nearest",
-                "Angle_Sample_Timestamp_ms",
-                "Angle_Age_ms",
-                "Input_BPP",
-            ])
-            self.record_frame_count = 0
-            
-            # 全ての準備が成功した場合にのみ、録画中フラグを立てる（重要）
-            self.is_recording = True
+
+            with self._recording_lock:
+                self.tiff_writer = tifffile.TiffWriter(self.record_filepath, append=True)
+
+                # CSVファイルも同時に開き、ヘッダーを書き込む
+                self.csv_file = open(csv_filepath, mode='w', newline='', encoding='utf-8')
+                self.csv_writer = csv.writer(self.csv_file)
+                self.csv_writer.writerow([
+                    "Frame_Index",
+                    "Frame_Timestamp_ms",
+                    "Angle_deg_nearest",
+                    "Angle_Sample_Timestamp_ms",
+                    "Angle_Age_ms",
+                    "Input_BPP",
+                ])
+                self.record_frame_count = 0
+
+                # 全ての準備が成功した場合にのみ、録画中フラグを立てる（重要）
+                self.is_recording = True
             logger.info(f"{self.log_tag} Recording started: {self.record_filepath}")
             return True
         except Exception:
@@ -864,17 +873,22 @@ class CameraController:
         """【Recording】動画の保存を停止し、事後処理（貨物レーン）をキックする"""
         if not self.is_recording:
             return None
-            
-        self.is_recording = False
-        if self.tiff_writer is not None:
-            self.tiff_writer.close()
+
+        # capture loop 側と writer を取り合わないように、参照を切るところまでをロックする。
+        with self._recording_lock:
+            self.is_recording = False
+            tiff_writer = self.tiff_writer
+            csv_file = self.csv_file
             self.tiff_writer = None
-        
-        # CSVファイルも閉じて、ライターオブジェクトもリセットする
-        if self.csv_file is not None:
-            self.csv_file.close()
             self.csv_file = None
             self.csv_writer = None
+
+        if tiff_writer is not None:
+            tiff_writer.close()
+
+        # CSVファイルも閉じて、ライターオブジェクトもリセットする
+        if csv_file is not None:
+            csv_file.close()
             
         logger.info(f"{self.log_tag} Recording stopped: {self.record_filepath}")
         
@@ -971,18 +985,17 @@ class CameraController:
             # キューを使わず直書きする理由: 不可逆圧縮なし、フレーム喪失なし、ディスク性能を活用。
             # 複数スレッドでの TIFF 書き込みは安全（append=True モード）。
             # CSV も同時に書き込み、画像時刻とステージ角度の対応付けを保持。
-            if self.is_recording and self.tiff_writer is not None and self.csv_writer is not None:
-                if self.record_frame_count >= self.MAX_FRAMES:
-                    logger.warning(f"{self.log_tag} Max recording frames ({self.MAX_FRAMES}) reached! Auto-stopping.")
-                    self.stop_recording()
-                else:
-                    try:
+            if self.is_recording:
+                with self._recording_lock:
+                    tiff_writer = self.tiff_writer
+                    csv_writer = self.csv_writer
+                    record_index = self.record_frame_count
+                    if tiff_writer is not None and csv_writer is not None and record_index < self.MAX_FRAMES:
                         # 録画用には必ず uint16 を書き込む。受信が uint8 の場合はここで一度だけ拡張する。
                         if getattr(frame_data, 'dtype', None) == np.uint16:
                             write_frame = frame_data
                         else:
                             write_frame = self._to_internal_uint16(frame_data, self.input_bpp)
-                        self.tiff_writer.write(write_frame, contiguous=True)
 
                         frame_timestamp_ms = time.time() * 1000.0
                         angle_sample_timestamp_ms = self.current_angle_timestamp_ms
@@ -991,18 +1004,28 @@ class CameraController:
                             angle_sample_timestamp_ms = frame_timestamp_ms
 
                         angle_age_ms = max(0.0, frame_timestamp_ms - angle_sample_timestamp_ms)
-                        self.csv_writer.writerow([
-                            self.record_frame_count,
-                            f"{frame_timestamp_ms:.3f}",
-                            f"{self.current_angle:.4f}",
-                            f"{angle_sample_timestamp_ms:.3f}",
-                            f"{angle_age_ms:.3f}",
-                            f"{self.input_bpp}",
-                        ])
-                        
                         self.record_frame_count += 1
-                    except Exception:
-                        logger.exception(f"{self.log_tag} Error writing frame to TIFF/CSV")
+                    else:
+                        tiff_writer = None
+                        csv_writer = None
+
+                if tiff_writer is not None and csv_writer is not None:
+                    if record_index >= self.MAX_FRAMES:
+                        logger.warning(f"{self.log_tag} Max recording frames ({self.MAX_FRAMES}) reached! Auto-stopping.")
+                        self.stop_recording()
+                    else:
+                        try:
+                            tiff_writer.write(write_frame, contiguous=True)
+                            csv_writer.writerow([
+                                record_index,
+                                f"{frame_timestamp_ms:.3f}",
+                                f"{self.current_angle:.4f}",
+                                f"{angle_sample_timestamp_ms:.3f}",
+                                f"{angle_age_ms:.3f}",
+                                f"{self.input_bpp}",
+                            ])
+                        except Exception:
+                            logger.exception(f"{self.log_tag} Error writing frame to TIFF/CSV")
 
             # ========================================================================
             # 【CPU制御】Mock環境のみフレームレート制御（実機は自然な間隔で取得される）

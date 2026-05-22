@@ -13,8 +13,13 @@ Backend code lives in `backend/`. Use the local virtual environment in that fold
 ```bash
 cd backend
 uv sync --group test --group dev
-source .venv/bin/activate
 uv run pytest -q
+```
+
+プロジェクトのルートから実行する場合は、`backend` を明示します。
+
+```bash
+uv run --directory backend pytest -q
 ```
 
 If you open the workspace in VS Code, the interpreter is pinned by `.vscode/settings.json` to `backend/.venv/bin/python`.
