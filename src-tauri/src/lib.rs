@@ -1,4 +1,8 @@
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::sync::Mutex;
+use std::time::Duration;
 // tauri-plugin-shellの機能（Sidecarの起動など）を使えるようにするための宣言
 use tauri_plugin_shell::ShellExt;
 // 起動したPythonからの出力（Printなど）を受け取るための型
@@ -27,6 +31,67 @@ struct BackendPort(Mutex<Option<u16>>);
 /// - setup 時（書き込み）とウィンドウ終了イベント時（読み出し+削除）が
 ///   別コンテキストで実行されるため、排他制御で整合性を担保します。
 struct BackendChildState(Mutex<Option<CommandChild>>);
+
+fn append_shutdown_note(app_handle: &tauri::AppHandle, message: &str) {
+    if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
+        let log_path = app_data_dir.join("logs").join("system.log");
+
+        if let Some(parent) = log_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[SYSTEM] Failed to create log directory for shutdown note: {e}");
+                return;
+            }
+        }
+
+        match OpenOptions::new().create(true).append(true).open(&log_path) {
+            Ok(mut file) => {
+                if let Err(e) = writeln!(file, "{message}") {
+                    eprintln!("[SYSTEM] Failed to write shutdown note: {e}");
+                }
+            }
+            Err(e) => {
+                eprintln!("[SYSTEM] Failed to open system.log for shutdown note: {e}");
+            }
+        }
+    }
+}
+
+fn request_backend_shutdown(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let port = {
+        let state = app_handle.state::<BackendPort>();
+        let guard = state.0.lock().unwrap();
+        guard.ok_or_else(|| "backend port is not available yet".to_string())?
+    };
+
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500))
+        .map_err(|e| format!("failed to connect to backend shutdown endpoint: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| format!("failed to set read timeout: {e}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| format!("failed to set write timeout: {e}"))?;
+
+    let request = format!(
+        "POST /system/shutdown HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("failed to send shutdown request: {e}"))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|e| format!("failed to read shutdown response: {e}"))?;
+
+    let first_line = response.lines().next().unwrap_or_default();
+    if !(first_line.starts_with("HTTP/1.1 200") || first_line.starts_with("HTTP/1.0 200")) {
+        return Err(format!("unexpected shutdown response: {first_line}"));
+    }
+
+    Ok(())
+}
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -66,6 +131,17 @@ fn stop_backend_sidecar(app_handle: &tauri::AppHandle) {
     if let Some(child) = guard.take() {
         // ここで `take()` 済みなので、同じ window イベントがもう一度来ても
         // `guard` の中身は `None` のままになり、二重 kill を避けられます。
+        println!("[SYSTEM] Requesting graceful backend shutdown before kill...");
+        if let Err(e) = request_backend_shutdown(app_handle) {
+            eprintln!("[SYSTEM] Graceful backend shutdown failed: {e}");
+            append_shutdown_note(
+                app_handle,
+                &format!("[SYSTEM] Graceful backend shutdown failed: {e}"),
+            );
+        } else {
+            println!("[SYSTEM] Backend shutdown endpoint completed successfully.");
+        }
+
         println!("[SYSTEM] Stopping backend sidecar before app exit...");
         if let Err(e) = child.kill() {
             eprintln!("[SYSTEM] Failed to kill backend sidecar on close: {e}");

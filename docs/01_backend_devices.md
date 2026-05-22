@@ -117,6 +117,12 @@ OptoSigma製 GSC-01 (1軸ステージコントローラー) を制御するモ�
     *   **F:** Final Speed (最高速度)
     *   **R:** Rate/Time (加減速時間)
 
+**接続されていない場合の挙動（キャッシュ）**
+
+`/system/settings` などで速度設定が送られてきた際、ステージが未接続だと即時にハードウェアへ反映できません。そのためバックエンドは受領した `min_pps` / `max_pps` / `accel_time_ms` を内部変数（`stage.speed_min_pps`, `stage.speed_max_pps`, `stage.speed_accel_ms`）に保持し、`connect()` 実行時にそれらを再適用する実装になっています。
+
+この方式により、ユーザーが先に設定を保存してからケーブルを接続した場合でも、期待どおりの速度設定が接続時に確実に適用されます。
+
 #### `get_status() -> Tuple[float, bool]`
 現在の状態を問い合わせます (`Q:` コマンド)。
 

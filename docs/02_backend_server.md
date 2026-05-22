@@ -188,6 +188,17 @@ backend の終了確認では、次のログを順に確認する。
 
 `Error writing frame to TIFF/CSV` が停止直後に1回だけ出ても、実ファイルが `videos/` に保存されていれば、停止と書き込みの競合であり、保存失敗とは限らない。
 
+### 2.6.3 `/system/shutdown` エンドポイント
+
+バックエンドは `POST /system/shutdown` を実装しています。これは Tauri 側がウィンドウ閉じる際に送信し、Python 側で以下を実行します:
+
+- ログ出力: `[SYSTEM] Shutdown requested by Tauri sidecar.`
+- `stage.close()`（接続中のみ）
+- `camera.disconnect()`（接続中のみ）
+- ロガーハンドラの `flush()` を試みる
+
+このエンドポイントにより、Tauri は子プロセスを `kill()` する前に Python 側へ優雅な終了処理を依頼できます。運用時は `system.log` の末尾に上記メッセージが出ているかを必ず確認してください。
+
 ### 2.7 診断エンドポイント (`/stage/diagnostics`, `/camera/diagnostics`)
 
 実機環境での「接続候補が見えない」「Mockに落ちる」問題を短時間で切り分けるため、診断専用APIを追加しています。

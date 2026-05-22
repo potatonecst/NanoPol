@@ -280,6 +280,31 @@ def system_reset():
     
     return {"status": "success", "message": "All connections forcefully reset."}
 
+@app.post("/system/shutdown")
+def system_shutdown():
+    """アプリ終了直前に、ログを残したうえで機器を安全に閉じます。"""
+    logger.info("[SYSTEM] Shutdown requested by Tauri sidecar.")
+
+    if stage.is_connected:
+        logger.info("[SYSTEM] Closing stage during shutdown request...")
+        stage.close()
+    else:
+        logger.info("[SYSTEM] Stage already disconnected at shutdown request.")
+
+    if camera.is_connected:
+        logger.info("[SYSTEM] Disconnecting camera during shutdown request...")
+        camera.disconnect()
+    else:
+        logger.info("[SYSTEM] Camera already disconnected at shutdown request.")
+
+    for handler in logger.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+
+    return {"status": "success", "message": "Shutdown cleanup completed."}
+
 @app.get("/system/ports")
 def get_system_ports():
     """
@@ -322,11 +347,20 @@ def update_system_settings(req: SystemSettingsRequest):
     camera.update_settings(req.settings)
     
     if "defaultSpeedMin" in req.settings:
-        stage.set_speed(
-            req.settings["defaultSpeedMin"],
-            req.settings["defaultSpeedMax"],
-            req.settings["defaultAccelTime"]
-        )
+        min_pps = req.settings["defaultSpeedMin"]
+        max_pps = req.settings["defaultSpeedMax"]
+        accel_time_ms = req.settings["defaultAccelTime"]
+
+        if stage.is_connected or stage.is_mock_env:
+            stage.set_speed(min_pps, max_pps, accel_time_ms)
+        else:
+            # ステージ未接続時はハードウェアへ送れないため、再接続時に再適用できるよう設定値だけ保持する。
+            stage.speed_min_pps = min_pps
+            stage.speed_max_pps = max_pps
+            stage.speed_accel_ms = accel_time_ms
+            logger.info(
+                "[SYSTEM] Stage not connected; cached speed settings without applying to hardware."
+            )
     return {"status": "success"}
 
 # ==========================================

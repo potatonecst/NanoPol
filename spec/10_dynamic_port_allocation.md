@@ -50,8 +50,8 @@
 *   backend の `/health` は到達確認のため、`origin` と `host` を system.log に出力すること。
 *   API クライアントは GET/HEAD リクエスト時に不要な `Content-Type` を送らないこと。
 *   API クライアントは WebView 差異を減らすため `mode: "cors"` と `credentials: "include"` を明示すること。
+
 *   アプリ終了時は Rust 側で sidecar backend プロセスを明示停止し、ゾンビ化による次回起動時の競合を防ぐこと（`CloseRequested`/`Destroyed` の両経路で停止を試みる）。
-*   終了経路の調査では、Rust 側の `WindowEvent::CloseRequested` / `WindowEvent::Destroyed` と、Python 側の `[SYSTEM] Backend Shutting Down...` を突き合わせて、どこで終了が止まったかを特定すること。
 *   録画停止時に `Error writing frame to TIFF/CSV` が一度だけ出ても、`Recording stopped` と実ファイル（`videos/`）が残っていれば、停止競合の副作用として扱うこと。
 
 ## 5. 障害時の判定規約（運用）

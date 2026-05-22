@@ -116,3 +116,15 @@ React側は、Rustからポート番号が一定時間返ってこない場合�
 * Rust のイベントが出ない: UI の閉じ方や Tauri 側イベント経路を疑う。
 * Rust は出るが Python shutdown が出ない: sidecar kill が効いていない、または別の backend プロセスが残っている。
 * Python shutdown は出るがプロセスが残る: 子スレッド/子プロセス、または別 PID の残留を疑う。
+
+## 6.1 優雅シャットダウンの新しい補足
+
+最近の運用改善として、Tauri(Rust) 側は子プロセスを直接 `kill()` する前に、まず HTTP の `POST /system/shutdown` を送信して Python 側に終了処理を行わせるようになりました。
+
+フロー:
+
+1. Rust が `request_backend_shutdown()` を呼び、`POST /system/shutdown` を短時間で送信する。
+2. Python 側が受信し、`[SYSTEM] Shutdown requested by Tauri sidecar.` を出力して機器クリーンアップを行う。
+3. 応答を受け取れない/タイムアウトした場合は、Rust 側が AppData の `logs/system.log` に追記する補助手段（shutdown note）を実行する。
+
+この追加により、ユーザーがウィンドウを閉じたときでも、可能な限り最後のログとクリーンアップを保持することが期待できます。ログが見つからない場合は、上のフローのどの段階で止まったかを切り分けてください。
