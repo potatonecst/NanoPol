@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Response, Request
+from fastapi import FastAPI, HTTPException, Response, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -8,6 +8,7 @@ import sys
 import os
 import asyncio
 import json
+import signal
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -29,6 +30,18 @@ class SystemState:
         self.is_measuring = False  # ソフトウェア: Sweep等の自動測定シーケンスが実行中か
 
 app_state = SystemState()
+
+
+def _terminate_backend_process():
+    """/system/shutdown 応答送信後に、バックエンド自身を終了させる。"""
+    pid = os.getpid()
+    logger.info(f"[SYSTEM] Requesting backend process termination (pid={pid}).")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception as e:
+        logger.error(f"[SYSTEM] Failed to terminate backend process cleanly: {e}")
+        # ここまで失敗した場合は最終手段で即終了する
+        os._exit(0)
 
 async def stage_monitor_loop():
     """【常時監視タスク】0.1秒ごとにステージの角度を聞き、キャッシュとカメラに最新値を配ります。
@@ -281,7 +294,7 @@ def system_reset():
     return {"status": "success", "message": "All connections forcefully reset."}
 
 @app.post("/system/shutdown")
-def system_shutdown():
+def system_shutdown(background_tasks: BackgroundTasks):
     """アプリ終了直前に、ログを残したうえで機器を安全に閉じます。"""
     logger.info("[SYSTEM] Shutdown requested by Tauri sidecar.")
 
@@ -302,6 +315,9 @@ def system_shutdown():
             handler.flush()
         except Exception:
             pass
+
+    # レスポンス返却後に自身を終了させる。これにより sidecar kill が失敗しても残留しにくくなる。
+    background_tasks.add_task(_terminate_backend_process)
 
     return {"status": "success", "message": "Shutdown cleanup completed."}
 
