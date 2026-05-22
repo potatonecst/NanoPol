@@ -205,7 +205,7 @@ class UpdateConfigRequest(BaseModel):
 
 class CameraConfigRequest(BaseModel):
     exposure_ms: float
-    gain: int
+    gain: float
 
 class CameraConnectRequest(BaseModel):
     camera_id: int = 0
@@ -238,7 +238,8 @@ def health_check(request: Request):
     """
     # 接続切り分け用: UI/WebViewから到達しているかを system.log だけで判定できるようにする
     # Request.headers は受信した HTTP ヘッダ群へのアクセス手段です。
-    logger.info(
+    # Health checks are frequent; keep them at DEBUG to avoid log noise in INFO logs
+    logger.debug(
         "[HEALTH] %s %s origin=%s host=%s",
         request.method,
         request.url.path,
@@ -543,7 +544,37 @@ def connect_camera(req: CameraConnectRequest):
         raise HTTPException(status_code=500, detail="Camera connection failed")
         
     mode = "Mock" if camera.is_mock_env else "Real"
-    return {"status": "success", "mode": mode, "message": f"Connected to Camera {req.camera_id} ({mode})"}
+    # 接続直後に、デバイスが実際に報告できるゲイン範囲をできるだけ返します。
+    # ここで返す値は UI 側のスライダー初期値・最小値・最大値の決定に使います。
+    # 取得できない場合は None のままにして、既存のフォールバック値を壊さないようにします。
+    gain_range = None
+    try:
+        if hasattr(camera, "get_gain_range"):
+            gmin, gmax = camera.get_gain_range()
+            gain_range = {"min": float(gmin), "max": float(gmax)}
+    except Exception as e:
+        logger.debug(f"[CAMERA] Failed to read gain range: {e}")
+
+    resp = {"status": "success", "mode": mode, "message": f"Connected to Camera {req.camera_id} ({mode})"}
+    if gain_range is not None:
+        resp["gain_range"] = gain_range
+    # exposure_range も同様に、接続時だけ取得してフロントへ渡します。
+    # これは連続ポーリングする値ではなく、機器の能力値としてキャッシュする前提です。
+    # 戻り値はミリ秒単位の {min_ms, max_ms, step_ms} を想定します。
+    try:
+        if hasattr(camera, "get_exposure_range"):
+            er = camera.get_exposure_range()
+            if er is not None and isinstance(er, (list, tuple)) and len(er) >= 2:
+                # get_exposure_range() の戻り値は、(min_ms, max_ms, step_ms) を優先します。
+                # ただしデバイスやラッパーの都合で step が取れない場合は、
+                # (min_ms, max_ms) の2要素だけでも受け入れます。
+                if len(er) >= 3:
+                    resp["exposure_range"] = {"min_ms": float(er[0]), "max_ms": float(er[1]), "step_ms": float(er[2])}
+                else:
+                    resp["exposure_range"] = {"min_ms": float(er[0]), "max_ms": float(er[1])}
+    except Exception as e:
+        logger.debug(f"[CAMERA] Failed to read exposure range: {e}")
+    return resp
 
 @app.post("/camera/disconnect")
 def disconnect_camera():
@@ -556,7 +587,7 @@ def disconnect_camera():
 @app.post("/camera/config")
 def config_camera(req: CameraConfigRequest):
     """
-    カメラの露出時間（ミリ秒）とハードウェアゲイン（0-100）を設定します。
+    カメラの露出時間（ミリ秒）とハードウェアゲイン倍率（例: 1.0〜13.0）を設定します。
     """
     if not camera.is_connected:
         raise HTTPException(status_code=400, detail="Camera not connected")
@@ -636,13 +667,29 @@ def take_snapshot():
     """
     if not camera.is_connected:
         raise HTTPException(status_code=503, detail="Camera not connected")
-        
+
+    # Snapshot 実行時点の設定をまとめて残す。
+    # ここでのログは「保存先がどこだったか」「自動保存か手動保存か」を
+    # 後から追えるようにするための入口ログです。
+    logger.info(
+        "[CAMERA API] snapshot requested: askSavePath=%s outputDirectory=%s imageFormat=%s",
+        camera.settings.get("askSavePath", False),
+        camera.settings.get("outputDirectory", "<unset>"),
+        camera.settings.get("imageFormat", "TIFF"),
+    )
     result = camera.take_snapshot()
     if result == "PENDING":
         return {"status": "pending", "message": "Waiting for save path"}
     elif result is not None:
         return {"status": "saved", "filepath": result}
     else:
+        # camera.take_snapshot() 側で例外内容を詳細ログに残しているが、
+        # API 境界でも失敗した設定値を補助的に記録しておく。
+        logger.error(
+            "[CAMERA API] snapshot failed: outputDirectory=%s imageFormat=%s",
+            camera.settings.get("outputDirectory", "<unset>"),
+            camera.settings.get("imageFormat", "TIFF"),
+        )
         raise HTTPException(status_code=500, detail="Failed to take snapshot")
 
 @app.post("/camera/snapshot/save")
@@ -651,9 +698,15 @@ def save_pending_snapshot(req: SaveSnapshotRequest):
     フロントエンドの保存ダイアログでユーザーが指定したパスを受け取り、
     メモリ上に一時保持（PENDING）していたSnapshot画像を実際にディスクに書き込みます。
     """
+    # ダイアログで選ばれたパスをそのまま残し、Windows 側のアクセス権問題を
+    # そのファイルパス単位で追跡できるようにする。
+    logger.info("[CAMERA API] save snapshot requested: filepath=%s", req.filepath)
     success = camera.save_pending_snapshot(req.filepath)
     if success:
         return {"status": "saved", "filepath": req.filepath}
+    # 保存失敗時はフロントに一般化したエラーを返すが、
+    # ログには具体的なパスを残して、権限/存在/パス不正の切り分けに使う。
+    logger.error("[CAMERA API] save snapshot failed: filepath=%s", req.filepath)
     raise HTTPException(status_code=500, detail="Failed to save snapshot")
 
 @app.post("/camera/record/start")
@@ -665,10 +718,24 @@ def start_recording():
     """
     if not camera.is_connected:
         raise HTTPException(status_code=503, detail="Camera not connected")
-        
+
+    # 録画開始時も、どの保存先・接頭辞・形式設定で動かしたかを残す。
+    # 後から Permission denied が出た際に、録画生成先がどこだったかを確認するためです。
+    logger.info(
+        "[CAMERA API] record start requested: outputDirectory=%s recordPrefix=%s keepRawTiff=%s",
+        camera.settings.get("outputDirectory", "<unset>"),
+        camera.settings.get("recordPrefix", "record_"),
+        camera.settings.get("keepRawTiff", True),
+    )
     success = camera.start_recording()
     if success:
         return {"status": "recording", "filepath": camera.record_filepath}
+    # start_recording() 側で詳細ログを出しているが、API でも失敗時の設定値を残す。
+    logger.error(
+        "[CAMERA API] record start failed: outputDirectory=%s recordPrefix=%s",
+        camera.settings.get("outputDirectory", "<unset>"),
+        camera.settings.get("recordPrefix", "record_"),
+    )
     raise HTTPException(status_code=500, detail="Failed to start recording")
 
 @app.post("/camera/record/stop")

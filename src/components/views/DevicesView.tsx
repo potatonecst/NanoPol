@@ -55,6 +55,8 @@ export function DevicesView() {
         cameraId, setCameraId,
         availableCameras, setAvailableCameras,
         isCameraConnected, setIsCameraConnected,
+        setCameraGainRange,
+        setCameraExposureRange,
         isRecording,
         resetAllConnections,
         // useShallow: パフォーマンス最適化フック。
@@ -74,6 +76,8 @@ export function DevicesView() {
             setIsCameraConnected: state.setIsCameraConnected,
             isRecording: state.isRecording,
             resetAllConnections: state.resetAllConnections,
+            setCameraGainRange: state.setCameraGainRange,
+            setCameraExposureRange: state.setCameraExposureRange,
         }))
     );
 
@@ -196,6 +200,8 @@ export function DevicesView() {
                 setIsCameraLoading(true);
                 await cameraApi.disconnect();
                 setIsCameraConnected(false);
+                setCameraGainRange(null);
+                setCameraExposureRange(null);
                 toast.info("Disconnected Camera");
                 systemApi.postLogs("INFO", "Disconnected Camera successfully").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             } catch (error) {
@@ -223,6 +229,27 @@ export function DevicesView() {
 
             //成功したら接続状態にする
             setIsCameraConnected(true);
+            // 接続レスポンスにデバイス側ゲイン範囲があればストアに保存
+            if ((res as any).gain_range) {
+                try {
+                    const gr = (res as any).gain_range;
+                    setCameraGainRange({ min: Number(gr.min), max: Number(gr.max) });
+                } catch (e) {
+                    console.debug("Failed to parse gain_range from connect response", e);
+                }
+            }
+            if ((res as any).exposure_range) {
+                try {
+                    const er = (res as any).exposure_range;
+                    setCameraExposureRange({
+                        min: Number(er.min_ms),
+                        max: Number(er.max_ms),
+                        step: Number(er.step_ms ?? 1),
+                    });
+                } catch (e) {
+                    console.debug("Failed to parse exposure_range from connect response", e);
+                }
+            }
             toast.success(`Connected to Camera ${cameraId}`);
             systemApi.postLogs("INFO", `Camera ${cameraId} connected successfully`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (error) {

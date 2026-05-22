@@ -65,11 +65,18 @@ class CameraController:
 
         # Camera settings
         self.exposure_ms = 10.0  # 露出時間（ミリ秒）
-        self.gain = 50  # センサーのハードウェアゲイン（0〜100）
-        # 実機のゲイン範囲（connect() 時に検出される）
-        self.gain_min = 0
-        self.gain_max = 100
+        # Mock 環境での既定ゲインを現実的な値に合わせる（多くのカメラで1.0〜13.0が妥当）
+        self.gain = 1.0  # センサーのハードウェアゲイン（デフォルト: 1.0）
+        # 実機のゲイン範囲（connect() 時に検出される）。Mock環境では 1.0..13.0 を想定
+        self.gain_min = 1.0
+        self.gain_max = 13.0
         self.is_color_mode = False  # プレビュー・スナップショット時のカラー(True)/モノクロ(False)指定
+        # キャッシュ: 接続時に取得する露光範囲（ミリ秒単位）。頻繁な set_exposure 呼び出しで
+        # 都度ハードウェア問い合わせを行わないようにここに保持する。
+        self.exposure_min_ms = None
+        self.exposure_max_ms = None
+        self.exposure_step_ms = None
+        self._exposure_range_cached = False
 
         # 【スレッド間通信: ブロードキャスト（黒板とベル）方式】
         # API互換レイヤー向けの「最新フレーム」。_capture_loop() で更新される共有黒板。
@@ -175,6 +182,18 @@ class CameraController:
             self.bayer_pattern = None
             self.input_bpp = 16
             logger.info(f"{self.log_tag} Connected to Virtual Camera (ID: {camera_id})")
+            # Mockでも exposure range をキャッシュしておく
+            try:
+                # Mock 環境では get_exposure_range() が自己完結的にフォールバック値を返すため
+                # 安全にここで呼んでキャッシュしておく。UI スライダーの初期化や
+                # 以後の set_exposure の事前クランプでこのキャッシュを使用する。
+                er = self.get_exposure_range()
+                if er is not None:
+                    self.exposure_min_ms, self.exposure_max_ms, self.exposure_step_ms = er
+                    self._exposure_range_cached = True
+                    logger.info(f"{self.log_tag} Cached exposure range (mock): {er}")
+            except Exception:
+                logger.debug(f"{self.log_tag} Failed to cache exposure range (mock)")
         
         # uc480が使えないなら、実機接続は不可能なのでここで失敗する。
         elif not HAS_UC480:
@@ -325,8 +344,9 @@ class CameraController:
                         try:
                             masterf = float(master)
                             self.gain_max = masterf
-                            # gain_min が未設定なら 0 と仮定（多くの実装で妥当）
-                            if self.gain_min is None:
+                            # gain_min を安全に決める（多くの実装で 0 を下限と仮定）
+                            # 既に self.gain_min に初期値がある場合は上書きしない。
+                            if getattr(self, 'gain_min', None) is None:
                                 self.gain_min = 0.0
                             # 内部フラグ: 返り値が 1.5 以下なら割合表現の可能性が高い
                             self._gain_unit_is_ratio = (masterf <= 1.5)
@@ -357,7 +377,22 @@ class CameraController:
                     f"sensor_type={self.sensor_type}, bayer_pattern={self.bayer_pattern}, input_bpp={self.input_bpp} (exact={exact_bpp})"
                 )
 
-                # 接続直後に露光とゲインを、現在の設定値で揃える。
+                # 接続直後にまず露光範囲を問い合わせしてキャッシュしておく（以後の set_exposure で使う）
+                try:
+                    er = self.get_exposure_range()
+                    if er is not None:
+                        self.exposure_min_ms, self.exposure_max_ms, self.exposure_step_ms = er
+                        self._exposure_range_cached = True
+                        # 実機パスでも可能な限り接続直後に取得してキャッシュする。
+                        # ただし `get_exposure_range()` は `self.camera` が存在することを
+                        # 前提にしているため、connect の順序によっては取得に失敗する
+                        #（その場合はログに記録される）。キャッシュに成功すれば
+                        # 高頻度の set_exposure 呼び出しでハードウェア問い合わせを避けられる。
+                        logger.info(f"{self.log_tag} Cached exposure range: {er}")
+                except Exception:
+                    logger.debug(f"{self.log_tag} Failed to cache exposure range on connect")
+
+                # 露光とゲインを、キャッシュ後の範囲に沿って揃える。
                 self.set_exposure(self.exposure_ms)
                 self.set_gain(self.gain)
                 
@@ -427,30 +462,72 @@ class CameraController:
             Optional[float]: 適用後の露光時間（ミリ秒）。
                 未接続・失敗時は None。
         """
+        # 入力の正規化: ユーザー入力を float に変換する
         try:
             req_ms = float(ms)
         except Exception:
             logger.warning(f"{self.log_tag} Invalid exposure value: {ms}")
             return None
 
-        self.exposure_ms = req_ms
+        # ------------------------------------------------------------
+        # 事前クランプ（pre-clamp）
+        # - UI（スライダーなど）から頻繁に呼ばれることを想定しているため、
+        #   高価なハードウェア問い合わせを避ける目的で接続時に取得した
+        #   exposure range のキャッシュを利用してここで先にクランプする。
+        # - 事前クランプは「要求値がデバイス範囲外であることを早期に検出し、
+        #   不要なハードウェア呼び出しや誤設定を防ぐ」ための保護層であり、
+        #   最終的な適用値はドライバが返す値を採用する。
+        # - この実装は UI 側に負担をかけず、安全にスライダーの高速操作を
+        #   可能にする設計です（クライアントは生値を送り続ければよい）。
+        applied_ms = req_ms
+        try:
+            if self._exposure_range_cached and self.exposure_min_ms is not None:
+                # キャッシュから min/max を読み取り、明示的に float 化して比較する
+                min_ms = float(self.exposure_min_ms)
+                max_ms = float(self.exposure_max_ms)
+                # Python の min/max を使って簡潔にクランプ
+                applied_ms = max(min_ms, min(max_ms, req_ms))
+                # クランプが起きた場合はログ出力して診断できるようにする
+                if applied_ms != req_ms:
+                    logger.info(
+                        f"{self.log_tag} Exposure value clamped: requested={req_ms}ms applied={applied_ms}ms (range={min_ms}-{max_ms})"
+                    )
+        except Exception:
+            # 万が一キャッシュ値の読み取りで例外が起きても入力値をそのまま使う
+            applied_ms = req_ms
+
+        # 内部状態として一旦記憶しておく（Mock パスや失敗時に参照される）
+        self.exposure_ms = applied_ms
+
+        # Mock 環境では実際のデバイスを操作しないのでここで終了（ログは残す）
         if self.is_mock_env:
-            logger.info(f"{self.log_tag} Set Exposure: {req_ms}ms")
+            logger.info(f"{self.log_tag} Set Exposure: {applied_ms}ms")
             return self.exposure_ms
-            
+
+        # 実機パス: 接続と camera オブジェクトの有無を確認する
         if not self.is_connected or self.camera is None:
+            # 注意: connect() の中で exposure range をキャッシュする実装を採る場合は
+            #       `self.is_connected` のタイミングにより取得可否が変わるため、
+            #       connect の実装順序との整合性を保つ必要がある。
             logger.warning(f"{self.log_tag} Camera not connected, cannot set exposure")
             return None
-            
+
         try:
-            # uc480 API は exposure を秒単位で扱うため、ミリ秒を秒に変換
-            exposure_sec = req_ms / 1000.0
+            # uc480 は秒単位の API を使う実装が多いため、ミリ秒→秒変換して渡す
+            exposure_sec = applied_ms / 1000.0
+            # ドライバ呼び出し: ドライバは実際に適用した秒値（あるいは None）を返す
             applied_sec = self.camera.set_exposure(exposure_sec)
-            applied_ms = float(applied_sec) * 1000.0
-            self.exposure_ms = applied_ms
-            logger.info(f"{self.log_tag} Set Exposure: requested={req_ms}ms applied={applied_ms}ms ({applied_sec}s)")
+            # ドライバ返却値をミリ秒に戻して内部状態を上書きする
+            applied_ms_from_driver = float(applied_sec) * 1000.0
+            # ドライバ側でさらに丸めや制限が行われる可能性があるため、
+            # 最終的にはドライバが返した値を信頼して採用する
+            self.exposure_ms = applied_ms_from_driver
+            logger.info(
+                f"{self.log_tag} Set Exposure: requested={req_ms}ms applied={self.exposure_ms}ms ({applied_sec}s)"
+            )
             return self.exposure_ms
         except Exception:
+            # 実機操作失敗時は例外ログを残して None を返す
             logger.exception(f"{self.log_tag} Failed to set exposure")
             return None
 
@@ -527,6 +604,111 @@ class CameraController:
         """
         return (float(self.gain_min), float(self.gain_max))
 
+    def get_exposure_range(self) -> Optional[tuple[float, float, float]]:
+        """
+        露光時間の許容範囲を取得して返します（単位: ミリ秒）。
+
+        戻り値:
+            - (min_ms, max_ms, step_ms): 各値は float（ミリ秒）
+            - None: 取得不可（未接続またはデバイス/ライブラリが範囲情報を提供しない場合）
+
+        実装詳細:
+            - Mock 環境では画面操作テスト向けのフォールバック値
+              `(1.0, 1000.0, 1.0)` を返します（1ms〜1000ms、ステップ1ms）。
+            - 実機（pylablib/uc480）では低レベル関数 `is_Exposure` を使い、
+              `uc480_defs.EXPOSURE_CMD.IS_EXPOSURE_CMD_GET_EXPOSURE_RANGE_MIN`／
+              `..._MAX`／`..._INC` の3つを個別に取得します。
+              多くの実装は秒単位で値を返すため、ミリ秒に変換して返却します。
+            - 呼び出しは機器固有の挙動に依存するため、安全に例外を吸収して
+              取得失敗時は `None` を返します。これにより後方互換性を維持します。
+
+        注意:
+            - `step_ms`（step）は UI のスライダーや数値入力での最小刻み幅（インクリメント）を示します。
+              例えば `step_ms=0.1` の場合、露光は 0.1ms 単位で変化することが期待できます。
+            - 一部デバイスでは step が非整数や 0 に近い非常に小さい値になることがあるため、
+              フロントエンドでは安全に丸め処理や下限チェックを行ってください。
+        """
+        # Mock のフォールバック（UI テスト用の妥当な既定値）
+        if self.is_mock_env:
+            # Mock 環境用のフォールバック: 1ms 〜 100ms, ステップ 1ms
+            # キャッシュしておく（Mockでも繰り返し問い合わせを避ける）
+            try:
+                self.exposure_min_ms = 1.0
+                self.exposure_max_ms = 100.0
+                self.exposure_step_ms = 1.0
+                self._exposure_range_cached = True
+            except Exception:
+                pass
+            return (1.0, 100.0, 1.0)
+
+        # 未接続やカメラオブジェクト不在なら取得不可
+        if not self.is_connected or self.camera is None:
+            return None
+
+        try:
+            # pylablib の低レベル呼び出しを使って MIN/MAX/INC を取得する
+            import ctypes
+            from pylablib.devices.uc480 import uc480_defs
+
+            if not (hasattr(self.camera, "lib") and hasattr(self.camera.lib, "is_Exposure")):
+                logger.debug(f"{self.log_tag} is_Exposure API not available")
+                return None
+
+            try:
+                # is_Exposure の呼び出しは実装ごとに戻り方が異なる可能性があるため
+                # ここでは直接戻り値を受け取り、秒単位ならミリ秒へ変換する。
+                #
+                # 重要な設計注釈:
+                # - この関数は「呼び出し側が camera オブジェクトを持っている場合にのみ
+                #   実際のハードウェアへ問い合わせを行う」前提で実装されています。
+                # - 高頻度の set_exposure 呼び出しではハードウェア問い合わせを避けるため、
+                #   connect() 時に一度だけ範囲をキャッシュして使い回すことを想定しています。
+                exp_min_sec = self.camera.lib.is_Exposure(
+                    self.camera.hcam,
+                    uc480_defs.EXPOSURE_CMD.IS_EXPOSURE_CMD_GET_EXPOSURE_RANGE_MIN,
+                    ctypes.c_double,
+                )
+                exp_max_sec = self.camera.lib.is_Exposure(
+                    self.camera.hcam,
+                    uc480_defs.EXPOSURE_CMD.IS_EXPOSURE_CMD_GET_EXPOSURE_RANGE_MAX,
+                    ctypes.c_double,
+                )
+                exp_inc_sec = self.camera.lib.is_Exposure(
+                    self.camera.hcam,
+                    uc480_defs.EXPOSURE_CMD.IS_EXPOSURE_CMD_GET_EXPOSURE_RANGE_INC,
+                    ctypes.c_double,
+                )
+
+                # 通常は秒単位で返るためミリ秒に換算する（ライブラリ実装によっては既にmsの可能性あり）
+                exp_min_ms = float(exp_min_sec) * 1000.0
+                exp_max_ms = float(exp_max_sec) * 1000.0
+                exp_inc_ms = float(exp_inc_sec) * 1000.0
+
+                # キャッシュしておく（以後の高頻度アクセスを避けるため）
+                try:
+                    self.exposure_min_ms = exp_min_ms
+                    self.exposure_max_ms = exp_max_ms
+                    self.exposure_step_ms = exp_inc_ms
+                    self._exposure_range_cached = True
+                except Exception:
+                    logger.debug(f"{self.log_tag} Failed to cache exposure range")
+
+                logger.debug(
+                    f"{self.log_tag} Exposure range retrieved: min={exp_min_ms}ms, max={exp_max_ms}ms, inc={exp_inc_ms}ms"
+                )
+                return (exp_min_ms, exp_max_ms, exp_inc_ms)
+            except Exception as e:
+                # 低レベル呼び出しに失敗した場合は None を返して上位でフォールバック
+                logger.debug(f"{self.log_tag} is_Exposure call failed: {e}")
+                return None
+
+        except ImportError:
+            logger.debug(f"{self.log_tag} uc480_defs not available (expected in Mock or non-uc480 environment)")
+            return None
+        except Exception:
+            logger.exception(f"{self.log_tag} Failed to read exposure range")
+            return None
+
     def set_color_mode(self, is_color: bool):
         """プレビュー・スナップショット時のカラーモード設定を受け取る"""
         self.is_color_mode = is_color
@@ -577,11 +759,25 @@ class CameraController:
         # 自動保存の場合
         out_dir = self.settings.get("outputDirectory", os.getcwd())
         prefix = self.settings.get("snapshotPrefix", "snapshot_")
-        os.makedirs(out_dir, exist_ok=True)
-        
+        # ここでは「どこに」「どの形式で」「どの接頭辞で」保存しようとしたかを
+        # ログに残す。Windows 実機で Permission denied が出た場合でも、
+        # 原因パスをすぐ特定できるようにするための診断ログです。
+        logger.info(
+            f"{self.log_tag} Auto snapshot save requested: out_dir={out_dir}, format={fmt}, prefix={prefix}"
+        )
+        # Use a dedicated snapshots/ subdirectory to avoid cluttering outputDirectory root
+        snapshot_dir = os.path.join(out_dir, "snapshots")
+        try:
+            os.makedirs(snapshot_dir, exist_ok=True)
+        except Exception:
+            logger.exception(f"{self.log_tag} Failed to create snapshot output directory: {snapshot_dir}")
+            return None
+
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         ext = ".tif" if fmt == "TIFF" else (".jpg" if fmt == "JPEG" else ".png")
-        filepath = os.path.join(out_dir, f"{prefix}{timestamp}{ext}")
+        filepath = os.path.join(snapshot_dir, f"{prefix}{timestamp}{ext}")
+        # 最終的な保存先を明示することで、ログからそのまま再現できるようにする。
+        logger.info(f"{self.log_tag} Auto snapshot target path: {filepath}")
         
         if self._write_image_to_disk(filepath, save_img):
             return filepath
@@ -593,6 +789,9 @@ class CameraController:
             logger.error(f"{self.log_tag} No pending snapshot to save.")
             return False
             
+        # ユーザーがダイアログで選んだファイルパスをそのまま記録する。
+        # 保存できなかった場合も、どのパスが問題だったかを後追いしやすくする。
+        logger.info(f"{self.log_tag} Saving pending snapshot to: {filepath}")
         success = self._write_image_to_disk(filepath, self._pending_snapshot)
         self._pending_snapshot = None
         return success
@@ -609,14 +808,31 @@ class CameraController:
         # 動画はSSD直書きのリアルタイム性が重要なため、ダイアログは出さずに常に自動保存とする
         out_dir = self.settings.get("outputDirectory", os.getcwd())
         prefix = self.settings.get("recordPrefix", "record_")
-        os.makedirs(out_dir, exist_ok=True)
+        # 直下にファイルをばら撒かず、録画専用のサブフォルダへ集約する。
+        # これにより、テスト実行時や開発時に outputDirectory の直下が record*.tif / .csv で
+        # 埋まるのを防ぎ、生成物をまとめて .gitignore しやすくする。
+        record_dir = os.path.join(out_dir, "videos")
+        # 動画保存でも snapshot と同様に、保存先・接頭辞・raw TIFF の扱いを
+        # ログに残しておくと、Windows での権限問題やパス誤設定を追いやすい。
+        logger.info(
+            f"{self.log_tag} Recording save requested: out_dir={out_dir}, record_dir={record_dir}, prefix={prefix}, keepRawTiff={self.settings.get('keepRawTiff', True)}"
+        )
+        try:
+            # 録画先ディレクトリの作成失敗は、ファイル書き込みより前に検出して
+            # より原因を絞り込めるようにしている。
+            os.makedirs(record_dir, exist_ok=True)
+        except Exception:
+            logger.exception(f"{self.log_tag} Failed to create recording output directory: {record_dir}")
+            return False
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.record_filepath = os.path.join(out_dir, f"{prefix}{timestamp}.tif")
+        self.record_filepath = os.path.join(record_dir, f"{prefix}{timestamp}.tif")
+        # 実際に作成される TIFF のフルパスを残し、CSV と合わせて後から追跡しやすくする。
+        logger.info(f"{self.log_tag} Recording target path: {self.record_filepath}")
         
         try:
             import tifffile
-            csv_filepath = os.path.join(out_dir, f"{prefix}{timestamp}.csv")
+            csv_filepath = os.path.join(record_dir, f"{prefix}{timestamp}.csv")
             
             self.tiff_writer = tifffile.TiffWriter(self.record_filepath, append=True)
             
@@ -919,6 +1135,12 @@ class CameraController:
     def _write_image_to_disk(self, filepath: str, img: np.ndarray) -> bool:
         """【内部用】Numpy配列を画像ファイルとしてディスクに保存します（TIFF/JPEG/PNG自動判別）"""
         try:
+            # 保存対象の画像情報を debug ログに残す。
+            # どの dtype / shape の画像を書こうとしていたかを追えるようにし、
+            # 保存形式の不一致や空フレームを切り分けやすくする。
+            logger.debug(
+                f"{self.log_tag} Writing image: path={filepath}, dtype={getattr(img, 'dtype', None)}, shape={getattr(img, 'shape', None)}"
+            )
             if filepath.lower().endswith(('.tif', '.tiff')):
                 import tifffile
                 tifffile.imwrite(filepath, img)
@@ -927,7 +1149,15 @@ class CameraController:
             logger.info(f"{self.log_tag} Snapshot saved to: {filepath}")
             return True
         except Exception as e:
-            logger.exception(f"{self.log_tag} Snapshot save error")
+            parent_dir = os.path.dirname(filepath) or os.getcwd()
+            # Permission denied などの失敗時に、単なる例外メッセージだけでなく
+            # 親ディレクトリの存在・書き込み可否・例外種別まで残す。
+            # Windows 実機での権限問題を解析しやすくするための診断情報です。
+            logger.exception(
+                f"{self.log_tag} Snapshot save error: path={filepath}, parent_dir={parent_dir}, "
+                f"parent_exists={os.path.exists(parent_dir)}, parent_writable={os.access(parent_dir, os.W_OK)}, "
+                f"error_type={type(e).__name__}, errno={getattr(e, 'errno', None)}, strerror={getattr(e, 'strerror', None)}"
+            )
             return False
 
     def _post_process_video(self, tiff_path: str, is_color: bool, keep_raw: bool):

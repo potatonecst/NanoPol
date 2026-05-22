@@ -23,9 +23,11 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         currentAngle,
         exposureTime, setExposureTime,
         gain, setGain,
+        cameraExposureRange,
         zoomLevel, setZoomLevel,
         panOffset, setPanOffset,
         isCameraConnected,
+        cameraGainRange,
     } = useAppStore(useShallow((state) => ({
         cameraResolution: state.cameraResolution,
         currentAngle: state.currentAngle,
@@ -33,11 +35,13 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         setExposureTime: state.setExposureTime,
         gain: state.gain,
         setGain: state.setGain,
+        cameraExposureRange: state.cameraExposureRange,
         zoomLevel: state.zoomLevel,
         setZoomLevel: state.setZoomLevel,
         panOffset: state.panOffset,
         setPanOffset: state.setPanOffset,
         isCameraConnected: state.isCameraConnected,
+        cameraGainRange: state.cameraGainRange,
     })));
 
     // カメラ表示領域のサイズ計測用Ref
@@ -109,6 +113,12 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         num = Math.max(min, Math.min(num, max));
         setter(num);
     }
+
+    // 露光範囲: ストアの値を優先し、取得できない場合は安全なフォールバック値を使う
+    // 単位はミリ秒。デフォルト最大は 100ms（暫定、UIと合意があれば変更可）。
+    const exposureMin = cameraExposureRange?.min ?? 1;
+    const exposureMax = cameraExposureRange?.max ?? 100;
+    const exposureStep = cameraExposureRange?.step ?? 1;
 
     // コンテナのサイズ監視 (ResizeObserver)
     // ウィンドウサイズが変わった時に、表示エリアの大きさを再取得します。
@@ -220,15 +230,18 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                 <Input
                                     type="number"
                                     value={exposureTime}
-                                    onChange={(e) => handleNumberInput(setExposureTime, e.target.value, 1, 500)}
-                                    className="h-7 w-14 text-xs font-mono text-center p-0"
+                                    onChange={(e) => handleNumberInput(setExposureTime, e.target.value, exposureMin, exposureMax)}
+                                    step={exposureStep}
+                                    min={exposureMin}
+                                    max={exposureMax}
+                                    className="h-7 w-14 text-xs font-mono text-left p-0 pl-2"
                                 />
                             </div>
 
                             <Slider
                                 value={[exposureTime]}
                                 onValueChange={(val) => setExposureTime(val[0])}
-                                min={1} max={500} step={1}
+                                min={exposureMin} max={exposureMax} step={exposureStep}
                                 className="w-full"
                             />
                         </div>
@@ -239,18 +252,28 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                 <Label className="flex items-center gap-1 font-medium text-muted-foreground">
                                     Gain
                                 </Label>
-                                <Input
-                                    type="number"
-                                    value={gain}
-                                    onChange={(e) => handleNumberInput(setGain, e.target.value, 0, 100)}
-                                    className="h-7 w-14 text-xs font-mono text-center p-0"
-                                />
+                                <div className="relative">
+                                    <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-xs font-mono text-muted-foreground">
+                                        ×
+                                    </span>
+                                    <Input
+                                        type="number"
+                                        value={gain.toFixed(2)}
+                                        onChange={(e) => handleNumberInput(setGain, e.target.value, cameraGainRange?.min ?? 1, cameraGainRange?.max ?? 13)}
+                                        step={0.01}
+                                        min={cameraGainRange?.min ?? 1}
+                                        max={cameraGainRange?.max ?? 13}
+                                        className="h-7 w-20 text-xs font-mono text-left pl-5 pr-0 tabular-nums"
+                                    />
+                                </div>
                             </div>
 
                             <Slider
                                 value={[gain]}
                                 onValueChange={(val) => setGain(val[0])}
-                                min={0} max={100} step={1}
+                                min={cameraGainRange?.min ?? 1}
+                                max={cameraGainRange?.max ?? 13}
+                                step={0.01}
                                 className="w-full"
                             />
                         </div>

@@ -139,7 +139,13 @@ export const cameraApi = {
 
     // 指定したIDのカメラに接続し、プレビュー用のバックグラウンドスレッドを起動します
     connect: (id: number = 0) =>
-        request<{ status: string, mode: string, message: string }>("/camera/connect", {
+        request<{
+            status: string,
+            mode: string,
+            message: string,
+            gain_range?: { min: number, max: number },
+            exposure_range?: { min_ms: number, max_ms: number, step_ms?: number }
+        }>("/camera/connect", {
             method: "POST",
             body: JSON.stringify({ camera_id: id })
         }),

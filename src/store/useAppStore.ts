@@ -29,6 +29,14 @@ interface AppState {
     cameraResolution: { width: number; height: number }; //カメラの解像度
     setCameraResolution: (width: number, height: number) => void; //カメラの解像度を設定する関数
 
+    // デバイスが報告するゲイン範囲（接続時に取得してUIで利用する）
+    cameraGainRange: { min: number; max: number } | null;
+    setCameraGainRange: (range: { min: number; max: number } | null) => void;
+
+    // デバイスが報告する露光範囲（接続時に取得してUIで利用する）
+    cameraExposureRange: { min: number; max: number; step: number } | null;
+    setCameraExposureRange: (range: { min: number; max: number; step: number } | null) => void;
+
     //録画状態
     isRecording: boolean; //録画中かどうか
     setIsRecording: (isRecording: boolean) => void; //録画中かどうかを設定する関数
@@ -103,11 +111,17 @@ export const useAppStore = create<AppState>((set) => ({
     isStageBusy: false, //初期値
     isMeasuring: false, //初期値
 
-    exposureTime: 50, //初期値
+    exposureTime: 1, //初期値
     setExposureTime: (time) => set({ exposureTime: time }), //set関数
 
     gain: 1, //初期値
     setGain: (val) => set({ gain: val }), //set関数でgain
+
+    cameraGainRange: null,
+    setCameraGainRange: (range) => set({ cameraGainRange: range }),
+
+    cameraExposureRange: null,
+    setCameraExposureRange: (range) => set({ cameraExposureRange: range }),
 
     zoomLevel: 1, //初期値
     setZoomLevel: (zoom) => set({ zoomLevel: zoom }), //set関数
@@ -130,6 +144,8 @@ export const useAppStore = create<AppState>((set) => ({
         isSystemBusy: false,
         exposureTime: 50,
         gain: 1,
+        cameraGainRange: null,
+        cameraExposureRange: null,
         zoomLevel: 1,
         panOffset: { x: 0, y: 0 },
     }),

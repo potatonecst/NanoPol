@@ -67,7 +67,7 @@ export const settingsSchema = z.object({
     // --- Camera Defaults ---
     cameraMode: z.enum(CameraModes).default("Monochrome"),
     defaultExposure: z.coerce.number().min(0.01).max(1000).default(10.0),
-    defaultGain: z.coerce.number().min(0).max(100).default(50),
+    defaultGain: z.coerce.number().min(1).max(13).default(1.0),
 })
     // refine: オブジェクト全体に対する検証（クロスフィールドバリデーション）
     // 「最大速度」が「最小速度」より小さい場合など、複数の項目が絡む矛盾をチェックします。

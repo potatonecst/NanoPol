@@ -390,8 +390,8 @@ export const SettingsView: React.FC = () => {
                     name="defaultGain"
                     render={({ field, fieldState }) => (
                       <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel htmlFor="defaultGain">Default Gain (0-100)</FieldLabel>
-                        <Input type="number" {...field} id="defaultGain" />
+                        <FieldLabel htmlFor="defaultGain">Default Gain (×1.00-×13.00)</FieldLabel>
+                        <Input type="number" step={0.01} min={1} max={13} {...field} id="defaultGain" />
                         {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
                       </Field>
                     )}

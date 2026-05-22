@@ -30,7 +30,7 @@ export const DEFAULT_SETTINGS: Omit<Settings, "outputDirectory"> = {
     defaultAccelTime: 200,
     cameraMode: "Monochrome",
     defaultExposure: 10.0,
-    defaultGain: 50,
+    defaultGain: 1.0,
 };
 
 /**

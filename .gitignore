@@ -29,3 +29,7 @@ references
 
 # Gemini
 .gemini/tmp/
+
+# Generated camera outputs
+videos/
+snapshots/

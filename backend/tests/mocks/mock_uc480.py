@@ -194,7 +194,9 @@ class UC480Camera:
         【用途】
         CameraController が現在のゲイン設定を確認するのに使う。
         """
-        return 50.0
+        # モックのデフォルトゲイン値を CameraController の初期値に合わせる
+        # 実運用で多い値域は 1.0..13.0 のため、ここも 1.0 を返す
+        return 1.0
     
     def set_gain(self, gain: float):
         """
