@@ -34,10 +34,14 @@ def test_suppress_system_logs_access_filter_blocks_successful_system_logs(tmp_pa
     logger_module = _load_logger_module("nanopol_logger_test_module", module_path)
     filter_ = logger_module.SuppressSystemLogsAccessFilter()
 
-    # /system/logs の成功系アクセスは、GET/POST どちらでも落とす。
+    # 高頻度ポーリングAPIの成功系アクセスは落とす。
     assert filter_.filter(_make_access_record("GET", "/system/logs", 200)) is False
     assert filter_.filter(_make_access_record("POST", "/system/logs", 204)) is False
+    assert filter_.filter(_make_access_record("GET", "/health", 200)) is False
+    assert filter_.filter(_make_access_record("GET", "/stage/position", 200)) is False
+
     # 失敗系は残す。
     assert filter_.filter(_make_access_record("GET", "/system/logs", 500)) is True
+
     # それ以外のエンドポイントは従来どおり通す。
     assert filter_.filter(_make_access_record("GET", "/camera/connect", 200)) is True

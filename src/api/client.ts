@@ -34,7 +34,7 @@ export const setApiBase = (port: number) => {
  * @param options - HTTPメソッドや送信データ(body)などの追加設定
  * @returns バックエンドから返ってきたJSONデータを、指定された型 `T` として返すPromise
  */
-async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
+async function request<T>(endpoint: string, options?: RequestInit, timeoutMs?: number): Promise<T> {
     // Fetch API の Headers オブジェクトを作り、既存ヘッダの参照や追加をしやすくします。
     const headers = new Headers(options?.headers);
     // GET/HEAD 等のボディなしリクエストでは Content-Type を付けない。
@@ -48,22 +48,34 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
     // RequestInit で method, body, headers, credentials などの通信条件をまとめて渡します。
     // mode: "cors" は「別オリジンとの通信として扱う」指定、credentials: "include" は
     // Cookie などの認証情報も送る指定です。
-    const response = await window.fetch(`${API_BASE}${endpoint}`, {
-        ...options,
-        mode: "cors",
-        credentials: "include",
-        headers,
-    });
+    const controller = timeoutMs != null ? new AbortController() : null;
+    const timeoutId = timeoutMs != null
+        ? window.setTimeout(() => controller?.abort(), timeoutMs)
+        : null;
 
-    // Response.ok は HTTP 2xx かどうかを表す標準プロパティです。
-    // ここで false の場合は、ステータスコードを含むエラーとして呼び出し元に返します。
-    if (!response.ok) {
-        // エラーを投げて、呼び出し元（UIコンポーネントの try-catch）に処理を任せます。
-        throw new Error(`API Error: ${response.status} ${response.statusText}`);
+    try {
+        const response = await window.fetch(`${API_BASE}${endpoint}`, {
+            ...options,
+            signal: controller?.signal ?? options?.signal,
+            mode: "cors",
+            credentials: "include",
+            headers,
+        });
+
+        // Response.ok は HTTP 2xx かどうかを表す標準プロパティです。
+        // ここで false の場合は、ステータスコードを含むエラーとして呼び出し元に返します。
+        if (!response.ok) {
+            // エラーを投げて、呼び出し元（UIコンポーネントの try-catch）に処理を任せます。
+            throw new Error(`API Error: ${response.status} ${response.statusText}`);
+        }
+
+        // Response.json() はレスポンスボディを JSON として解析し、JavaScript のオブジェクトへ変換します。
+        return response.json();
+    } finally {
+        if (timeoutId != null) {
+            window.clearTimeout(timeoutId);
+        }
     }
-
-    // Response.json() はレスポンスボディを JSON として解析し、JavaScript のオブジェクトへ変換します。
-    return response.json();
 }
 
 // ==========================================
@@ -77,7 +89,7 @@ export const stageApi = {
         request<{ status: string, mode: string, message: string }>("/stage/connect", {
             method: "POST",
             body: JSON.stringify({ port })
-        }),
+        }, 30000),
 
     // ステージ接続を切断します
     disconnect: () =>
@@ -148,7 +160,7 @@ export const cameraApi = {
         }>("/camera/connect", {
             method: "POST",
             body: JSON.stringify({ camera_id: id })
-        }),
+        }, 30000),
 
     // カメラを切断し、リソースを解放します
     disconnect: () =>

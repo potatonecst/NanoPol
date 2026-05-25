@@ -12,6 +12,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/
 
 import { CameraOff, House, ZoomIn, ZoomOut } from "lucide-react";
 import { Badge } from "../ui/badge";
+import { DEFAULT_EXPOSURE_MIN_MS, DEFAULT_EXPOSURE_MAX_MS, DEFAULT_EXPOSURE_STEP_MS, DEFAULT_GAIN_MIN, DEFAULT_GAIN_MAX } from "@/constants/constants";
 
 interface CameraPanelProps {
     showAngle?: boolean, //currentAngleを表示するかどうかのフラグ
@@ -106,19 +107,36 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
     }
 
     // 数値入力のバリデーションヘルパー（範囲外の値を防ぐ）
-    const handleNumberInput = (setter: (val: number) => void, val: string, min: number, max: number) => {
+    // step が渡された場合は、指定の刻みに丸めてからクランプする
+    const handleNumberInput = (setter: (val: number) => void, val: string, min: number, max: number, step?: number) => {
         let num = parseFloat(val);
         if (isNaN(num)) return;
-        //Clamp
+
+        if (typeof step === "number" && step > 0) {
+            const decimals = (String(step).split(".")[1] || "").length;
+            const scale = Math.pow(10, decimals);
+            const stepInt = Math.round(step * scale);
+            const deltaInt = Math.round((num - min) * scale);
+            // 入力側でもオーバーシュートを避けるために下方向で丸める
+            const steps = Math.floor(deltaInt / stepInt);
+            const rounded = steps * stepInt / scale + min;
+            num = Number(rounded.toFixed(decimals));
+        }
+
+        // Clamp to min/max after rounding
         num = Math.max(min, Math.min(num, max));
         setter(num);
     }
 
-    // 露光範囲: ストアの値を優先し、取得できない場合は安全なフォールバック値を使う
-    // 単位はミリ秒。デフォルト最大は 100ms（暫定、UIと合意があれば変更可）。
-    const exposureMin = cameraExposureRange?.min ?? 1;
-    const exposureMax = cameraExposureRange?.max ?? 100;
-    const exposureStep = cameraExposureRange?.step ?? 1;
+    // 露光範囲: ストアの値を優先し、取得できない場合は定数のフォールバック値を使う
+    // 単位はミリ秒。
+    const exposureMin = cameraExposureRange?.min ?? DEFAULT_EXPOSURE_MIN_MS;
+    const exposureMax = cameraExposureRange?.max ?? DEFAULT_EXPOSURE_MAX_MS;
+    const exposureStep = cameraExposureRange?.step ?? DEFAULT_EXPOSURE_STEP_MS;
+
+    // 表示桁数: exposureStep の小数桁数に合わせて数値入力の表示を整える
+    const exposureStepStr = String(exposureStep ?? "");
+    const exposurePrecision = exposureStepStr.includes(".") ? exposureStepStr.split(".")[1].length : 0;
 
     // コンテナのサイズ監視 (ResizeObserver)
     // ウィンドウサイズが変わった時に、表示エリアの大きさを再取得します。
@@ -131,6 +149,21 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         obs.observe(containerRef.current);
         return () => obs.disconnect();
     }, [])
+
+    // Exposure slider の値をデバイスの step/min に合わせて丸め・クランプする
+    const handleExposureSliderChange = (val: number[]) => {
+        let v = val[0];
+        // 丸めは step の小数桁数に基づく整数スケールで行う
+        const decimals = (String(exposureStep).split(".")[1] || "").length;
+        const scale = Math.pow(10, decimals);
+        const stepInt = Math.round(exposureStep * scale);
+        const deltaInt = Math.round((v - exposureMin) * scale);
+        // 切り上げ/切り捨てによるオーバーシュートを避けるため、下方向（floor）で丸める
+        const steps = Math.floor(deltaInt / stepInt);
+        const rounded = steps * stepInt / scale + exposureMin;
+        const clamped = Math.min(exposureMax, Math.max(exposureMin, Number(rounded.toFixed(decimals))));
+        setExposureTime(clamped);
+    }
 
     // カメラ設定の同期（Debounce処理）
     // スライダーを動かすたびにAPIを呼ぶと負荷が高いため、操作が止まってから0.5秒後にAPIを呼びます。
@@ -229,18 +262,18 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
 
                                 <Input
                                     type="number"
-                                    value={exposureTime}
-                                    onChange={(e) => handleNumberInput(setExposureTime, e.target.value, exposureMin, exposureMax)}
+                                    value={Number(exposureTime).toFixed(exposurePrecision)}
+                                    onChange={(e) => handleNumberInput(setExposureTime, e.target.value, exposureMin, exposureMax, exposureStep)}
                                     step={exposureStep}
                                     min={exposureMin}
                                     max={exposureMax}
-                                    className="h-7 w-14 text-xs font-mono text-left p-0 pl-2"
+                                    className="h-7 w-24 text-xs font-mono text-left pl-2 pr-0 tabular-nums"
                                 />
                             </div>
 
                             <Slider
                                 value={[exposureTime]}
-                                onValueChange={(val) => setExposureTime(val[0])}
+                                onValueChange={handleExposureSliderChange}
                                 min={exposureMin} max={exposureMax} step={exposureStep}
                                 className="w-full"
                             />
@@ -259,10 +292,10 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                     <Input
                                         type="number"
                                         value={gain.toFixed(2)}
-                                        onChange={(e) => handleNumberInput(setGain, e.target.value, cameraGainRange?.min ?? 1, cameraGainRange?.max ?? 13)}
+                                        onChange={(e) => handleNumberInput(setGain, e.target.value, cameraGainRange?.min ?? DEFAULT_GAIN_MIN, cameraGainRange?.max ?? DEFAULT_GAIN_MAX, 0.01)}
                                         step={0.01}
-                                        min={cameraGainRange?.min ?? 1}
-                                        max={cameraGainRange?.max ?? 13}
+                                        min={cameraGainRange?.min ?? DEFAULT_GAIN_MIN}
+                                        max={cameraGainRange?.max ?? DEFAULT_GAIN_MAX}
                                         className="h-7 w-20 text-xs font-mono text-left pl-5 pr-0 tabular-nums"
                                     />
                                 </div>
@@ -271,8 +304,8 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                             <Slider
                                 value={[gain]}
                                 onValueChange={(val) => setGain(val[0])}
-                                min={cameraGainRange?.min ?? 1}
-                                max={cameraGainRange?.max ?? 13}
+                                min={cameraGainRange?.min ?? DEFAULT_GAIN_MIN}
+                                max={cameraGainRange?.max ?? DEFAULT_GAIN_MAX}
                                 step={0.01}
                                 className="w-full"
                             />

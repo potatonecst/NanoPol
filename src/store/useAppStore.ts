@@ -111,7 +111,7 @@ export const useAppStore = create<AppState>((set) => ({
     isStageBusy: false, //初期値
     isMeasuring: false, //初期値
 
-    exposureTime: 1, //初期値
+    exposureTime: 0.06675, //初期値
     setExposureTime: (time) => set({ exposureTime: time }), //set関数
 
     gain: 1, //初期値
@@ -142,8 +142,8 @@ export const useAppStore = create<AppState>((set) => ({
         isStageBusy: false,
         isMeasuring: false,
         isSystemBusy: false,
-        exposureTime: 50,
-        gain: 1,
+        exposureTime: 0.06675,
+        gain: 1.0,
         cameraGainRange: null,
         cameraExposureRange: null,
         zoomLevel: 1,

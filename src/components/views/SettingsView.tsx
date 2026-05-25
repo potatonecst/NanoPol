@@ -10,6 +10,8 @@ import {
   RecordFormats,
   CameraModes,
 } from "../../schemas/settingsSchema";
+import { useAppStore } from "@/store/useAppStore";
+import { useShallow } from "zustand/react/shallow";
 
 // Tauri APIs
 // open: ネイティブのファイル選択ダイアログを開く関数
@@ -52,7 +54,7 @@ import { toast } from "sonner";
 import { systemApi } from "@/api/client";
 
 // 共通の定数ファイルから設定ファイル名をインポート
-import { CONFIG_FILENAME, DEFAULT_SETTINGS, getDefaultOutputDirectory } from "../../constants/constants";
+import { CONFIG_FILENAME, DEFAULT_SETTINGS, getDefaultOutputDirectory, DEFAULT_EXPOSURE_MIN_MS, DEFAULT_EXPOSURE_MAX_MS, DEFAULT_EXPOSURE_STEP_MS, DEFAULT_GAIN_MIN, DEFAULT_GAIN_MAX } from "../../constants/constants";
 
 /**
  * 設定画面 (Settings View) コンポーネント
@@ -85,14 +87,21 @@ export const SettingsView: React.FC = () => {
     resolver: zodResolver(settingsSchema) as any,
     mode: "onChange", // 追加: 最初から1ストロークごとにリアルタイムでバリデーションを行う
     defaultValues: {
-      // constantsからデフォルト設定を展開
-      ...DEFAULT_SETTINGS,
+      // outputDirectory はOS依存で実行時に決まるため、ここではいったん空文字にする。
+      // 先にフォームを描画し、初回起動時だけ useEffect で実パスを後から入れる。
+      // それ以外の固定値だけを DEFAULT_SETTINGS から展開する。
+      ...(DEFAULT_SETTINGS as any),
       outputDirectory: "",
     },
   });
 
   // 現在選択されている画像フォーマットを監視し、対応する拡張子を決定する
   const currentFormat = form.watch("imageFormat");
+
+  // ストアからカメラのキャッシュされたレンジを購読する（変化があれば再レンダリングされる）
+  const { cameraExposureRange, cameraGainRange } = useAppStore(
+    useShallow((s) => ({ cameraExposureRange: s.cameraExposureRange, cameraGainRange: s.cameraGainRange }))
+  );
 
   /**
    * 画像フォーマット名から対応する拡張子を取得します。
@@ -144,8 +153,9 @@ export const SettingsView: React.FC = () => {
           // form.reset: フォームの値を新しいデータで上書きする関数です。
           form.reset(mergedSettings);
         } else {
-          // 2. 設定ファイルがない場合、OSのドキュメントフォルダのサブフォルダ（NanoPol）をデフォルトのアウトプットディレクトリにする
-          // 共通関数からデフォルトパス（例: "Documents/NanoPol"）を取得します
+          // 設定ファイルがない初回起動時だけ、OSのドキュメントフォルダ配下を初期値として入れる。
+          // defaultValues で空文字にしているのは、ここで実行時のパスを後から確定させるため。
+          // つまり、空文字は最終値ではなく「後で埋めるための仮の初期値」。
           const defaultPath = await getDefaultOutputDirectory();
           // form.setValue: フォームの特定の項目の値をプログラムから設定する関数です。
           // これを実行すると、内部の値が書き換わり、UIにも反映されます。
@@ -177,9 +187,43 @@ export const SettingsView: React.FC = () => {
    */
   const onSubmit = async (data: Settings) => {
     try {
+      // 保存前にカメラの露光レンジがあれば step/min/max に基づいてクランプと丸めを行う
+      try {
+        const cameraExposureRange = useAppStore.getState().cameraExposureRange;
+        const exposureMin = cameraExposureRange?.min ?? DEFAULT_EXPOSURE_MIN_MS;
+        const exposureMax = cameraExposureRange?.max ?? DEFAULT_EXPOSURE_MAX_MS;
+        const exposureStep = cameraExposureRange?.step ?? DEFAULT_EXPOSURE_STEP_MS;
+
+        const roundToStep = (val: number, min: number, step: number) => {
+          // step が 0.1 や 0.01 でも、float の誤差でズレないように整数スケールへ変換して計算する。
+          const decimals = (String(step).split(".")[1] || "").length;
+          const scale = Math.pow(10, decimals);
+          const stepInt = Math.round(step * scale);
+          const deltaInt = Math.round((val - min) * scale);
+          const rounded = Math.round(deltaInt / stepInt) * stepInt / scale + min;
+          return Math.min(exposureMax, Math.max(exposureMin, Number(rounded.toFixed(decimals))));
+        };
+
+        if (typeof data.defaultExposure === "number") {
+          // 設定ファイルに保存する前に、デバイスが受け付ける露光刻みに合わせる。
+          data.defaultExposure = roundToStep(data.defaultExposure, exposureMin, exposureStep);
+        }
+
+        // Gain の安全クランプ（キャッシュ済みのデバイス範囲があればそれを優先）
+        if (typeof data.defaultGain === "number") {
+          const cameraGainRange = useAppStore.getState().cameraGainRange;
+          const gainMin = cameraGainRange?.min ?? DEFAULT_GAIN_MIN;
+          const gainMax = cameraGainRange?.max ?? DEFAULT_GAIN_MAX;
+          data.defaultGain = Math.min(gainMax, Math.max(gainMin, data.defaultGain));
+        }
+      } catch (e) {
+        console.debug("Exposure clamp error, continuing:", e);
+      }
+
       // 保存処理中はローディング表示にする
       setIsLoading(true);
       // 1. AppConfigディレクトリが存在することを確認（なければ作成）
+      // ここでは config.json の置き場所を先に確保する。
       // mkdir: ディレクトリを作成するTauriの関数です。
       // recursive: true にすると、親フォルダがない場合でもまとめて作成してくれます。
       if (!(await exists("", { baseDir: BaseDirectory.AppConfig }))) {
@@ -187,6 +231,8 @@ export const SettingsView: React.FC = () => {
       }
 
       // 2. JSONとしてファイルに書き込み
+      // ここで最終的なフォーム値をそのまま config.json に保存する。
+      // outputDirectory は初回起動時に空文字ではなく実パスへ置き換わっているため、通常は空のまま保存されない。
       // writeTextFile: 文字列をファイルに保存するTauriの関数です。
       // JSON.stringify: JavaScriptオブジェクトをJSON文字列に変換します（null, 2 は整形用）。
       await writeTextFile(CONFIG_FILENAME, JSON.stringify(data, null, 2), {
@@ -377,24 +423,36 @@ export const SettingsView: React.FC = () => {
                   <Controller
                     control={form.control}
                     name="defaultExposure"
-                    render={({ field, fieldState }) => (
-                      <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel htmlFor="defaultExposure">Default Exposure (ms)</FieldLabel>
-                        <Input type="number" step={0.1} {...field} id="defaultExposure" />
-                        {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                      </Field>
-                    )}
+                    render={({ field, fieldState }) => {
+                      // ストアに保存されているカメラの露光レンジを優先的に使用
+                      const exposureMin = cameraExposureRange?.min ?? DEFAULT_EXPOSURE_MIN_MS;
+                      const exposureMax = cameraExposureRange?.max ?? DEFAULT_EXPOSURE_MAX_MS;
+                      const exposureStep = cameraExposureRange?.step ?? DEFAULT_EXPOSURE_STEP_MS;
+
+                      return (
+                        <Field data-invalid={fieldState.invalid}>
+                          <FieldLabel htmlFor="defaultExposure">Default Exposure (ms)</FieldLabel>
+                          <Input type="number" step={exposureStep} min={exposureMin} max={exposureMax} {...field} id="defaultExposure" />
+                          {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                        </Field>
+                      );
+                    }}
                   />
                   <Controller
                     control={form.control}
                     name="defaultGain"
-                    render={({ field, fieldState }) => (
-                      <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel htmlFor="defaultGain">Default Gain (×1.00-×13.00)</FieldLabel>
-                        <Input type="number" step={0.01} min={1} max={13} {...field} id="defaultGain" />
-                        {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                      </Field>
-                    )}
+                    render={({ field, fieldState }) => {
+                      const gainMin = cameraGainRange?.min ?? DEFAULT_GAIN_MIN;
+                      const gainMax = cameraGainRange?.max ?? DEFAULT_GAIN_MAX;
+
+                      return (
+                        <Field data-invalid={fieldState.invalid}>
+                          <FieldLabel htmlFor="defaultGain">Default Gain (×{gainMin.toFixed(2)}-×{gainMax.toFixed(2)})</FieldLabel>
+                          <Input type="number" step={0.01} min={gainMin} max={gainMax} {...field} id="defaultGain" />
+                          {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                        </Field>
+                      );
+                    }}
                   />
                 </FieldGroup>
               </CardContent>

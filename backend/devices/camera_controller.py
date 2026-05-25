@@ -6,6 +6,7 @@ import threading
 import csv
 import os
 import datetime
+from decimal import Decimal
 from typing import Optional
 
 # pylablib ライブラリのインポート（uc480 バックエンド用）
@@ -65,7 +66,7 @@ class CameraController:
         self.current_angle_timestamp_ms = 0.0
 
         # Camera settings
-        self.exposure_ms = 10.0  # 露出時間（ミリ秒）
+        self.exposure_ms = 0.06675  # 露出時間（ミリ秒）
         # Mock 環境での既定ゲインを現実的な値に合わせる（多くのカメラで1.0〜13.0が妥当）
         self.gain = 1.0  # センサーのハードウェアゲイン（デフォルト: 1.0）
         # 実機のゲイン範囲（connect() 時に検出される）。Mock環境では 1.0..13.0 を想定
@@ -193,7 +194,12 @@ class CameraController:
                 if er is not None:
                     self.exposure_min_ms, self.exposure_max_ms, self.exposure_step_ms = er
                     self._exposure_range_cached = True
-                    logger.info(f"{self.log_tag} Cached exposure range (mock): {er}")
+                    try:
+                            logger.info(
+                                f"{self.log_tag} Cached exposure range (mock): min={self._format_float_for_log(er[0])}ms max={self._format_float_for_log(er[1])}ms step={self._format_float_for_log(er[2])}ms"
+                            )
+                    except Exception:
+                        logger.info(f"{self.log_tag} Cached exposure range (mock): {er}")
             except Exception:
                 logger.debug(f"{self.log_tag} Failed to cache exposure range (mock)")
         
@@ -395,7 +401,12 @@ class CameraController:
                         # 前提にしているため、connect の順序によっては取得に失敗する
                         #（その場合はログに記録される）。キャッシュに成功すれば
                         # 高頻度の set_exposure 呼び出しでハードウェア問い合わせを避けられる。
-                        logger.info(f"{self.log_tag} Cached exposure range: {er}")
+                        try:
+                            logger.info(
+                                f"{self.log_tag} Cached exposure range: min={self._format_float_for_log(er[0])}ms max={self._format_float_for_log(er[1])}ms step={self._format_float_for_log(er[2])}ms"
+                            )
+                        except Exception:
+                            logger.info(f"{self.log_tag} Cached exposure range: {er}")
                 except Exception:
                     logger.debug(f"{self.log_tag} Failed to cache exposure range on connect")
 
@@ -610,6 +621,13 @@ class CameraController:
         """
         return (float(self.gain_min), float(self.gain_max))
 
+    def _format_float_for_log(self, value: float) -> str:
+        """ログ向けに、float から復元できる範囲で最小限の十進表記に整形する。"""
+        try:
+            return format(Decimal(str(value)).normalize(), "f")
+        except Exception:
+            return str(value)
+
     def get_exposure_range(self) -> Optional[tuple[float, float, float]]:
         """
         露光時間の許容範囲を取得して返します（単位: ミリ秒）。
@@ -628,7 +646,7 @@ class CameraController:
             - 呼び出しは機器固有の挙動に依存するため、安全に例外を吸収して
               取得失敗時は `None` を返します。これにより後方互換性を維持します。
 
-        注意:
+                f"{self.log_tag} Exposure range retrieved: min={exp_min_ms:.5f}ms, max={exp_max_ms:.5f}ms, inc={exp_inc_ms:.5f}ms"
             - `step_ms`（step）は UI のスライダーや数値入力での最小刻み幅（インクリメント）を示します。
               例えば `step_ms=0.1` の場合、露光は 0.1ms 単位で変化することが期待できます。
             - 一部デバイスでは step が非整数や 0 に近い非常に小さい値になることがあるため、
@@ -636,16 +654,21 @@ class CameraController:
         """
         # Mock のフォールバック（UI テスト用の妥当な既定値）
         if self.is_mock_env:
-            # Mock 環境用のフォールバック: 1ms 〜 100ms, ステップ 1ms
+            # Mock 環境用のフォールバック:
+            # - 下限: 0.06675ms (実測値に合わせる)
+            # - 上限: 99.92475ms (実測値に合わせる)
+            # - ステップ: 0.06675ms (実測値に合わせる)
             # キャッシュしておく（Mockでも繰り返し問い合わせを避ける）
             try:
-                self.exposure_min_ms = 1.0
-                self.exposure_max_ms = 100.0
-                self.exposure_step_ms = 1.0
+                # モック環境で観測されたレンジを再現する（小数桁を損なわない）
+                # 実機で観測されている例: (0.06675, 99.92475, 0.06675)
+                self.exposure_min_ms = 0.06675
+                self.exposure_max_ms = 99.92475
+                self.exposure_step_ms = 0.06675
                 self._exposure_range_cached = True
             except Exception:
                 pass
-            return (1.0, 100.0, 1.0)
+            return (0.06675, 99.92475, 0.06675)
 
         # 未接続やカメラオブジェクト不在なら取得不可
         if not self.is_connected or self.camera is None:
@@ -1186,7 +1209,7 @@ class CameraController:
     def _post_process_video(self, tiff_path: str, is_color: bool, keep_raw: bool):
         """【貨物レーン】録画完了後に巨大なTIFFをMP4等に変換する"""
         logger.info(f"{self.log_tag} [Post-Process] Started for {tiff_path}")
-        # TODO: tifffileで各フレームを読み込み、OpenCVのVideoWriter等でMP4を生成する処理を実装
+        # TODO: tifffileで各フレームを読み込み、OpenCVのVideoWriter等でMP4を生成する処理を実装する
         time.sleep(2)
         logger.info(f"{self.log_tag} [Post-Process] Completed.")
 

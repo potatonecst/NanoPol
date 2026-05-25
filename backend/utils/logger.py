@@ -48,18 +48,18 @@ class ListHandler(logging.Handler):
 
 
 class SuppressSystemLogsAccessFilter(logging.Filter):
-    """/system/logs の成功アクセスログを抑制するためのフィルタ。
+    """高頻度ポーリングAPIの成功アクセスログを抑制するためのフィルタ。
 
     このフィルタは Uvicorn のアクセスログにだけ作用し、
-    フロントエンドがデバッグ表示のために定期的に叩く /system/logs の
-    "POST ... 200 OK" だけを静かに破棄します。
+    フロントエンドが高頻度で叩く /system/logs, /health, /stage/position の
+    成功アクセスログを静かに破棄します。
 
     目的は次のとおりです。
     - 画面更新のために発生する正常系ログを、他の重要なログから切り離す
     - 保存したい警告・エラー・例外ログを埋もれさせない
     - ポーリング由来の大量ログで、コンソールや保存ログが読みにくくなるのを防ぐ
 
-    失敗時（4xx/5xx）や、/system/logs 以外のアクセスログはそのまま通します。
+    失敗時（4xx/5xx）や、対象外エンドポイントのアクセスログはそのまま通します。
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -77,10 +77,10 @@ class SuppressSystemLogsAccessFilter(logging.Filter):
         except Exception:
             return True
 
-        # 成功系（2xx/3xx）の /system/logs はすべて抑制する。
-        # フロントエンドは GET で定期ポーリングするため、POST 限定にすると
-        # ノイズが残ってしまう。失敗系（4xx/5xx）はそのまま残す。
-        if path == "/system/logs" and int(status_code) < 400:
+        # 成功系（2xx/3xx）の高頻度ポーリングAPIはすべて抑制する。
+        # 失敗系（4xx/5xx）は障害調査に必要なため残す。
+        noisy_success_paths = {"/system/logs", "/health", "/stage/position"}
+        if path in noisy_success_paths and int(status_code) < 400:
             return False
 
         return True

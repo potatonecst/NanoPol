@@ -1,4 +1,11 @@
 import { z } from "zod";
+import {
+    DEFAULT_SETTINGS,
+    DEFAULT_EXPOSURE_MIN_MS,
+    DEFAULT_EXPOSURE_MAX_MS,
+    DEFAULT_GAIN_MIN,
+    DEFAULT_GAIN_MAX,
+} from "../constants/constants";
 
 // 画像保存形式の選択肢
 // as const をつけることで、単なる文字列の配列ではなく、
@@ -51,23 +58,23 @@ export const settingsSchema = z.object({
         // transform: 検証後の値を加工します。
         // ここでは100単位に丸めることで、中途半端な速度設定（例: 501 PPS）を防ぎます。
         .transform((val) => Math.floor(val / 100) * 100)
-        .default(500),
+        .default(DEFAULT_SETTINGS.defaultSpeedMin),
     defaultSpeedMax: z.coerce
         .number()
         .min(100, "最大速度は100 PPS以上で設定してください")
         .max(20000, "安全のため20000 PPS以下で設定してください")
         .transform((val) => Math.floor(val / 100) * 100)
-        .default(5000),
+        .default(DEFAULT_SETTINGS.defaultSpeedMax),
     defaultAccelTime: z.coerce
         .number()
         .min(10, "加減速時間は10ms以上で設定してください")
         .max(1000, "加減速時間は1000ms以下で設定してください")
-        .default(200),
+        .default(DEFAULT_SETTINGS.defaultAccelTime),
 
     // --- Camera Defaults ---
     cameraMode: z.enum(CameraModes).default("Monochrome"),
-    defaultExposure: z.coerce.number().min(0.01).max(1000).default(10.0),
-    defaultGain: z.coerce.number().min(1).max(13).default(1.0),
+    defaultExposure: z.coerce.number().min(DEFAULT_EXPOSURE_MIN_MS).max(DEFAULT_EXPOSURE_MAX_MS).default(DEFAULT_SETTINGS.defaultExposure),
+    defaultGain: z.coerce.number().min(DEFAULT_GAIN_MIN).max(DEFAULT_GAIN_MAX).default(DEFAULT_SETTINGS.defaultGain),
 })
     // refine: オブジェクト全体に対する検証（クロスフィールドバリデーション）
     // 「最大速度」が「最小速度」より小さい場合など、複数の項目が絡む矛盾をチェックします。
