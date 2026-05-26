@@ -151,6 +151,7 @@ class StageController:
             raise Exception("Device not connected")
         
         try:
+            logger.info(f"{self.log_tag} Send: {cmd}")
             # 1. コマンド送信
             # 文字列をバイト列(ascii)にエンコードし、末尾にCR+LFを付与
             full_cmd = f"{cmd}\r\n"
@@ -159,7 +160,7 @@ class StageController:
             # 2. レスポンス受信
             # readline()は改行コードが来るまで待機します（またはタイムアウト）
             response = self.ser.readline().decode("ascii").strip()
-            #logger.debug(f"[STAGE] Send: {cmd} / Recv: {response}")
+            logger.info(f"{self.log_tag} Recv: {response} (cmd={cmd})")
 
             if response == "":
                 self._mark_disconnected(f"No response for command '{cmd}'")
@@ -348,8 +349,11 @@ class StageController:
         Returns:
             Tuple[float, bool]: (現在の角度[deg], 移動中(Busy)かどうか)
         """
+        logger.info(f"{self.log_tag} get_status requested")
         if self.is_mock_env:
-            return self._pulse_to_deg(self._mock_pulse), False
+            angle = self._pulse_to_deg(self._mock_pulse)
+            logger.info(f"{self.log_tag} get_status mock response: angle={angle}, busy=False")
+            return angle, False
         
         resp = self._send_command("Q:")
         
@@ -363,9 +367,11 @@ class StageController:
                 # 4つ目の要素: ステータス（B or R）
                 ack3 = parts[3].strip()
                 is_busy = (ack3 == "B")
-                
-                return self._pulse_to_deg(current_pulse), is_busy
+                angle = self._pulse_to_deg(current_pulse)
+                logger.info(f"{self.log_tag} get_status parsed: angle={angle}, busy={is_busy}, raw={resp}")
+                return angle, is_busy
             else:
+                logger.warning(f"{self.log_tag} get_status parse failed: too few fields raw={resp}")
                 return 0.0, False
         except Exception as e:
             logger.error(f"Status parse error: {e}, Raw: {resp}")

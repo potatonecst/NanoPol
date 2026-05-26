@@ -444,13 +444,17 @@ def stage_home():
     """
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
+
+    logger.info("[STAGE API] home requested")
     
     success = stage.home()
     # コマンド送信の成功可否をチェック
     if not success:
         raise HTTPException(status_code=500, detail="Homing failed")
     
+    logger.info("[STAGE API] home succeeded; fetching status")
     pos, _ = stage.get_status()
+    logger.info("[STAGE API] home status fetched: current_angle=%s", pos)
     
     return {
         "status": "success",
@@ -464,13 +468,17 @@ def stage_move_absolute(req: MoveAbsoluteRequest):
     """
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
+
+    logger.info("[STAGE API] move_absolute requested: angle=%s", req.angle)
     
     success = stage.move_absolute(req.angle)
     #成功可否をチェック
     if not success:
         raise HTTPException(status_code=500, detail="Absolute move failed")
     
+    logger.info("[STAGE API] move_absolute succeeded; fetching status")
     pos, _ = stage.get_status()
+    logger.info("[STAGE API] move_absolute status fetched: current_angle=%s", pos)
     
     return {
         "status": "success",
@@ -484,13 +492,17 @@ def stage_move_relative(req: MoveRelativeRequest):
     """
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
+
+    logger.info("[STAGE API] move_relative requested: delta=%s", req.delta)
     
     success = stage.move_relative(req.delta)
     #成功可否をチェック
     if not success:
         raise HTTPException(status_code=500, detail="Relative move failed")
     
+    logger.info("[STAGE API] move_relative succeeded; fetching status")
     pos, _ = stage.get_status()
+    logger.info("[STAGE API] move_relative status fetched: current_angle=%s", pos)
     
     return {
         "status": "success",
@@ -504,11 +516,15 @@ def stage_stop(req: StopStageRequest):
     """
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
+
+    logger.info("[STAGE API] stop requested: immediate=%s", req.immediate)
     
     if not stage.stop(immediate=req.immediate):
         raise HTTPException(status_code=500, detail="Stop command failed")
     
+    logger.info("[STAGE API] stop succeeded; fetching status")
     pos, _ = stage.get_status()
+    logger.info("[STAGE API] stop status fetched: current_angle=%s", pos)
     
     return {
         "status": "success",
