@@ -85,6 +85,12 @@ export function ManualView() {
     const sweepEndVal = angleInputSchema.safeParse(sweepEnd);
     const sweepSpeedVal = manualControlSchema.shape.sweepSpeed.safeParse(sweepSpeed);
 
+    const traceManualView = (message: string, details?: Record<string, unknown>) => {
+        const payload = details ? `${message} ${JSON.stringify(details)}` : message;
+        console.log(payload);
+        systemApi.postLogs("INFO", payload).catch((e) => console.debug("※ログ送信も失敗しました:", e));
+    };
+
     /**
      * ステージの動作完了を監視（ポーリング）する非同期関数。
      *
@@ -105,7 +111,7 @@ export function ManualView() {
         let errorCount = 0;
         const MAX_ERRORS = 5; // 連続5回（約2.5秒）のエラーまでは許容する
 
-        console.log("[ManualView] waitForIdle start", { timeoutMs });
+        traceManualView("[ManualView] waitForIdle start", { timeoutMs });
 
         return new Promise<void>((resolve, reject) => {
             const checkInterval = setInterval(async () => {
@@ -121,7 +127,7 @@ export function ManualView() {
                     // バックエンドに今の状況（角度とBusy状態）を尋ねる
                     const res = await stageApi.getPosition();
 
-                    console.log("[ManualView] waitForIdle poll", {
+                    traceManualView("[ManualView] waitForIdle poll", {
                         current_angle: res.current_angle,
                         is_busy: res.is_busy,
                         errorCount,
@@ -135,7 +141,7 @@ export function ManualView() {
                     // is_busyがfalseになったら移動完了とみなす
                     if (!res.is_busy) {
                         clearInterval(checkInterval); //タイマーを止めて待機完了にする
-                        console.log("[ManualView] waitForIdle resolved");
+                        traceManualView("[ManualView] waitForIdle resolved");
                         resolve(); // Promiseを解決（await waitForIdle() がここで終わる）
                     }
                 } catch (e) {
@@ -194,17 +200,17 @@ export function ManualView() {
      */
     const performMove = async (actionName: string, moveFn: () => Promise<void>) => {
         if (isSystemBusy) return; // 既に動いている場合は二重実行防止
-        console.log("[ManualView] performMove start", { actionName });
+        traceManualView("[ManualView] performMove start", { actionName });
         setIsSystemBusy(true); // UI全体をロック（ボタンを押せなくする）
         stopSignal.current = false; // 停止シグナルをリセット
 
         try {
-            console.log("[ManualView] performMove executing moveFn", { actionName });
+            traceManualView("[ManualView] performMove executing moveFn", { actionName });
             await moveFn(); // 実際の移動コマンドを実行
-            console.log("[ManualView] performMove waiting for idle", { actionName });
+            traceManualView("[ManualView] performMove waiting for idle", { actionName });
             await waitForIdle(); // 移動が終わるまでここで待機（ポーリング開始）
 
-            console.log("[ManualView] performMove idle confirmed", { actionName, stopSignal: stopSignal.current });
+            traceManualView("[ManualView] performMove idle confirmed", { actionName, stopSignal: stopSignal.current });
 
             if (stopSignal.current) {
                 toast.warning(`${actionName} Stopped`);
@@ -218,7 +224,7 @@ export function ManualView() {
             toast.error(`${actionName} Failed`);
             systemApi.postLogs("ERROR", `${actionName} Failed: ${e}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
-            console.log("[ManualView] performMove finally unlock", { actionName });
+            traceManualView("[ManualView] performMove finally unlock", { actionName });
             setIsSystemBusy(false); // 処理が終わったら（成功でも失敗でも）ロック解除
         }
     }
@@ -231,10 +237,10 @@ export function ManualView() {
         performMove("Step Move", async () => {
             const target = Number(moveStep) * direction;
 
-            console.log("[ManualView] rotateStage request", { direction, moveStep, target });
+            traceManualView("[ManualView] rotateStage request", { direction, moveStep, target });
 
             const res = await stageApi.moveRelative(target);
-            console.log("[ManualView] rotateStage response", res);
+            traceManualView("[ManualView] rotateStage response", res);
             setCurrentAngle(res.current_angle);
         })
     }
@@ -245,9 +251,9 @@ export function ManualView() {
     const goOrigin = () => {
         performMove("Homing", async () => {
             toast.info("Homing...");
-            console.log("[ManualView] homing request");
+            traceManualView("[ManualView] homing request");
             const res = await stageApi.home();
-            console.log("[ManualView] homing response", res);
+            traceManualView("[ManualView] homing response", res);
             setCurrentAngle(res.current_angle);
             //toast.success("Home position reached");
         })
@@ -262,9 +268,9 @@ export function ManualView() {
 
         performMove("Absolute Move", async () => {
             toast.info(`Moving to ${val}°...`);
-            console.log("[ManualView] absolute move request", { targetAngle: val });
+            traceManualView("[ManualView] absolute move request", { targetAngle: val });
             const res = await stageApi.moveAbsolute(val);
-            console.log("[ManualView] absolute move response", res);
+            traceManualView("[ManualView] absolute move response", res);
             setCurrentAngle(res.current_angle);
         })
     }
