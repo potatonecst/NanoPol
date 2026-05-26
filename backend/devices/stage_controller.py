@@ -1,6 +1,7 @@
 import time
 #import logging
 import platform
+import threading
 from typing import Tuple
 
 PYSERIAL_IMPORT_ERROR = None
@@ -28,6 +29,7 @@ class StageController:
         self.last_error = None
         self.last_connected_port = None
         self.last_baudrate = None
+        self._io_lock = threading.Lock()
         
         #ステージ仕様 (OSMS-60YAW)
         #分解能: Full=0.005deg/pulse, Half=0.0025deg/pulse 
@@ -151,16 +153,9 @@ class StageController:
             raise Exception("Device not connected")
         
         try:
-            logger.info(f"{self.log_tag} Send: {cmd}")
-            # 1. コマンド送信
-            # 文字列をバイト列(ascii)にエンコードし、末尾にCR+LFを付与
-            full_cmd = f"{cmd}\r\n"
-            self.ser.write(full_cmd.encode("ascii"))
-            
-            # 2. レスポンス受信
-            # readline()は改行コードが来るまで待機します（またはタイムアウト）
-            response = self.ser.readline().decode("ascii").strip()
-            logger.info(f"{self.log_tag} Recv: {response} (cmd={cmd})")
+            # シリアルI/Oは排他的に実行し、Q: と移動コマンドの取り違えを防ぐ
+            with self._io_lock:
+                response = self._send_command_locked(cmd)
 
             if response == "":
                 self._mark_disconnected(f"No response for command '{cmd}'")
@@ -171,6 +166,15 @@ class StageController:
             logger.error(f"{self.log_tag} Communication Error: {e}")
             self._mark_disconnected(str(e))
             raise e
+
+    def _send_command_locked(self, cmd: str):
+        """_io_lock を取得済みの前提で送受信を行う。"""
+        logger.debug(f"{self.log_tag} Send: {cmd}")
+        full_cmd = f"{cmd}\r\n"
+        self.ser.write(full_cmd.encode("ascii"))
+        response = self.ser.readline().decode("ascii").strip()
+        logger.debug(f"{self.log_tag} Recv: {response} (cmd={cmd})")
+        return response
     
     #---座標変換---
     
@@ -246,20 +250,12 @@ class StageController:
             logger.error(f"{self.log_tag} Move Abs Command Failed: {resp_g}")
             return False
     
-    def move_relative(self, delta_angle: float):
+    def move_relative(self, delta_angle: float, current_angle_hint: float | None = None):
         """現在の位置から指定した角度[deg]だけ相対移動させます"""
         
         # ソフトリミット（安全装置）: 1回の相対移動は -360.0 〜 +360.0度 の範囲内のみ許可（誤入力での無限回転防止）
         if not (-360.0 <= delta_angle <= 360.0):
             logger.error(f"{self.log_tag} Move Rel Error: Delta angle {delta_angle} is too large. Must be between -360 and 360.")
-            return False
-            
-        # 累計パルスの上限超過を防ぐための安全装置（約80周でストップ）
-        # 動かす前に「今の角度」を聞き、予測される移動先の角度を計算する
-        current_angle, _ = self.get_status()
-        predicted_angle = current_angle + delta_angle
-        if abs(predicted_angle) > 30000.0:
-            logger.error(f"{self.log_tag} Move Rel Error: Cumulative angle {predicted_angle:.1f} exceeds safe limit of ±30000 deg. Please Home the stage.")
             return False
             
         # M:1+Pxxx -> G:（相対移動パルス数設定命令 -> 駆動命令）
@@ -268,6 +264,13 @@ class StageController:
         #ゼロなら何もしない
         if delta_angle == 0:
             return True
+
+        # 累計角度の安全チェックは、監視ループで取得済みのキャッシュ値を優先して使用する
+        if current_angle_hint is not None:
+            predicted_angle = current_angle_hint + delta_angle
+            if abs(predicted_angle) > 30000.0:
+                logger.error(f"{self.log_tag} Move Rel Error: Cumulative angle {predicted_angle:.1f} exceeds safe limit of ±30000 deg. Please Home the stage.")
+                return False
         
         direction = "+" if delta_pulse >= 0 else "-"
         abs_pulse = abs(delta_pulse)
@@ -349,10 +352,10 @@ class StageController:
         Returns:
             Tuple[float, bool]: (現在の角度[deg], 移動中(Busy)かどうか)
         """
-        logger.info(f"{self.log_tag} get_status requested")
+        logger.debug(f"{self.log_tag} get_status requested")
         if self.is_mock_env:
             angle = self._pulse_to_deg(self._mock_pulse)
-            logger.info(f"{self.log_tag} get_status mock response: angle={angle}, busy=False")
+            logger.debug(f"{self.log_tag} get_status mock response: angle={angle}, busy=False")
             return angle, False
         
         resp = self._send_command("Q:")
@@ -368,7 +371,7 @@ class StageController:
                 ack3 = parts[3].strip()
                 is_busy = (ack3 == "B")
                 angle = self._pulse_to_deg(current_pulse)
-                logger.info(f"{self.log_tag} get_status parsed: angle={angle}, busy={is_busy}, raw={resp}")
+                logger.debug(f"{self.log_tag} get_status parsed: angle={angle}, busy={is_busy}, raw={resp}")
                 return angle, is_busy
             else:
                 logger.warning(f"{self.log_tag} get_status parse failed: too few fields raw={resp}")
@@ -376,3 +379,36 @@ class StageController:
         except Exception as e:
             logger.error(f"Status parse error: {e}, Raw: {resp}")
             return 0.0, False
+
+    def try_get_status(self) -> Tuple[float, bool] | None:
+        """ロックが空いているときだけステータスを取得し、埋まっていれば None を返します。"""
+        if self.is_mock_env:
+            return self.get_status()
+
+        if not self.ser or not self.ser.is_open:
+            raise Exception("Device not connected")
+
+        if not self._io_lock.acquire(blocking=False):
+            return None
+
+        try:
+            logger.debug(f"{self.log_tag} try_get_status acquired")
+            resp = self._send_command_locked("Q:")
+
+            parts = resp.split(",")
+            if len(parts) >= 4:
+                pulse_str = parts[0].strip()
+                current_pulse = int(pulse_str)
+                ack3 = parts[3].strip()
+                is_busy = (ack3 == "B")
+                angle = self._pulse_to_deg(current_pulse)
+                logger.debug(f"{self.log_tag} try_get_status parsed: angle={angle}, busy={is_busy}, raw={resp}")
+                return angle, is_busy
+
+            logger.warning(f"{self.log_tag} try_get_status parse failed: too few fields raw={resp}")
+            return 0.0, False
+        except Exception as e:
+            logger.error(f"Status parse error: {e}, Raw: {resp if 'resp' in locals() else 'N/A'}")
+            return 0.0, False
+        finally:
+            self._io_lock.release()

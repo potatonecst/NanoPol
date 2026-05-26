@@ -104,25 +104,25 @@ export const stageApi = {
 
     // ステージを機械的な原点（ホーム）に復帰させます
     home: () =>
-        request<{ status: string, current_angle: number }>("/stage/home", { method: "POST" }),
+        request<{ status: string, command: string, accepted: boolean }>("/stage/home", { method: "POST" }),
 
     // 指定した絶対角度（例: 90度）へステージを移動させます
     moveAbsolute: (angle: number) =>
-        request<{ status: string, current_angle: number }>("/stage/move/absolute", {
+        request<{ status: string, command: string, requested_angle: number, accepted: boolean }>("/stage/move/absolute", {
             method: "POST",
             body: JSON.stringify({ angle })
         }),
 
     // 現在の位置から指定した角度（プラス・マイナス）だけ相対移動させます
     moveRelative: (delta: number) =>
-        request<{ status: string, current_angle: number }>("/stage/move/relative", {
+        request<{ status: string, command: string, requested_delta: number, accepted: boolean }>("/stage/move/relative", {
             method: "POST",
             body: JSON.stringify({ delta })
         }),
 
     // ステージの移動を停止します（immediate = true で即時非常停止）
     stop: (immediate: boolean = false) =>
-        request<{ status: string, current_angle: number }>("/stage/stop", {
+        request<{ status: string, command: string, immediate: boolean, accepted: boolean }>("/stage/stop", {
             method: "POST",
             body: JSON.stringify({ immediate })
         }),

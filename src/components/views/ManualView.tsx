@@ -241,7 +241,6 @@ export function ManualView() {
 
             const res = await stageApi.moveRelative(target);
             traceManualView("[ManualView] rotateStage response", res);
-            setCurrentAngle(res.current_angle);
         })
     }
 
@@ -254,7 +253,6 @@ export function ManualView() {
             traceManualView("[ManualView] homing request");
             const res = await stageApi.home();
             traceManualView("[ManualView] homing response", res);
-            setCurrentAngle(res.current_angle);
             //toast.success("Home position reached");
         })
     }
@@ -271,7 +269,6 @@ export function ManualView() {
             traceManualView("[ManualView] absolute move request", { targetAngle: val });
             const res = await stageApi.moveAbsolute(val);
             traceManualView("[ManualView] absolute move response", res);
-            setCurrentAngle(res.current_angle);
         })
     }
 
@@ -327,7 +324,7 @@ export function ManualView() {
         setIsSweeping(true);
         stopSignal.current = false;
 
-        // 【Note】このログはブラウザの開発者ツール(F12)にのみ表示され、アプリ内のLogPanelには表示されません。
+        // 【Note】この log は開発者ツール向けのデバッグのみ。
         console.log("--- Sweep Sequence Started ---");
 
         try {
@@ -468,8 +465,7 @@ export function ManualView() {
             if (recordStopTimer.current) clearTimeout(recordStopTimer.current);
             setIsRecording(false);
 
-            const res = await stageApi.stop(false); // immediate = false (減速停止)
-            setCurrentAngle(res.current_angle);
+            await stageApi.stop(false); // immediate = false (減速停止)
             toast.info("Stopping...");
             systemApi.postLogs("INFO", "Manual deceleration stop executed").catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (e) {
@@ -486,8 +482,7 @@ export function ManualView() {
     const handleEmergencyStop = async () => {
         try {
             stopSignal.current = true;
-            const res = await stageApi.stop(true); // immediate = true (即停止)
-            setCurrentAngle(res.current_angle);
+            await stageApi.stop(true); // immediate = true (即停止)
             toast.info("EMERGENCY STOP EXECUTED");
             systemApi.postLogs("WARNING", "EMERGENCY STOP EXECUTED").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             setTimeout(() => {

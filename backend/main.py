@@ -9,6 +9,7 @@ import os
 import asyncio
 import json
 import signal
+import threading
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -28,8 +29,10 @@ class SystemState:
         self.current_angle = 0.0
         self.is_busy = False       # ハードウェア: ステージが物理的に移動・回転中か
         self.is_measuring = False  # ソフトウェア: Sweep等の自動測定シーケンスが実行中か
+        self.last_stage_command = None  # 直近で受理したステージコマンド（完了ログ用）
 
 app_state = SystemState()
+stage_command_lock = threading.Lock()
 
 
 def _terminate_backend_process():
@@ -50,16 +53,38 @@ async def stage_monitor_loop():
         None
     """
     logger.info("[SYSTEM] Stage monitor loop started.")
+    prev_busy = False
     while True:
         try:
             # asyncio.sleep はイベントループを止めずに待機する標準の非同期関数です。
             await asyncio.sleep(0.1)
             if stage.is_connected:
-                # シリアル通信はI/O待ちが発生するため、to_threadで別スレッドとして実行しAPIをブロックさせない
-                pos, busy = await asyncio.to_thread(stage.get_status)
+                # シリアル通信はI/O待ちが発生するため、取れない時はこのサイクルをスキップする
+                status = await asyncio.to_thread(stage.try_get_status)
+                if status is None:
+                    logger.debug("[SYSTEM] Stage status poll skipped (I/O busy)")
+                    continue
+
+                pos, busy = status
                 sampled_at_ms = datetime.now(timezone.utc).timestamp() * 1000.0
                 app_state.current_angle = pos
                 app_state.is_busy = busy
+
+                # Busy -> Ready の遷移を「移動完了」とみなし、最終角度を1行で残す
+                if prev_busy and not busy:
+                    cmd = app_state.last_stage_command
+                    if cmd:
+                        logger.info(
+                            "[STAGE COMPLETE] name=%s requested=%s final_angle=%.4f",
+                            cmd.get("name"),
+                            cmd.get("requested"),
+                            pos,
+                        )
+                    else:
+                        logger.info("[STAGE COMPLETE] final_angle=%.4f", pos)
+                    app_state.last_stage_command = None
+
+                prev_busy = busy
                 
                 # カメラのCSV記録用にも常に最新の角度を供給し続ける
                 camera.current_angle = pos
@@ -445,20 +470,32 @@ def stage_home():
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
 
+    with stage_command_lock:
+        if app_state.is_busy:
+            raise HTTPException(status_code=409, detail="Stage is busy")
+        app_state.is_busy = True
+        app_state.last_stage_command = {"name": "home", "requested": "origin"}
+
     logger.info("[STAGE API] home requested")
-    
-    success = stage.home()
+    try:
+        success = stage.home()
+    except Exception as e:
+        with stage_command_lock:
+            app_state.is_busy = False
+        raise HTTPException(status_code=500, detail=str(e))
+
     # コマンド送信の成功可否をチェック
     if not success:
+        with stage_command_lock:
+            app_state.is_busy = False
         raise HTTPException(status_code=500, detail="Homing failed")
     
-    logger.info("[STAGE API] home succeeded; fetching status")
-    pos, _ = stage.get_status()
-    logger.info("[STAGE API] home status fetched: current_angle=%s", pos)
+    logger.info("[STAGE API] home accepted")
     
     return {
         "status": "success",
-        "current_angle": pos,
+        "command": "home",
+        "accepted": True,
     }
 
 @app.post("/stage/move/absolute")
@@ -469,20 +506,33 @@ def stage_move_absolute(req: MoveAbsoluteRequest):
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
 
+    with stage_command_lock:
+        if app_state.is_busy:
+            raise HTTPException(status_code=409, detail="Stage is busy")
+        app_state.is_busy = True
+        app_state.last_stage_command = {"name": "move_absolute", "requested": req.angle}
+
     logger.info("[STAGE API] move_absolute requested: angle=%s", req.angle)
-    
-    success = stage.move_absolute(req.angle)
+    try:
+        success = stage.move_absolute(req.angle)
+    except Exception as e:
+        with stage_command_lock:
+            app_state.is_busy = False
+        raise HTTPException(status_code=500, detail=str(e))
+
     #成功可否をチェック
     if not success:
+        with stage_command_lock:
+            app_state.is_busy = False
         raise HTTPException(status_code=500, detail="Absolute move failed")
     
-    logger.info("[STAGE API] move_absolute succeeded; fetching status")
-    pos, _ = stage.get_status()
-    logger.info("[STAGE API] move_absolute status fetched: current_angle=%s", pos)
+    logger.info("[STAGE API] move_absolute accepted: angle=%s", req.angle)
     
     return {
         "status": "success",
-        "current_angle": pos,
+        "command": "move_absolute",
+        "requested_angle": req.angle,
+        "accepted": True,
     }
 
 @app.post("/stage/move/relative")
@@ -493,20 +543,33 @@ def stage_move_relative(req: MoveRelativeRequest):
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
 
+    with stage_command_lock:
+        if app_state.is_busy:
+            raise HTTPException(status_code=409, detail="Stage is busy")
+        app_state.is_busy = True
+        app_state.last_stage_command = {"name": "move_relative", "requested": req.delta}
+
     logger.info("[STAGE API] move_relative requested: delta=%s", req.delta)
-    
-    success = stage.move_relative(req.delta)
+    try:
+        success = stage.move_relative(req.delta, current_angle_hint=app_state.current_angle)
+    except Exception as e:
+        with stage_command_lock:
+            app_state.is_busy = False
+        raise HTTPException(status_code=500, detail=str(e))
+
     #成功可否をチェック
     if not success:
+        with stage_command_lock:
+            app_state.is_busy = False
         raise HTTPException(status_code=500, detail="Relative move failed")
     
-    logger.info("[STAGE API] move_relative succeeded; fetching status")
-    pos, _ = stage.get_status()
-    logger.info("[STAGE API] move_relative status fetched: current_angle=%s", pos)
+    logger.info("[STAGE API] move_relative accepted: delta=%s", req.delta)
     
     return {
         "status": "success",
-        "current_angle": pos,
+        "command": "move_relative",
+        "requested_delta": req.delta,
+        "accepted": True,
     }
 
 @app.post("/stage/stop")
@@ -518,17 +581,18 @@ def stage_stop(req: StopStageRequest):
         raise HTTPException(status_code=400, detail="Stage not connected")
 
     logger.info("[STAGE API] stop requested: immediate=%s", req.immediate)
+    app_state.last_stage_command = {"name": "stop", "requested": "immediate" if req.immediate else "decelerate"}
     
     if not stage.stop(immediate=req.immediate):
         raise HTTPException(status_code=500, detail="Stop command failed")
     
-    logger.info("[STAGE API] stop succeeded; fetching status")
-    pos, _ = stage.get_status()
-    logger.info("[STAGE API] stop status fetched: current_angle=%s", pos)
+    logger.info("[STAGE API] stop accepted: immediate=%s", req.immediate)
     
     return {
         "status": "success",
-        "current_angle": pos,
+        "command": "stop",
+        "immediate": req.immediate,
+        "accepted": True,
     }
 
 @app.post("/stage/config/speed")
