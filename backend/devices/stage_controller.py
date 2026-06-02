@@ -1,6 +1,7 @@
 import time
 #import logging
 import platform
+import re
 import threading
 from typing import Tuple
 
@@ -16,6 +17,23 @@ except ImportError as e:
 from utils.logger import logger
 
 #logger = logging.getLogger("uvicorn")
+
+# モジュールレベルのデバイス制限とデフォルト（マジックナンバーを避ける）
+# GSC-01 コントローラのパルス引数は 0..16,777,215 の範囲
+DEVICE_MAX_PULSES = 16777215
+# 安全マージンとしてデバイス上限からこの分だけ余裕を取る（パルス単位）
+DEFAULT_SAFETY_MARGIN_PULSES = 1000
+# デフォルトの累積許容角度（度）: 実運用で十分な回転数を確保しつつ安全余裕を持つ
+DEFAULT_MAX_CUMULATIVE_DEGREES = 10000.0
+
+
+# Exceptions for command-layer errors
+class StageCommandError(Exception):
+    """操作上の理由（安全性や制限）でコマンドが拒否された場合に発生する例外。
+
+    例: 累積移動量が許容範囲を超える、負のパルス指示、機器がエラー応答を返した等。
+    """
+    pass
 
 class StageController:
     def __init__(self):
@@ -38,6 +56,17 @@ class StageController:
         # 1 [deg] / 0.0025 [deg/pulse] = 400 [pulse]
         # この値を使って、ユーザーが入力した「角度」を機械が理解できる「パルス数」に変換します。
         self.pulses_per_degree = 400
+
+        # 安全制限: 累積許容角度（度）および対応する総パルス数
+        # デフォルトはモジュール定数 DEFAULT_MAX_CUMULATIVE_DEGREES を使用
+        self.MAX_CUMULATIVE_DEGREES = DEFAULT_MAX_CUMULATIVE_DEGREES
+        # 総パルス上限はデバイス上限 DEVICE_MAX_PULSES と安全マージンを考慮して計算する
+        # 計算方針:
+        # - ユーザーが指定する累積角度（度）をパルス換算した値
+        # - 機器仕様の最大パルス（DEVICE_MAX_PULSES）から安全マージンを引いた値
+        # のうち小さい方を許容総パルス上限とする。これによりソフト側の累積保護
+        # とハードウェア物理上限の両方を同時に考慮できる。
+        self.MAX_TOTAL_PULSES = min(int(self.pulses_per_degree * self.MAX_CUMULATIVE_DEGREES), DEVICE_MAX_PULSES - DEFAULT_SAFETY_MARGIN_PULSES)
         
         # 速度設定のデフォルト値 (SettingsView等から上書き可能)
         self.speed_min_pps = 500
@@ -72,6 +101,8 @@ class StageController:
     def update_settings(self, pulses_per_degree: int):
         """分解能（1度あたりのパルス数）の設定を更新します"""
         self.pulses_per_degree = pulses_per_degree
+        # pulses_per_degree が変わったら総パルス上限も再計算する
+        self.MAX_TOTAL_PULSES = min(int(self.pulses_per_degree * self.MAX_CUMULATIVE_DEGREES), DEVICE_MAX_PULSES - DEFAULT_SAFETY_MARGIN_PULSES)
         logger.info(f"{self.log_tag} Update Resolution: {self.pulses_per_degree} pulses/deg")
     
     def connect(self, port: str, baudrate: int = 9600):
@@ -154,6 +185,10 @@ class StageController:
         
         try:
             # シリアルI/Oは排他的に実行し、Q: と移動コマンドの取り違えを防ぐ
+            # ここでロックを取得してから低レベルの送受信関数 `_send_command_locked`
+            # を呼ぶ設計にしている。理由: モニタ（Q:）と移動コマンド（A:/M:/G:）が
+            # 同時にシリアルへ書き込むとプロトコルの取り違え／データ断片化が起きる
+            # ため、安全に直列化する必要がある。
             with self._io_lock:
                 response = self._send_command_locked(cmd)
 
@@ -168,7 +203,19 @@ class StageController:
             raise e
 
     def _send_command_locked(self, cmd: str):
-        """_io_lock を取得済みの前提で送受信を行う。"""
+        """`_io_lock` を取得済みの前提で送受信を行う。
+
+        補足:
+        - ハードウェアは行末（CR+LF）で応答を返すため `readline()` を使用する。
+        - 一部デバイスは固定幅で数値フィールド中に空白を含めて返すことがある
+          （例: "-      499"）。そのため上位での解析時に内部空白の扱いに
+          注意が必要である。
+
+        実装上の注意:
+        - このメソッドは `_io_lock` を取得した上で呼び出すことを前提としています。
+        - 直接シリアルに書き込み・読み取りを行い、応答文字列を返します。
+        - 呼び出し側で応答の空チェックやエラーハンドリングを行ってください。
+        """
         logger.debug(f"{self.log_tag} Send: {cmd}")
         full_cmd = f"{cmd}\r\n"
         self.ser.write(full_cmd.encode("ascii"))
@@ -179,19 +226,20 @@ class StageController:
     #---座標変換---
     
     def _deg_to_pulse(self, deg: float) -> int:
-        """
-        角度[deg]をパルス数[pulse]に変換します。微小移動時（0.0024度のような角度の移動）の無視を防ぐため四捨五入(round)します。
+        """角度[deg]をパルス数[pulse]に変換します。
+
+        微小移動時の切り捨てを防ぐため四捨五入(round)しています。
         """
         return int(round(deg * self.pulses_per_degree)) #四捨五入してパルス数を整数化
     
     def _pulse_to_deg(self, pulse: int) -> float:
-        """パルス数[pulse]を角度[deg]に変換します"""
+        """パルス数[pulse]を角度[deg]に変換します。"""
         return float(pulse) / self.pulses_per_degree
     
     #---操作メソッド---
     
     def home(self):
-        """H:1 コマンド（機械原点復帰）を送信します"""
+        """H:1 コマンド（機械原点復帰）を送信します。"""
         logger.info(f"{self.log_tag} Homing...")
         
         if self.is_mock_env:
@@ -201,21 +249,40 @@ class StageController:
             return True
         
         resp = self._send_command("H:1")
-        
+
         if resp == "OK":
             logger.info(f"{self.log_tag} Homed")
             return True
         else:
             logger.error(f"{self.log_tag} Homing Error. Resp: {resp}")
-            return False
+            raise StageCommandError(f"Homing failed: {resp}")
     
-    def move_absolute(self, target_angle: float):
-        """絶対角度[deg]を指定してステージを移動させます（移動量設定後、駆動開始）"""
-        
-        # ソフトリミット（安全装置）: 絶対角度は 0.0 〜 360.0度 の範囲内のみ許可
-        if not (0.0 <= target_angle <= 360.0):
-            logger.error(f"{self.log_tag} Move Abs Error: Target angle {target_angle} is out of bounds (0-360).")
-            return False
+    def move_absolute(self, target_angle: float, allow_overflow: bool = False):
+        """絶対角度[deg]を指定してステージを移動させます（移動量設定後、駆動開始）。
+
+        `allow_overflow=True` の場合は 0..360 のソフトリミットを無視して任意の角度を指定できます。
+        ただし、極端に大きな値は保護のため拒否します（累積パルスによる保護）。"""
+
+        # ソフトリミット（安全装置）: デフォルトでは 0.0 〜 360.0度 の範囲内のみ許可
+        if not allow_overflow:
+            if not (0.0 <= target_angle <= 360.0):
+                logger.error(f"{self.log_tag} Move Abs Error: Target angle {target_angle} is out of bounds (0-360).")
+                raise ValueError(f"Target angle {target_angle} out of bounds (0-360)")
+        else:
+            # Overflow が許可されている場合でも、以下のチェックで極端な値は拒否する:
+            # 1) 目標角度をパルスに変換した際に負の値になる（原点より下回る）指示は危険で拒否
+            # 2) 目標パルスが許容総パルス上限（self.MAX_TOTAL_PULSES）を超える場合は拒否
+            # これは「度」ではなく実際にデバイスへ送るパルス数を基準にした保護であり、
+            # ソフトリミットの無効化（アプローチ動作等）を許す一方で機器損傷を防ぎます。
+            target_pulse_check = self._deg_to_pulse(target_angle)
+            # 原点より小さい（負のパルス）になる指示は拒否する
+            if target_pulse_check < 0:
+                logger.error(f"{self.log_tag} Move Abs Error: Target pulse {target_pulse_check} is negative (below origin).")
+                raise StageCommandError(f"Target pulse {target_pulse_check} is negative (below origin)")
+            # 許容累積パルスを超える指示は拒否する
+            if abs(target_pulse_check) > self.MAX_TOTAL_PULSES:
+                logger.error(f"{self.log_tag} Move Abs Error: Target pulse {target_pulse_check} exceeds safe cumulative pulse limit of {self.MAX_TOTAL_PULSES}.")
+                raise StageCommandError(f"Target pulse {target_pulse_check} exceeds safe cumulative pulse limit")
             
         # GSC-01の仕様: 移動するには「移動量の設定(Aコマンド)」と「駆動開始(Gコマンド)」の2段階が必要
         
@@ -238,7 +305,7 @@ class StageController:
         
         if resp_a != "OK":
             logger.error(f"{self.log_tag} Move setup failed: {resp_a}")
-            return False
+            raise StageCommandError(f"Move setup failed: {resp_a}")
         
         # 2. 駆動開始コマンド送信: G:
         resp_g = self._send_command("G:")
@@ -248,15 +315,10 @@ class StageController:
             return True
         else:
             logger.error(f"{self.log_tag} Move Abs Command Failed: {resp_g}")
-            return False
+            raise StageCommandError(f"Move start failed: {resp_g}")
     
     def move_relative(self, delta_angle: float, current_angle_hint: float | None = None):
-        """現在の位置から指定した角度[deg]だけ相対移動させます"""
-        
-        # ソフトリミット（安全装置）: 1回の相対移動は -360.0 〜 +360.0度 の範囲内のみ許可（誤入力での無限回転防止）
-        if not (-360.0 <= delta_angle <= 360.0):
-            logger.error(f"{self.log_tag} Move Rel Error: Delta angle {delta_angle} is too large. Must be between -360 and 360.")
-            return False
+        """現在の位置から指定した角度[deg]だけ相対移動させます。"""
             
         # M:1+Pxxx -> G:（相対移動パルス数設定命令 -> 駆動命令）
         delta_pulse = self._deg_to_pulse(delta_angle)
@@ -268,9 +330,18 @@ class StageController:
         # 累計角度の安全チェックは、監視ループで取得済みのキャッシュ値を優先して使用する
         if current_angle_hint is not None:
             predicted_angle = current_angle_hint + delta_angle
-            if abs(predicted_angle) > 30000.0:
-                logger.error(f"{self.log_tag} Move Rel Error: Cumulative angle {predicted_angle:.1f} exceeds safe limit of ±30000 deg. Please Home the stage.")
-                return False
+            # current_angle_hint が与えられている場合、これを起点に予測される累積角度を
+            # パルスに変換して安全性をチェックする。これは複数回の相対移動を合成した際
+            # の累積オーバーランを未然に防止するための保護です。
+            predicted_pulse = self._deg_to_pulse(predicted_angle)
+            # 原点より小さくなる予測は拒否する（ユーザーにホームを促すべき状態）
+            if predicted_pulse < 0:
+                logger.error(f"{self.log_tag} Move Rel Error: Predicted pulse {predicted_pulse} is negative (below origin). Please Home the stage.")
+                raise StageCommandError(f"Predicted pulse {predicted_pulse} is negative (below origin)")
+            # 予測総パルスが許容上限を超える場合も拒否する
+            if abs(predicted_pulse) > self.MAX_TOTAL_PULSES:
+                logger.error(f"{self.log_tag} Move Rel Error: Predicted pulse {predicted_pulse} exceeds safe cumulative pulse limit of {self.MAX_TOTAL_PULSES}. Please Home the stage.")
+                raise StageCommandError(f"Predicted pulse {predicted_pulse} exceeds safe cumulative pulse limit")
         
         direction = "+" if delta_pulse >= 0 else "-"
         abs_pulse = abs(delta_pulse)
@@ -290,7 +361,7 @@ class StageController:
         
         if resp_m != "OK":
             logger.error(f"{self.log_tag} Move setup failed: {resp_m}")
-            return False
+            raise StageCommandError(f"Move setup failed: {resp_m}")
         
         # 2. 駆動開始: G:
         resp_g = self._send_command("G:")
@@ -300,10 +371,10 @@ class StageController:
             return True
         else:
             logger.error(f"{self.log_tag} Move Rel Command Failed: {resp_g}")
-            return False
+            raise StageCommandError(f"Move start failed: {resp_g}")
     
     def set_speed(self, min_pps: int, max_pps: int, accel_time_ms: int):
-        """モーターの起動速度、最高速度、加減速時間を設定します"""
+        """モーターの起動速度、最高速度、加減速時間を設定します。"""
         # D:（速度設定命令）
         # 内部設定値を更新（再接続時などに再適用できるようにするため保持しておく）
         self.speed_min_pps = min_pps
@@ -322,7 +393,7 @@ class StageController:
         return resp == "OK"
     
     def stop(self, immediate: bool = False):
-        """ステージの移動を停止します (immediate=True で非常停止)"""
+        """ステージの移動を停止します。`immediate=True` で非常停止になります。"""
         # L:1 (減速停止) or L:E (非常停止/即停止)
         logger.info(f"{self.log_tag} Stopping... (Immediate={immediate})")
         if self.is_mock_env:
@@ -337,7 +408,29 @@ class StageController:
             return True
         else:
             logger.error(f"{self.log_tag} Stop Command Failed: {resp}")
-            return False
+            raise StageCommandError(f"Stop command failed: {resp}")
+
+    def _parse_status_response(self, resp: str) -> Tuple[float, bool] | None:
+        """Q: 応答の固定幅パルス表記を角度と Busy フラグに変換します。
+
+        実機ではパルス値が符号付きで固定幅に整形され、内部にスペースが挿入
+        されることがあります（例: "+00018000" や "-      499"）。
+        このヘルパーはそのような空白を削除して安全に `int()` に渡します。
+
+        戻り値:
+        - 正常: `(angle_deg, is_busy)`
+        - 解析失敗: `None`
+        """
+        parts = resp.split(",")
+        if len(parts) < 4:
+            return None
+
+        pulse_str = re.sub(r"\s+", "", parts[0])
+        current_pulse = int(pulse_str)
+        ack3 = parts[3].strip()
+        is_busy = (ack3 == "B")
+        angle = self._pulse_to_deg(current_pulse)
+        return angle, is_busy
 
     def get_status(self) -> Tuple[float, bool]:
         """
@@ -361,21 +454,18 @@ class StageController:
         resp = self._send_command("Q:")
         
         try:
-            parts = resp.split(",")
-            if len(parts) >= 4:
-                # 1つ目の要素: 座標値（パルス）
-                pulse_str = parts[0].strip()
-                current_pulse = int(pulse_str)
-                
-                # 4つ目の要素: ステータス（B or R）
-                ack3 = parts[3].strip()
-                is_busy = (ack3 == "B")
-                angle = self._pulse_to_deg(current_pulse)
+            # 共通パーサを使ってレスポンスを解釈する。共通化によりモニタとAPI
+            # 双方で解析ロジックがずれることを防ぐ。
+            parsed = self._parse_status_response(resp)
+            if parsed is not None:
+                angle, is_busy = parsed
                 logger.debug(f"{self.log_tag} get_status parsed: angle={angle}, busy={is_busy}, raw={resp}")
                 return angle, is_busy
-            else:
-                logger.warning(f"{self.log_tag} get_status parse failed: too few fields raw={resp}")
-                return 0.0, False
+
+            # ここに到達するのはフィールド数が不足しているなどの軽微な異常時。
+            # 呼び出し側は (0.0, False) を異常指標として扱う。
+            logger.warning(f"{self.log_tag} get_status parse failed: too few fields raw={resp}")
+            return 0.0, False
         except Exception as e:
             logger.error(f"Status parse error: {e}, Raw: {resp}")
             return 0.0, False
@@ -394,14 +484,10 @@ class StageController:
         try:
             logger.debug(f"{self.log_tag} try_get_status acquired")
             resp = self._send_command_locked("Q:")
-
-            parts = resp.split(",")
-            if len(parts) >= 4:
-                pulse_str = parts[0].strip()
-                current_pulse = int(pulse_str)
-                ack3 = parts[3].strip()
-                is_busy = (ack3 == "B")
-                angle = self._pulse_to_deg(current_pulse)
+            # 非ブロッキングで取得したレスポンスも同じ解析ルーチンを通す。
+            parsed = self._parse_status_response(resp)
+            if parsed is not None:
+                angle, is_busy = parsed
                 logger.debug(f"{self.log_tag} try_get_status parsed: angle={angle}, busy={is_busy}, raw={resp}")
                 return angle, is_busy
 

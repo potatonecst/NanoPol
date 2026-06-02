@@ -324,7 +324,7 @@ export function DevicesView() {
                 <div>
                     <h2 className="text-2xl font-bold tracking-tight">Devices Connection</h2>
                     <p className="text-xs text-muted-foreground mt-2">
-                        Manage connections for the GSC-01 Stage Controller and DCC1645C Camera.
+                        Manage connections for the GSC-01 Stage Controller and DCC1545M camera.
                     </p>
                 </div>
 
@@ -403,7 +403,7 @@ export function DevicesView() {
                                     {isCameraConnected ? "Connected" : "Disconnected"}
                                 </Badge>
                             </div>
-                            <CardDescription>Thorlabs DCC1645C (uEye)</CardDescription>
+                            <CardDescription>Thorlabs DCC1545M (uEye)</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
                             <div className="space-y-2">
@@ -432,7 +432,7 @@ export function DevicesView() {
                             </div>
                         </CardContent>
                         <CardFooter className="justify-between border-t pt-4">
-                            <div className="text-xs text-muted-foreground">Mode: 10-bit RAW</div>
+                            <div className="text-xs text-muted-foreground">delivered as 8-bit over USB</div>
                             <Button
                                 variant={isCameraConnected ? "destructive" : "default"}
                                 onClick={handleCameraConnect}

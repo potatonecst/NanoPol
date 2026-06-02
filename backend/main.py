@@ -12,9 +12,21 @@ import signal
 import threading
 from pathlib import Path
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from utils.logger import logger, log_buffer
 from devices.stage_controller import StageController
+from devices.stage_controller import StageCommandError
+# `StageCommandError` はデバイス層（`StageController`）が運用上の理由でコマンドを
+# 拒否した場合に投げる専用の例外クラスです。
+#
+# ハンドリング方針:
+# - `ValueError` -> クライアント側の入力不備やリクエスト内容の誤り（HTTP 400）
+# - `StageCommandError` -> 機器保護や状態（累積上限・原点未復帰等）による拒否（HTTP 409 Conflict）
+# - それ以外の例外 -> サーバー/デバイスの想定外エラー（HTTP 500）
+#
+# これによりフロントエンドはエラーの種類に応じて適切なユーザー指示（例: ホーム要求）や
+# リトライ戦略を実行できます。
 from devices.camera_controller import CameraController
 
 # グローバルインスタンスの作成
@@ -30,9 +42,397 @@ class SystemState:
         self.is_busy = False       # ハードウェア: ステージが物理的に移動・回転中か
         self.is_measuring = False  # ソフトウェア: Sweep等の自動測定シーケンスが実行中か
         self.last_stage_command = None  # 直近で受理したステージコマンド（完了ログ用）
+        # Sweep の進捗を progress API から返すための、操作単位の状態オブジェクトです。
+        # ここには operation_id、現在フェーズ、計画値、キャンセル要求フラグなどをまとめて保持します。
+        self.sweep_operation = None
 
 app_state = SystemState()
 stage_command_lock = threading.Lock()
+sweep_state_lock = threading.Lock()
+
+
+def _now_ms() -> float:
+    """現在時刻を UTC ミリ秒で返すユーティリティ関数。
+
+    理由:
+    - すべての進捗計算やログのタイムスタンプは同一基準（UTCミリ秒）に揃えておくことで、
+      バックグラウンドスレッドと API スレッド間の時間差異を避けられます。
+    - 軽量かつ副作用がないため頻繁に呼べます。
+
+    返り値:
+        float: UTC ミリ秒のタイムスタンプ
+    """
+    return datetime.now(timezone.utc).timestamp() * 1000.0
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    """値を [minimum, maximum] の範囲に丸めるユーティリティ。
+
+    - 進捗率やパラメータの境界制約に繰り返し使用します。
+    - 型に依存せず数値として処理します。
+    """
+    return max(minimum, min(maximum, value))
+
+
+def _directional_progress(start: float, target: float, current: float) -> float:
+    """start -> target の計画方向に沿った進捗率を 0..1 で返す。
+
+    この関数は「最短経路」を選びません。
+    代わりに、プラン上の start と target をそのまま使い、
+    current がその区間をどれだけ進んだかを線形に計算します。
+
+    重要:
+    - sweep では「10 -> 350 を +方向で進む」ような計画があり得るため、
+      角度の最短距離ではなく、実際に計画した start/target の並びに従う必要があります。
+    - current は `app_state.current_angle` のような、同じ座標系の値を渡す前提です。
+
+    返り値:
+        float: 進捗率（0.0 から 1.0）
+    """
+    total = target - start
+    if abs(total) < 1e-6:
+        return 1.0
+
+    traveled = current - start
+    ratio = traveled / total
+    return float(_clamp(ratio, 0.0, 1.0))
+
+
+def _build_sweep_plan(start_deg: float, end_deg: float, speed_deg_s: float) -> dict:
+    """Sweep 実行用の計画を計算する。
+
+    助走位置・終端位置・所要時間・速度設定を一元計算し、
+    フロントと実行処理で同じ前提を共有できるようにする。
+    """
+    # この関数は「実行そのもの」ではなく、「実行前の見積もり」と「安全な送り出し条件」を
+    # ひとまとめに作る役割を持ちます。フロントエンドが独自計算を持つとズレやすいため、
+    # ここで backend 側が source of truth として計画値を決めます。
+    pulses_per_degree = stage.pulses_per_degree
+    min_pps = stage.speed_min_pps
+    max_pps = stage.speed_max_pps
+    accel_time_ms = stage.speed_accel_ms
+
+    # ユーザーが指定した速度を、実機が受け入れられるパルス速度に変換し、
+    # さらにハードウェアの最小・最大値の範囲内に丸めます。
+    requested_pps = int(round(speed_deg_s * pulses_per_degree))
+    safe_pps = int(_clamp(requested_pps, min_pps, max_pps))
+    actual_speed_deg = safe_pps / pulses_per_degree
+    start_speed_deg = min_pps / pulses_per_degree
+    accel_time_sec = accel_time_ms / 1000.0
+
+    # 加減速時間の間にどれくらい進むかをざっくり見積もり、
+    # その分だけ前後に余裕を持たせて「助走位置」と「終端位置」を作ります。
+    accel_dist = ((start_speed_deg + actual_speed_deg) / 2.0) * accel_time_sec
+    margin = max(1.0, accel_dist * 1.2)
+    direction = 1 if end_deg >= start_deg else -1
+
+    actual_start_raw = start_deg - (margin * direction)
+    actual_end_raw = end_deg + (margin * direction)
+
+    def align_to_step(value: float) -> float:
+        # ステージは連続値ではなくパルス刻みで動くため、
+        # 入力角度を最寄りのステップにそろえて再利用可能な値にします。
+        steps = round(value * pulses_per_degree)
+        return steps / pulses_per_degree
+
+    actual_start = align_to_step(actual_start_raw)
+    actual_end = align_to_step(actual_end_raw)
+    wrapped_by_360 = False
+    # 負の角度が出た場合は 360 度加算で正の表現へ寄せます。
+    # これにより allow_overflow を許可した絶対移動でも、
+    # デバイス側の「負パルス禁止」ルールに触れにくい経路を作れます。
+    while actual_start < 0 or actual_end < 0:
+        actual_start += 360
+        actual_end += 360
+        wrapped_by_360 = True
+
+    # 助走位置から終端位置までを1本の相対移動として扱うことで、
+    # chunk 分割や途中停止を避け、速度制御と安全チェックを単純化します。
+    relative_total = actual_end - actual_start
+    sweep_distance = abs(relative_total)
+    current_angle_at_request = app_state.current_angle
+    approach_distance = abs(actual_start - current_angle_at_request)
+
+    # 進捗バー用の残り時間は「正確な保証値」ではなく、UI を破綻させないための
+    # おおよその目安です。実測値との差が出ても、最終状態は status で判定します。
+    estimated_approach_ms = (approach_distance / actual_speed_deg * 1.5 * 1000.0) + 10000.0
+    estimated_sweep_ms = (sweep_distance / actual_speed_deg * 1.5 * 1000.0) + 10000.0
+
+    return {
+        "kind": "sweep",
+        "input_start_deg": float(start_deg),
+        "input_end_deg": float(end_deg),
+        "actual_start_deg": actual_start,
+        "actual_end_deg": actual_end,
+        "relative_total_deg": relative_total,
+        "direction": "forward" if direction >= 0 else "reverse",
+        "wrapped_by_360": wrapped_by_360,
+        "estimated_approach_ms": estimated_approach_ms,
+        "estimated_sweep_ms": estimated_sweep_ms,
+        "requested_speed_deg_s": float(speed_deg_s),
+        "actual_speed_deg_s": actual_speed_deg,
+        "requested_speed_pps": requested_pps,
+        "safe_speed_pps": safe_pps,
+        "current_angle_at_request": current_angle_at_request,
+        "margin_deg": margin,
+    }
+
+
+def _set_sweep_state(**kwargs):
+    """Sweep 操作の共有状態を安全に更新するためのユーティリティ。
+
+    目的:
+    - `app_state.sweep_operation` に対して部分的な更新を行う（部分上書き）。
+    - 更新時に `updated_at_ms` を自動で付与することで、変更時刻を追跡可能にする。
+    - 複数スレッドから呼ばれてもデータ競合が起きないよう、`sweep_state_lock` を用いて排他制御を行う。
+
+    呼び出しタイミング（例）:
+    - `/stage/sweep/run` で初期状態を登録する。
+    - バックグラウンド実行（`_run_sweep_operation`）がフェーズ遷移やメッセージ更新を通知する。
+    - キャンセル要求やエラー発生時に状態（status/phase/message）を更新する。
+
+    実装上の注意:
+    - 返却される辞書は shallow copy です。呼び出し側で直接ミュータブルなネスト要素を変更すると
+      元データを汚染する可能性があるため、状態を変更する場合は必ず `_set_sweep_state` を使ってください。
+
+    引数:
+        kwargs: 更新したいキー/値ペア（例: status='running', phase='approach'）
+
+    戻り値:
+        dict: 更新後の状態オブジェクトのコピー
+    """
+    with sweep_state_lock:
+        current = dict(app_state.sweep_operation or {})
+        current.update(kwargs)
+        current["updated_at_ms"] = _now_ms()
+        app_state.sweep_operation = current
+        return dict(current)
+
+
+def _get_sweep_state_snapshot() -> dict:
+    """共有状態の安全なスナップショットを返すヘルパー。
+
+    目的:
+    - 参照側が返却されたオブジェクトを誤って変更してしまうことを避けるため、
+        ロック下で浅いコピー（shallow copy）を返します。
+    - バックグラウンド実行スレッドや API ハンドラは、これを使って一貫した状態判断（例: cancel_requested の確認）を行います。
+
+    注意:
+    - 浅いコピーなので、ネストされた辞書の更なるネストレベルを直接変更すると元データを書き換える恐れがあります。
+        状態を書き換える必要がある場合は `_set_sweep_state` を使ってください。
+
+    戻り値:
+            dict: 現在の sweep_operation の浅いコピー（空なら空辞書）
+    """
+    with sweep_state_lock:
+        return dict(app_state.sweep_operation or {})
+
+
+def _compute_sweep_progress(state: dict) -> dict:
+    """`/stage/sweep/progress` のために進捗表示用の要約オブジェクトを作成する。
+
+    入力: `state` は `_set_sweep_state` で管理している sweep_operation オブジェクト。
+    出力: progress 表示で必要な以下のキーを含む辞書を返す:
+        - operation_id, kind, status, phase, percent, message,
+            current_deg, target_deg, estimated_remaining_ms
+
+    実装ノート:
+    - UI はこの情報をポーリングして表示を更新します。レスポンスは軽量に抑えつつ、
+        フェーズごとの進捗計算（prepare/approach/sweep/finalize）を行います。
+    - `percent` は大まかな進捗表示用に設計されており、厳密な時間同期は保証しません。
+    - `estimated_remaining_ms` は目安であり、実際の残り時間はデバイス応答や加減速挙動で変化します。
+    """
+    if not state:
+        return {
+            "operation_id": None,
+            "kind": "sweep",
+            "status": "idle",
+            "phase": "idle",
+            "percent": 0,
+            "message": "No active sweep",
+            "current_deg": app_state.current_angle,
+            "target_deg": None,
+            "estimated_remaining_ms": 0,
+        }
+
+    plan = state.get("plan", {})
+    status = state.get("status", "idle")
+    phase = state.get("phase", "idle")
+    operation_id = state.get("operation_id")
+    started_at_ms = state.get("started_at_ms", state.get("updated_at_ms", _now_ms()))
+    phase_started_at_ms = state.get("phase_started_at_ms", started_at_ms)
+    now_ms = _now_ms()
+
+    def elapsed_ms() -> float:
+        return max(0.0, now_ms - phase_started_at_ms)
+
+    percent = 0
+    estimated_remaining_ms = 0
+    target_deg = None
+    message = state.get("message", "")
+
+    if status == "running":
+        if phase == "prepare":
+            # prepare は速度設定や前提条件の確認中なので、進捗バーはまだ動かさず 0% のままにします。
+            percent = 0
+            estimated_remaining_ms = max(0.0, float(plan.get("estimated_approach_ms", 0.0)))
+            message = message or "Preparing sweep"
+        elif phase == "approach":
+            # 助走位置への移動は、計画上の current_angle_at_request -> actual_start_deg を
+            # そのまま直線的に進んだ比率で表します。最短経路は選びません。
+            start_deg = float(plan.get("current_angle_at_request", app_state.current_angle))
+            target_deg = float(plan.get("actual_start_deg", start_deg))
+            ratio = _directional_progress(start_deg, target_deg, app_state.current_angle)
+            percent = int(_clamp(ratio * 15.0, 0.0, 15.0))
+
+            actual_speed = float(plan.get("actual_speed_deg_s", 0.0))
+            if actual_speed > 0:
+                remaining_deg = abs(target_deg - app_state.current_angle)
+                estimated_remaining_ms = int(max(0.0, remaining_deg / actual_speed * 1000.0))
+            else:
+                estimated_remaining_ms = int(max(0.0, float(plan.get("estimated_approach_ms", 0.0))))
+            message = message or "Moving to approach position"
+        elif phase == "sweep":
+            # sweep 本体も、actual_start_deg -> actual_end_deg の計画方向に沿って進捗を出します。
+            # ここが「10 -> 350 を +方向で進む」ケースに対応するポイントです。
+            start_deg = float(plan.get("actual_start_deg", app_state.current_angle))
+            target_deg = float(plan.get("actual_end_deg", start_deg))
+            ratio = _directional_progress(start_deg, target_deg, app_state.current_angle)
+            percent = int(_clamp(15.0 + ratio * 80.0, 15.0, 95.0))
+
+            actual_speed = float(plan.get("actual_speed_deg_s", 0.0))
+            if actual_speed > 0:
+                remaining_deg = abs(target_deg - app_state.current_angle)
+                estimated_remaining_ms = int(max(0.0, remaining_deg / actual_speed * 1000.0))
+            else:
+                estimated_remaining_ms = int(max(0.0, float(plan.get("estimated_sweep_ms", 0.0))))
+            message = message or "Sweeping"
+        elif phase == "finalize":
+            # finalize は状態復帰・速度戻しなどの後処理を表します。
+            # 実移動が終わっていても、リソース解放や状態更新が残るため、
+            # ここで 95〜100% を埋めて完了直前を表現します。
+            duration = max(1.0, float(state.get("finalize_estimated_ms", 1000.0)))
+            percent = int(_clamp(95.0 + (elapsed_ms() / duration) * 5.0, 95.0, 100.0))
+            estimated_remaining_ms = max(0.0, duration - elapsed_ms())
+            message = message or "Finalizing sweep"
+
+    elif status == "succeeded":
+        percent = 100
+        message = message or "Sweep completed"
+    elif status == "failed":
+        percent = state.get("percent", 0)
+        message = message or "Sweep failed"
+    elif status == "cancelled":
+        percent = state.get("percent", 0)
+        message = message or "Sweep cancelled"
+
+    if phase == "approach" and target_deg is None:
+        target_deg = plan.get("actual_start_deg")
+    elif phase == "sweep" and target_deg is None:
+        target_deg = plan.get("actual_end_deg")
+
+    return {
+        "operation_id": operation_id,
+        "kind": state.get("kind", "sweep"),
+        "status": status,
+        "phase": phase,
+        "percent": int(_clamp(percent, 0, 100)),
+        "message": message,
+        "current_deg": app_state.current_angle,
+        "target_deg": target_deg,
+        "estimated_remaining_ms": int(max(0.0, estimated_remaining_ms)),
+    }
+
+
+def _run_sweep_operation(operation_id: str, request_data: dict, plan: dict):
+    """Sweep をバックグラウンドで実行し、progress 状態を更新する。
+
+    フロー概要:
+    1) 受理済み状態をセット -> progress API が operation_id を返せるようにする
+    2) 速度設定を sweep 用に切り替え
+    3) 助走位置へ絶対移動（allow_overflow=True）
+    4) 助走完了後、相対移動で sweep 本体を一度に実行
+    5) 後処理（速度復帰、成功/失敗状態のセット）
+
+    重要な設計上のポイント:
+    - キャンセル判定: 各主要ステップの後に `_get_sweep_state_snapshot().get("cancel_requested")` を
+        チェックしており、フロントからのキャンセル要求がある場合は安全に早期退出します。
+    - 速度/移動コマンドはブロッキング呼び出しであり、バックグラウンドスレッド内で実行することで
+        メインの API スレッドをブロックしないようにしています。
+    - すべての失敗（`StageCommandError` やその他の例外）は `_set_sweep_state(status="failed", ...)` を通じて
+        progress 状態へ反映されます。フロントはこれを見てユーザーへエラー表示できます。
+    - 終了時は必ず待機速度に戻し、`app_state.is_measuring` を False に戻して手動操作を許可します。
+    """
+    try:
+        # まず状態を「受付済み→実行中」へ切り替えます。
+        # これにより progress API は、開始直後でも operation_id と計画を返せます。
+        _set_sweep_state(
+            operation_id=operation_id,
+            kind="sweep",
+            status="running",
+            phase="prepare",
+            percent=0,
+            message="Sweep accepted",
+            plan=plan,
+            started_at_ms=_now_ms(),
+            phase_started_at_ms=_now_ms(),
+            request=request_data,
+            cancel_requested=False,
+            finalize_estimated_ms=1000.0,
+        )
+
+        # Sweep の本番前には速度設定を専用値へ切り替えます。
+        # ここで失敗した場合は、以降の移動を行わず失敗終了に倒します。
+        if not stage.set_speed(stage.speed_min_pps, plan["safe_speed_pps"], stage.speed_accel_ms):
+            raise StageCommandError("Failed to apply sweep speed")
+
+        if _get_sweep_state_snapshot().get("cancel_requested"):
+            _set_sweep_state(status="cancelled", phase="prepare", percent=0, message="Sweep cancelled before start")
+            return
+
+        # 1段目: 助走位置まで絶対移動します。
+        # allow_overflow=True を使うのは、助走の都合で 360 度を越える場合でも
+        # デバイスが拒否しないようにするためです。ただし安全性はパルスベースで別途担保します。
+        _set_sweep_state(phase="approach", phase_started_at_ms=_now_ms(), message="Moving to approach position")
+        stage.move_absolute(plan["actual_start_deg"], allow_overflow=True)
+
+        if _get_sweep_state_snapshot().get("cancel_requested"):
+            _set_sweep_state(status="cancelled", phase="approach", message="Sweep cancelled during approach")
+            return
+
+        # 2段目: 助走位置から終端位置までを1回の相対移動で流し切ります。
+        # 分割移動を避けることで、途中で速度が崩れたり、停止点ごとに再判定が走るのを防ぎます。
+        #
+        # キャンセル処理:
+        # - 各段終了後に _get_sweep_state_snapshot().get("cancel_requested") をチェックしており、
+        #   フロントからのキャンセル要求が来ていれば安全に早期終了します。
+        _set_sweep_state(phase="sweep", phase_started_at_ms=_now_ms(), message="Sweeping")
+        stage.move_relative(plan["relative_total_deg"], current_angle_hint=app_state.current_angle)
+
+        if _get_sweep_state_snapshot().get("cancel_requested"):
+            _set_sweep_state(status="cancelled", phase="finalize", percent=0, message="Sweep cancelled by user")
+            return
+
+        # 後処理として、通常の待機用速度設定に戻します。
+        # ここを抜けた後は手動操作や次回の別コマンドに戻れるよう、
+        # 実行状態を完了扱いにし、フラグ類も片付けます。
+        _set_sweep_state(phase="finalize", phase_started_at_ms=_now_ms(), message="Finalizing sweep")
+        if not stage.set_speed(stage.speed_min_pps, stage.speed_max_pps, stage.speed_accel_ms):
+            raise StageCommandError("Failed to restore default speed")
+        _set_sweep_state(status="succeeded", phase="finalize", percent=100, message="Sweep completed")
+    except StageCommandError as e:
+        _set_sweep_state(status="failed", phase="finalize", message=str(e))
+    except Exception as e:
+        _set_sweep_state(status="failed", phase="finalize", message=str(e))
+    finally:
+        try:
+            stage.set_speed(stage.speed_min_pps, stage.speed_max_pps, stage.speed_accel_ms)
+        except Exception:
+            pass
+        with stage_command_lock:
+            app_state.is_measuring = False
+            if app_state.last_stage_command and app_state.last_stage_command.get("name") == "sweep":
+                app_state.last_stage_command = None
 
 
 def _terminate_backend_process():
@@ -59,7 +459,10 @@ async def stage_monitor_loop():
             # asyncio.sleep はイベントループを止めずに待機する標準の非同期関数です。
             await asyncio.sleep(0.1)
             if stage.is_connected:
-                # シリアル通信はI/O待ちが発生するため、取れない時はこのサイクルをスキップする
+                # シリアル通信はI/O待ちが発生するため、try_get_status は非同期ラッパー経由で呼び出します。
+                # `stage.try_get_status` は内部で `_io_lock` を使って短時間だけロックを試み、
+                # ロックが取得できない（別リクエストが未完了）場合は None を返します。
+                # その場合はこのサイクルをスキップして次回ポーリングを待ち、UI 側が固まらないようにします。
                 status = await asyncio.to_thread(stage.try_get_status)
                 if status is None:
                     logger.debug("[SYSTEM] Stage status poll skipped (I/O busy)")
@@ -73,6 +476,9 @@ async def stage_monitor_loop():
                 # Busy -> Ready の遷移を「移動完了」とみなし、最終角度を1行で残す
                 if prev_busy and not busy:
                     cmd = app_state.last_stage_command
+                    # 注意: `last_stage_command` は API 呼び出し側で設定され、
+                    # monitor は移動完了時にログ出力とクリアのみ行います。
+                    # monitor 側で状態変更を行う場合はロックを検討してください（現状は単純化しています）。
                     if cmd:
                         logger.info(
                             "[STAGE COMPLETE] name=%s requested=%s final_angle=%.4f",
@@ -232,6 +638,13 @@ class ConnectStageRequest(BaseModel):
 
 class MoveAbsoluteRequest(BaseModel):
     angle: float # 目標とする絶対角度（度）
+    allow_overflow: bool = False  # True の場合は 0..360 のソフトリミットを超える値を許可する
+    # 詳細:
+    # - 通常はフロントエンドが 0.0〜360.0 の範囲に収めるべきです。
+    # - `allow_overflow=True` は「アプローチ動作」などで意図的に360度範囲を越えて
+    #   絶対位置を指定するためのフラグです（例: 送り出し → 相対sweep の手順）。
+    # - ただしバックエンドは受信角度をパルスに換算して追加の保護を行い、
+    #   負のパルスや許容総パルス上限を超える指示は拒否します。
 
 class MoveRelativeRequest(BaseModel):
     delta: float # 現在位置からの相対的な移動量（度）
@@ -243,6 +656,12 @@ class SetSpeedRequest(BaseModel):
     min_pps: int = 500 # 最小速度（パルス/秒）。初速として使用されます。
     max_pps: int # 最大速度（パルス/秒）
     accel_time_ms: int = 200 # 最小速度から最大速度に到達するまでの加減速時間（ミリ秒）
+
+class SweepRunRequest(BaseModel):
+    start_deg: float
+    end_deg: float
+    speed_deg_s: float
+    auto_record: bool = False
 
 class UpdateConfigRequest(BaseModel):
     pulses_per_degree: int # 1度回転させるために必要なモーターのパルス数（分解能）
@@ -441,6 +860,8 @@ def connect_stage(req: ConnectStageRequest):
 @app.post("/stage/disconnect")
 def disconnect_stage():
     """ステージ接続を明示的に切断します。"""
+    if app_state.is_measuring:
+        raise HTTPException(status_code=409, detail="Sweep is running")
     stage.disconnect()
     logger.info("[STAGE] Disconnected by API request")
     return {"status": "success", "message": "Stage disconnected"}
@@ -469,6 +890,8 @@ def stage_home():
     """
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
+    if app_state.is_measuring:
+        raise HTTPException(status_code=409, detail="Sweep is running")
 
     with stage_command_lock:
         if app_state.is_busy:
@@ -477,18 +900,24 @@ def stage_home():
         app_state.last_stage_command = {"name": "home", "requested": "origin"}
 
     logger.info("[STAGE API] home requested")
+    # 実行: デバイス層呼び出しによるエラーマッピング
+    # - ValueError: クライアント入力エラー -> HTTP 400
+    # - StageCommandError: 機器保護による拒否 -> HTTP 409 (Conflict)
+    # - その他の例外: 予期せぬサーバー/デバイスエラー -> HTTP 500
     try:
-        success = stage.home()
+        stage.home()
+    except ValueError as e:
+        with stage_command_lock:
+            app_state.is_busy = False
+        raise HTTPException(status_code=400, detail=str(e))
+    except StageCommandError as e:
+        with stage_command_lock:
+            app_state.is_busy = False
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         with stage_command_lock:
             app_state.is_busy = False
         raise HTTPException(status_code=500, detail=str(e))
-
-    # コマンド送信の成功可否をチェック
-    if not success:
-        with stage_command_lock:
-            app_state.is_busy = False
-        raise HTTPException(status_code=500, detail="Homing failed")
     
     logger.info("[STAGE API] home accepted")
     
@@ -505,6 +934,8 @@ def stage_move_absolute(req: MoveAbsoluteRequest):
     """
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
+    if app_state.is_measuring:
+        raise HTTPException(status_code=409, detail="Sweep is running")
 
     with stage_command_lock:
         if app_state.is_busy:
@@ -513,18 +944,26 @@ def stage_move_absolute(req: MoveAbsoluteRequest):
         app_state.last_stage_command = {"name": "move_absolute", "requested": req.angle}
 
     logger.info("[STAGE API] move_absolute requested: angle=%s", req.angle)
+    # 注意: `allow_overflow` を受け取ることでフロントエンドは
+    # "アプローチは絶対位置で送り、その後相対移動で一気にsweepする" といった
+    # 動作を行えます。しかしバックエンドはパルスベースの安全チェックを行い、
+    # 危険な指示は `StageCommandError` で拒否します。
     try:
-        success = stage.move_absolute(req.angle)
+        stage.move_absolute(req.angle, allow_overflow=req.allow_overflow)
+    except ValueError as e:
+        with stage_command_lock:
+            app_state.is_busy = False
+        raise HTTPException(status_code=400, detail=str(e))
+    except StageCommandError as e:
+        with stage_command_lock:
+            app_state.is_busy = False
+        # ここで HTTP 409 を返すことでフロントは「状態により拒否された」ことを
+        # 明確に判断でき、ユーザーにホームを促すなど具体的な指示が出せます。
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         with stage_command_lock:
             app_state.is_busy = False
         raise HTTPException(status_code=500, detail=str(e))
-
-    #成功可否をチェック
-    if not success:
-        with stage_command_lock:
-            app_state.is_busy = False
-        raise HTTPException(status_code=500, detail="Absolute move failed")
     
     logger.info("[STAGE API] move_absolute accepted: angle=%s", req.angle)
     
@@ -542,6 +981,8 @@ def stage_move_relative(req: MoveRelativeRequest):
     """
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
+    if app_state.is_measuring:
+        raise HTTPException(status_code=409, detail="Sweep is running")
 
     with stage_command_lock:
         if app_state.is_busy:
@@ -550,18 +991,23 @@ def stage_move_relative(req: MoveRelativeRequest):
         app_state.last_stage_command = {"name": "move_relative", "requested": req.delta}
 
     logger.info("[STAGE API] move_relative requested: delta=%s", req.delta)
+    # 相対移動では `current_angle_hint` を与えることで累積予測チェックを行い、
+    # 連続実行によるオーバーランを未然に防ぎます。フロントは HTTP ステータスに基づき
+    # 適切なユーザー指示（ホーム、再試行、ログ表示等）を行ってください。
     try:
-        success = stage.move_relative(req.delta, current_angle_hint=app_state.current_angle)
+        stage.move_relative(req.delta, current_angle_hint=app_state.current_angle)
+    except ValueError as e:
+        with stage_command_lock:
+            app_state.is_busy = False
+        raise HTTPException(status_code=400, detail=str(e))
+    except StageCommandError as e:
+        with stage_command_lock:
+            app_state.is_busy = False
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         with stage_command_lock:
             app_state.is_busy = False
         raise HTTPException(status_code=500, detail=str(e))
-
-    #成功可否をチェック
-    if not success:
-        with stage_command_lock:
-            app_state.is_busy = False
-        raise HTTPException(status_code=500, detail="Relative move failed")
     
     logger.info("[STAGE API] move_relative accepted: delta=%s", req.delta)
     
@@ -582,9 +1028,19 @@ def stage_stop(req: StopStageRequest):
 
     logger.info("[STAGE API] stop requested: immediate=%s", req.immediate)
     app_state.last_stage_command = {"name": "stop", "requested": "immediate" if req.immediate else "decelerate"}
-    
-    if not stage.stop(immediate=req.immediate):
-        raise HTTPException(status_code=500, detail="Stop command failed")
+    if app_state.is_measuring:
+        with sweep_state_lock:
+            if app_state.sweep_operation:
+                app_state.sweep_operation["cancel_requested"] = True
+                app_state.sweep_operation["message"] = "Sweep cancellation requested"
+    # stop は機器保護や緊急停止のための操作であり、失敗時には 409 を返すケースがある。
+    # 例: 機器が既に致命的状態にある、または内部チェックにより停止コマンドを拒否した場合。
+    try:
+        stage.stop(immediate=req.immediate)
+    except StageCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     
     logger.info("[STAGE API] stop accepted: immediate=%s", req.immediate)
     
@@ -603,10 +1059,110 @@ def stage_set_speed(req: SetSpeedRequest):
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
     
-    if not stage.set_speed(req.min_pps, req.max_pps, req.accel_time_ms):
-        raise HTTPException(status_code=500, detail="Failed to set speed")
+    try:
+        ok = stage.set_speed(req.min_pps, req.max_pps, req.accel_time_ms)
+        if not ok:
+            raise HTTPException(status_code=500, detail="Failed to set speed")
+    except StageCommandError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     
     return { "status": "success" }
+
+
+@app.post("/stage/sweep/run")
+def stage_sweep_run(req: SweepRunRequest):
+    """Sweep を開始し、進捗追跡に必要な operation_id と計画を返す。"""
+    if not stage.is_connected:
+        raise HTTPException(status_code=400, detail="Stage not connected")
+
+    # このエンドポイントは「実際の移動をここで完了させる」のではなく、
+    # 「実行を受付けてバックグラウンドへ渡す」ことが責務です。
+    # そのため、ここでは重い処理を行わず、競合状態の確認と計画生成だけを行います。
+    with sweep_state_lock:
+        current_state = dict(app_state.sweep_operation or {})
+        if current_state.get("status") == "running":
+            raise HTTPException(status_code=409, detail="Sweep is already running")
+        if app_state.is_measuring:
+            raise HTTPException(status_code=409, detail="Sweep is already running")
+
+        # operation_id は progress API とログ追跡をつなぐ識別子です。
+        # 画面更新や将来のキャンセル処理で「どの Sweep を指しているか」を
+        # 明確に区別するため、毎回ユニークな値を発行します。
+        operation_id = f"sweep_{uuid4().hex[:12]}"
+        plan = _build_sweep_plan(req.start_deg, req.end_deg, req.speed_deg_s)
+        request_data = {
+            "start_deg": req.start_deg,
+            "end_deg": req.end_deg,
+            "speed_deg_s": req.speed_deg_s,
+            "auto_record": req.auto_record,
+        }
+
+        # app_state.is_measuring は「手動移動ではなく自動シーケンスが走っている」ことを示します。
+        # これにより、他の手動API（home/move/stop など）を一律でブロックできます。
+        app_state.is_measuring = True
+        app_state.last_stage_command = {"name": "sweep", "requested": request_data}
+        app_state.sweep_operation = {
+            "operation_id": operation_id,
+            "kind": "sweep",
+            "status": "prepare",
+            "phase": "prepare",
+            "percent": 0,
+            "message": "Preparing sweep",
+            "plan": plan,
+            "request": request_data,
+            "started_at_ms": _now_ms(),
+            "phase_started_at_ms": _now_ms(),
+            "cancel_requested": False,
+            "updated_at_ms": _now_ms(),
+        }
+
+    logger.info(
+        "[STAGE API] sweep requested: start=%s end=%s speed=%s auto_record=%s",
+        req.start_deg,
+        req.end_deg,
+        req.speed_deg_s,
+        req.auto_record,
+    )
+
+    worker = threading.Thread(
+        target=_run_sweep_operation,
+        args=(operation_id, request_data, plan),
+        daemon=True,
+    )
+    worker.start()
+
+    # ここでは実行完了を待たず、受付結果と計画だけを返します。
+    # UI は operation_id を使って progress API をポーリングし、
+    # 進捗バーや状態表示を更新します。
+    return {
+        "status": "accepted",
+        "operation_id": operation_id,
+        "plan": plan,
+    }
+
+
+@app.get("/stage/sweep/progress")
+def stage_sweep_progress(operation_id: str | None = None):
+    """Sweep の進捗状態を返す。operation_id があればそれを優先する。"""
+    # progress API は「今どの Sweep を見ればいいか」をUI側から解決できるように、
+    # 単純な最新状態返却だけでなく、必要なら operation_id で対象を絞ります。
+    state = _get_sweep_state_snapshot()
+    # state が存在しない場合（現在どの Sweep も登録されていない）:
+    # - クライアントが特定の operation_id を要求しているなら、その操作は存在しないため 404 を返す。
+    # - operation_id を指定していない通常の呼び出しなら、idle 状態を返して UI がアイドル表示できるようにする。
+    if not state:
+        if operation_id is not None:
+            raise HTTPException(status_code=404, detail="Sweep operation not found")
+        return _compute_sweep_progress({})
+
+    # 登録済みの state がある場合、指定された operation_id と一致するか確認する。
+    if operation_id is not None and state.get("operation_id") != operation_id:
+        # 別の Sweep を参照しようとした場合は、誤表示を避けるため 404 を返します。
+        raise HTTPException(status_code=404, detail="Sweep operation not found")
+
+    return _compute_sweep_progress(state)
 
 @app.get("/stage/position")
 def stage_get_position():

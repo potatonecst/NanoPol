@@ -107,10 +107,11 @@ export const stageApi = {
         request<{ status: string, command: string, accepted: boolean }>("/stage/home", { method: "POST" }),
 
     // 指定した絶対角度（例: 90度）へステージを移動させます
-    moveAbsolute: (angle: number) =>
+    // allow_overflow を true にすると 0..360 のソフトリミットを超える角度を許可します
+    moveAbsolute: (angle: number, allowOverFlow: boolean = false) =>
         request<{ status: string, command: string, requested_angle: number, accepted: boolean }>("/stage/move/absolute", {
             method: "POST",
-            body: JSON.stringify({ angle })
+            body: JSON.stringify({ angle, allow_overflow: allowOverFlow })
         }),
 
     // 現在の位置から指定した角度（プラス・マイナス）だけ相対移動させます
@@ -133,6 +134,50 @@ export const stageApi = {
             method: "POST",
             body: JSON.stringify({ min_pps, max_pps, accel_time_ms })
         }),
+
+    // Sweep をバックエンド側で開始し、operation_id と計画情報を取得します
+    sweepRun: (start_deg: number, end_deg: number, speed_deg_s: number, auto_record: boolean = false) =>
+        request<{
+            status: string,
+            operation_id: string,
+            plan: {
+                kind: string,
+                input_start_deg: number,
+                input_end_deg: number,
+                actual_start_deg: number,
+                actual_end_deg: number,
+                relative_total_deg: number,
+                direction: string,
+                wrapped_by_360: boolean,
+                estimated_approach_ms: number,
+                estimated_sweep_ms: number,
+                requested_speed_deg_s: number,
+                actual_speed_deg_s: number,
+                requested_speed_pps: number,
+                safe_speed_pps: number,
+                current_angle_at_request: number,
+                margin_deg: number,
+            }
+        }>('/stage/sweep/run', {
+            method: 'POST',
+            body: JSON.stringify({ start_deg, end_deg, speed_deg_s, auto_record })
+        }),
+
+    // Sweep の進捗を取得します。operation_id を指定すると対象を絞れます
+    sweepProgress: (operationId?: string) => {
+        const query = operationId ? `?operation_id=${encodeURIComponent(operationId)}` : '';
+        return request<{
+            operation_id: string | null,
+            kind: string,
+            status: string,
+            phase: string,
+            percent: number,
+            message: string,
+            current_deg: number,
+            target_deg: number | null,
+            estimated_remaining_ms: number,
+        }>(`/stage/sweep/progress${query}`, { method: 'GET' });
+    },
 
     // 現在の角度と、移動中（Busy）かどうかのステータスを取得します（ポーリング用）
     getPosition: () =>

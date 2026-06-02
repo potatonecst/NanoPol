@@ -23,6 +23,9 @@
                   * **各駅停車レーン (Streaming Thread):** 最新フレームを参照し、JPEG圧縮して配信する。
               * **並行処理対策:** `threading.Condition`（黒板とベル方式）を導入し、複数リクエスト時の競合やフレーム奪い合いを防止。
               * **配信方式:** ライブビュー用エンドポイント (`/camera/video_feed`) は MJPEG ストリーミングを採用し、ポーリング負荷を軽減。
+      * **Task & State Management:**
+          * **Background Threads:** Sweep測定のような長時間のハードウェア操作は、APIスレッドをブロックしないよう非同期スレッド（`_run_sweep_operation`）に委譲する。
+          * **Thread Safety:** 複数スレッド（API、タスク、監視ループ）から同時にアクセスされる状態（`app_state.sweep_operation`等）の破壊を防ぐため、専用のロック機構 (`sweep_state_lock`, `stage_command_lock`, `_io_lock`) を用いて厳密な排他制御を行う。
       * **Logging:** `backend/utils/logger.py` による一元管理。
 
 ### 2.2 ログ・ステータス管理 (Logging & Status)

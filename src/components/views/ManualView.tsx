@@ -39,7 +39,6 @@ export function ManualView() {
         isSystemBusy,
         setIsSystemBusy,
         isRecording,
-        setIsRecording,
         stageSettings,
     } = useAppStore(useShallow((state) => ({
         isStageConnected: state.isStageConnected,
@@ -48,7 +47,6 @@ export function ManualView() {
         isSystemBusy: state.isSystemBusy,
         setIsSystemBusy: state.setIsSystemBusy,
         isRecording: state.isRecording,
-        setIsRecording: state.setIsRecording,
         stageSettings: state.stageSettings,
     })));
 
@@ -73,10 +71,21 @@ export function ManualView() {
     const [sweepSpeed, setSweepSpeed] = useState("10"); //[deg/s]
     const [isSweeping, setIsSweeping] = useState(false);
     const [autoRecord, setAutoRecord] = useState(false); // 自動録画のON/OFF
+    // Sweep の progress API から受け取った状態を、そのまま UI に表示するためのキャッシュ。
+    // operationId / phase / percent / message / remainingMs をまとめて持たせておくことで、
+    // 進捗バー、残り時間、状態文言を同じ source of truth から描画できます。
+    const [sweepProgress, setSweepProgress] = useState<{
+        operationId: string | null;
+        phase: string;
+        percent: number;
+        message: string;
+        remainingMs: number;
+    } | null>(null);
 
-    // タイマー管理用Ref (中断時にクリアするため)
-    const recordStartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const recordStopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // 予約タイマーや progress polling の interval は、停止・終了・破棄時に必ず止める必要があります。
+    // そのため React state ではなく ref に保持して、どのタイミングでも即座に clear できるようにしています。
+    const sweepProgressTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+    const sweepOperationId = useRef<string | null>(null);
 
     // Zodによるバリデーション
     const stepVal = angleInputSchema.safeParse(moveStep);
@@ -85,11 +94,8 @@ export function ManualView() {
     const sweepEndVal = angleInputSchema.safeParse(sweepEnd);
     const sweepSpeedVal = manualControlSchema.shape.sweepSpeed.safeParse(sweepSpeed);
 
-    const traceManualView = (message: string, details?: Record<string, unknown>) => {
-        const payload = details ? `${message} ${JSON.stringify(details)}` : message;
-        console.log(payload);
-        systemApi.postLogs("INFO", payload).catch((e) => console.debug("※ログ送信も失敗しました:", e));
-    };
+    // Note: Detailed trace logs were removed to avoid flooding the log store.
+    // Keep high-level `systemApi.postLogs` for important events only.
 
     /**
      * ステージの動作完了を監視（ポーリング）する非同期関数。
@@ -111,7 +117,7 @@ export function ManualView() {
         let errorCount = 0;
         const MAX_ERRORS = 5; // 連続5回（約2.5秒）のエラーまでは許容する
 
-        traceManualView("[ManualView] waitForIdle start", { timeoutMs });
+        // start waiting for idle
 
         return new Promise<void>((resolve, reject) => {
             const checkInterval = setInterval(async () => {
@@ -127,11 +133,7 @@ export function ManualView() {
                     // バックエンドに今の状況（角度とBusy状態）を尋ねる
                     const res = await stageApi.getPosition();
 
-                    traceManualView("[ManualView] waitForIdle poll", {
-                        current_angle: res.current_angle,
-                        is_busy: res.is_busy,
-                        errorCount,
-                    });
+                    // polling; update handled below
 
                     // 正常に取得できたら、エラーカウントをリセットします
                     errorCount = 0;
@@ -141,7 +143,7 @@ export function ManualView() {
                     // is_busyがfalseになったら移動完了とみなす
                     if (!res.is_busy) {
                         clearInterval(checkInterval); //タイマーを止めて待機完了にする
-                        traceManualView("[ManualView] waitForIdle resolved");
+                        // resolved
                         resolve(); // Promiseを解決（await waitForIdle() がここで終わる）
                     }
                 } catch (e) {
@@ -159,6 +161,46 @@ export function ManualView() {
             }, 500) // 500ms = 0.5秒ごとに実行
         })
     }
+
+    // backend の sweep/progress ポーリングを止める共通関数。
+    // 不要な interval が残ると、画面遷移後も API を叩き続けてしまうため、
+    // sweep の終了処理・失敗処理・アンマウント処理で必ず通します。
+    const clearSweepProgressPolling = () => {
+        if (sweepProgressTimer.current) {
+            clearInterval(sweepProgressTimer.current);
+            sweepProgressTimer.current = null;
+        }
+    };
+
+    // sweep の正常終了・キャンセル・失敗で共通に通る後始末。
+    // ここで UI 状態、録画、タイマー、進捗表示をまとめて片付けることで、
+    // 個別の分岐で同じ片付け処理を重複させないようにしています。
+    const finishSweepSession = async (message: string, level: "success" | "warning" | "error" = "success") => {
+        clearSweepProgressPolling();
+        sweepOperationId.current = null;
+        setIsSweeping(false);
+        setIsSystemBusy(false);
+        setSweepProgress(null);
+
+        if (level === "success") {
+            toast.success(message);
+            systemApi.postLogs("INFO", message).catch((e) => console.debug("※ログ送信も失敗しました:", e));
+        } else if (level === "warning") {
+            toast.warning(message);
+            systemApi.postLogs("WARNING", message).catch((e) => console.debug("※ログ送信も失敗しました:", e));
+        } else {
+            toast.error(message);
+            systemApi.postLogs("ERROR", message).catch((e) => console.debug("※ログ送信も失敗しました:", e));
+        }
+    };
+
+    useEffect(() => {
+        // コンポーネントが破棄される瞬間に、残っている interval / timeout を止める。
+        // これをしないと、unmount 後も state 更新が走って React 警告の原因になります。
+        return () => {
+            clearSweepProgressPolling();
+        };
+    }, []);
 
     // 接続状態の同期
     // ステージが接続された時、または再接続された時に、現在の角度を取得しに行きます。
@@ -200,17 +242,17 @@ export function ManualView() {
      */
     const performMove = async (actionName: string, moveFn: () => Promise<void>) => {
         if (isSystemBusy) return; // 既に動いている場合は二重実行防止
-        traceManualView("[ManualView] performMove start", { actionName });
+        // perform move start
         setIsSystemBusy(true); // UI全体をロック（ボタンを押せなくする）
         stopSignal.current = false; // 停止シグナルをリセット
 
         try {
-            traceManualView("[ManualView] performMove executing moveFn", { actionName });
+            // executing moveFn
             await moveFn(); // 実際の移動コマンドを実行
-            traceManualView("[ManualView] performMove waiting for idle", { actionName });
+            // waiting for idle
             await waitForIdle(); // 移動が終わるまでここで待機（ポーリング開始）
 
-            traceManualView("[ManualView] performMove idle confirmed", { actionName, stopSignal: stopSignal.current });
+            // idle confirmed
 
             if (stopSignal.current) {
                 toast.warning(`${actionName} Stopped`);
@@ -224,7 +266,7 @@ export function ManualView() {
             toast.error(`${actionName} Failed`);
             systemApi.postLogs("ERROR", `${actionName} Failed: ${e}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
-            traceManualView("[ManualView] performMove finally unlock", { actionName });
+                // finally unlock
             setIsSystemBusy(false); // 処理が終わったら（成功でも失敗でも）ロック解除
         }
     }
@@ -237,10 +279,10 @@ export function ManualView() {
         performMove("Step Move", async () => {
             const target = Number(moveStep) * direction;
 
-            traceManualView("[ManualView] rotateStage request", { direction, moveStep, target });
+            // rotateStage request
 
-            const res = await stageApi.moveRelative(target);
-            traceManualView("[ManualView] rotateStage response", res);
+            await stageApi.moveRelative(target);
+            // rotateStage response
         })
     }
 
@@ -250,9 +292,9 @@ export function ManualView() {
     const goOrigin = () => {
         performMove("Homing", async () => {
             toast.info("Homing...");
-            traceManualView("[ManualView] homing request");
-            const res = await stageApi.home();
-            traceManualView("[ManualView] homing response", res);
+            // homing request
+            await stageApi.home();
+            // homing response
             //toast.success("Home position reached");
         })
     }
@@ -266,9 +308,9 @@ export function ManualView() {
 
         performMove("Absolute Move", async () => {
             toast.info(`Moving to ${val}°...`);
-            traceManualView("[ManualView] absolute move request", { targetAngle: val });
-            const res = await stageApi.moveAbsolute(val);
-            traceManualView("[ManualView] absolute move response", res);
+            // absolute move request
+            await stageApi.moveAbsolute(val);
+            // absolute move response
         })
     }
 
@@ -286,19 +328,17 @@ export function ManualView() {
      * 6. 完了後、速度設定をデフォルトに復帰させる。
      */
     const handleSweep = async () => {
-        const { pulsesPerDegree, minSpeedPPS, accelTimeMS, maxSpeedLimitPPS } = stageSettings;
+        const { pulsesPerDegree } = stageSettings;
 
-        // 【修正】Zodによる動的バリデーションと変換
-        // コンポーネント内の動的な値(stageSettings)を参照するため、ここでスキーマを定義します。
-        // transformを使って「100PPS単位への丸め」を行い、補正後の値とフラグを返します。
+        // sweepSpeed は UI 入力の文字列から、バックエンドへ送る速度値に変換されます。
+        // ここではステップ分解能に合わせて PPS 単位に丸め、機械が受け入れやすい値にしています。
         const speedSchema = z.coerce.number()
             .positive()
             .transform((val) => {
                 const pps = Math.floor(val * pulsesPerDegree);
-                // 100PPS単位への丸め処理
                 if (pps % 100 !== 0) {
                     const roundedPPS = Math.round(pps / 100) * 100;
-                    const safePPS = Math.max(100, roundedPPS); // 0にならないよう最低値を確保
+                    const safePPS = Math.max(100, roundedPPS);
                     const adjustedSpeed = safePPS / pulsesPerDegree;
                     return { speed: adjustedSpeed, pps: safePPS, isAdjusted: true };
                 }
@@ -313,142 +353,109 @@ export function ManualView() {
             return;
         }
 
-        // スキーマ定義(z.coerce.number等)に従い数値として取得
         const start = Number(sweepStartVal.data);
         const end = Number(sweepEndVal.data);
-        const { pps: rawPPS, isAdjusted } = speedResult.data;
+        const { speed: requestedSpeedDeg, pps: rawPPS, isAdjusted } = speedResult.data;
 
         if (isSystemBusy) return;
 
+        // 手動録画（ヘッダーからの操作など）が既に進行中の場合は、
+        // スイープに伴う自動録画やファイル書き込みの競合を防ぐため、スイープ開始をブロックします。
+        if (isRecording) {
+            toast.error("Please stop manual recording before starting a sweep.");
+            systemApi.postLogs("WARNING", "Sweep rejected: Manual recording is already in progress.").catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            return;
+        }
+
         setIsSystemBusy(true);
         setIsSweeping(true);
+        setSweepProgress(null);
         stopSignal.current = false;
-
-        // 【Note】この log は開発者ツール向けのデバッグのみ。
-        console.log("--- Sweep Sequence Started ---");
+        clearSweepProgressPolling();
 
         try {
-            // Zodで補正された場合は通知
+            // 速度が丸められた場合は、実際に使われる速度をユーザーへ明示する。
             if (isAdjusted) {
                 toast.warning(`Speed adjusted to ${rawPPS} PPS to match 100PPS unit.`);
                 systemApi.postLogs("WARNING", `Sweep speed adjusted to ${rawPPS} PPS to match 100PPS unit.`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             }
 
-            // 安全リミット (Zodで計算済みのPPSを使用し、上限チェックのみ行う)
-            const safePPS = Math.max(minSpeedPPS, Math.min(maxSpeedLimitPPS, rawPPS));
-            // 実際に適用される速度(deg/s)を再計算（ログ表示用）
-            const actualSpeedDeg = safePPS / pulsesPerDegree;
-            //速度設定
-            toast.info(`Setting speed to ${actualSpeedDeg.toFixed(2)} deg/s (${safePPS} PPS)`);
-            systemApi.postLogs("INFO", `Setting speed to ${actualSpeedDeg.toFixed(2)} deg/s (${safePPS} PPS)`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
-            await stageApi.setSpeed(minSpeedPPS, safePPS, accelTimeMS);
+            // フロントはもはや sweep を自前で走らせず、バックエンドへ計画(start/end/speed/autoRecord)を渡して委譲する。
+            // ここで返る operation_id が、その後の progress ポーリングのキーになる。
+            toast.info(`Starting sweep from ${start}° to ${end}°...`);
+            systemApi.postLogs("INFO", `Sweep requested from ${start}° to ${end}°`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
 
-            // 【物理計算】助走距離（Approach Margin）の算出
-            // モーターは台形駆動で加速するため、Start位置で確実に等速になっているよう、手前から助走します。
-            // 加速距離 d = (v_start + v_end) / 2 * t
-            const startSpeedDeg = minSpeedPPS / pulsesPerDegree;
-            const accelTimeSec = accelTimeMS / 1000;
-            const accelDist = ((startSpeedDeg + actualSpeedDeg) / 2) * accelTimeSec; //加速距離
+            const response = await stageApi.sweepRun(start, end, requestedSpeedDeg, autoRecord);
+            sweepOperationId.current = response.operation_id;
+            // 進捗バーは backend の plan を初期表示として使う。
+            // ここではまだ実機の動作は始まっていないので、prepare 相当の状態を描画するだけに留める。
+            setSweepProgress({
+                operationId: response.operation_id,
+                phase: "prepare",
+                percent: 0,
+                message: "Preparing sweep",
+                remainingMs: response.plan.estimated_approach_ms,
+            });
 
-            // 安全係数(1.2)を掛け、最低1度は確保
-            const margin = Math.max(1.0, accelDist * 1.2);
+            // progress API を 0.5 秒ごとに問い合わせ、percent / remaining / phase を UI に反映する。
+            // polling は backend の sweepOperationId に紐づくので、複数 sweep の取り違えを防げる。
+            let pollErrorCount = 0;
+            sweepProgressTimer.current = setInterval(async () => {
+                const operationId = sweepOperationId.current;
+                if (!operationId) return;
 
-            // 【修正】スイープ方向の判定と助走位置の計算
-            // Start > End の場合（逆方向）は、marginを引くのではなく足す必要があります。
-            const direction = end >= start ? 1 : -1;
-            const actualStartRaw = start - (margin * direction);
-            const actualEndRaw = end + (margin * direction);
+                try {
+                    // backend の progress は、今の phase・進捗率・残り時間・表示メッセージを返す。
+                    // ここではそれをそのまま UI state に落として描画するだけにしている。
+                    const progress = await stageApi.sweepProgress(operationId);
+                    pollErrorCount = 0;
 
-            // 【修正】ステップ分解能に合わせて丸める
-            // 計算上の小数が細かすぎるとログが見づらく、実機でも意味がないため、ステップ単位に揃えます。
-            const alignToStep = (deg: number) => {
-                const steps = Math.round(deg * pulsesPerDegree);
-                return steps / pulsesPerDegree;
-            };
+                    setCurrentAngle(progress.current_deg);
+                    setSweepProgress({
+                        operationId: progress.operation_id,
+                        phase: progress.phase,
+                        percent: progress.percent,
+                        message: progress.message,
+                        remainingMs: progress.estimated_remaining_ms,
+                    });
 
-            const actualStart = alignToStep(actualStartRaw);
-            const actualEnd = alignToStep(actualEndRaw);
-
-            // タイムアウト時間の計算関数
-            // 距離(deg) / 速度(deg/s) = 所要時間(s)。これに安全係数(1.5倍)と固定バッファ(10秒)を加える。
-            // これにより、非常に遅いSweep動作でもタイムアウトせず待機できます。
-            const calcTimeout = (deg: number) => (deg / actualSpeedDeg * 1.5 * 1000) + 10000;
-
-            // 1. スタート位置へ移動
-            // 助走開始位置（actualStart）へ移動します。
-            const distToStart = Math.abs(actualStart - currentAngle); //タイムアウトの計算のために、移動距離（角度）を計算
-            toast.info(`Moving to Approach Position (${actualStart.toFixed(4)}°)...`);
-            systemApi.postLogs("INFO", `Sweep: Moving to Approach Position (${actualStart.toFixed(4)}°)`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
-            await stageApi.moveAbsolute(actualStart);
-            await waitForIdle(calcTimeout(distToStart)); // 計算したタイムアウト値を使用
-
-            // 途中でストップボタンが押されていたら、ここで中断
-            if (stopSignal.current) {
-                toast.warning("Sweep Cancelled by User");
-                systemApi.postLogs("WARNING", "Sweep Cancelled by User during approach").catch((e) => console.debug("※ログ送信も失敗しました:", e));
-                return;
-            }
-
-            // --- 時間制御による自動録画ロジック ---
-            if (autoRecord) {
-                // 1. 録画開始までの遅延時間 (加速時間 + 等速アプローチ時間)
-                // Margin区間のうち、加速が終わった後の残りの距離を等速で進む時間を足す
-                const distConstant = margin - accelDist; //等速距離
-                const timeConstant = distConstant / actualSpeedDeg; //等速時間
-                const delayToStartMS = (accelTimeSec + timeConstant) * 1000;
-
-                // 2. 録画時間 (StartからEndまでの移動時間)
-                const sweepDist = Math.abs(end - start); //移動距離
-                const sweepDurationMS = (sweepDist / actualSpeedDeg) * 1000; //録画継続時間
-
-                toast.info(`Auto Rec: Starts in ${(delayToStartMS / 1000).toFixed(2)}s`);
-                systemApi.postLogs("INFO", `Sweep Auto Rec scheduled: Starts in ${(delayToStartMS / 1000).toFixed(2)}s`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
-
-                recordStartTimer.current = setTimeout(() => {
-                    if (!stopSignal.current) setIsRecording(true);
-                }, delayToStartMS);
-
-                recordStopTimer.current = setTimeout(() => {
-                    if (!stopSignal.current) setIsRecording(false);
-                }, delayToStartMS + sweepDurationMS);
-            }
-
-            toast.info(`Sweeping from ${start}° to ${end}° (Speed: ${actualSpeedDeg.toFixed(2)} deg/s)...`);
-            systemApi.postLogs("INFO", `Sweeping from ${start}° to ${end}° (Speed: ${actualSpeedDeg.toFixed(2)} deg/s)`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
-            // 2. エンド位置へ移動 (Sweep本番)
-            // 助走終了位置まで一気に移動することで、Start~End間は等速で通過します。
-            const distSweep = Math.abs(actualEnd - actualStart); //タイムアウト計算に使用する移動距離（角度）
-            await stageApi.moveAbsolute(actualEnd); // 助走終了位置まで移動
-            await waitForIdle(calcTimeout(distSweep)); // 計算したタイムアウト値を使用
-
-            if (stopSignal.current) {
-                toast.warning("Sweep Stopped mid-way");
-                systemApi.postLogs("WARNING", "Sweep Stopped mid-way by user").catch((e) => console.debug("※ログ送信も失敗しました:", e));
-            } else {
-                toast.success("Sweep All Finished");
-                systemApi.postLogs("INFO", "Sweep All Finished successfully").catch((e) => console.debug("※ログ送信も失敗しました:", e));
-            }
+                    if (progress.status !== "running") {
+                        // backend が running 以外を返したら、その時点で sweep セッションの片付けへ進む。
+                        // ここで finishSweepSession を通すと、タイマー・録画・UI ロックが一括で戻る。
+                        if (progress.status === "succeeded") {
+                            void finishSweepSession("Sweep All Finished", "success");
+                        } else if (progress.status === "cancelled") {
+                            void finishSweepSession("Sweep Cancelled", "warning");
+                        } else {
+                            void finishSweepSession(progress.message || "Sweep interrupted or failed", "error");
+                        }
+                    }
+                } catch (e) {
+                    // progress ポーリング失敗は一時的な通信断でも起こり得るため、数回までは継続する。
+                    pollErrorCount += 1;
+                    console.warn(`Sweep progress poll error (${pollErrorCount}/5):`, e);
+                    if (pollErrorCount >= 5) {
+                        // 連続で失敗したら、UI 側だけでも安全に解放する。
+                        // backend 側はすでに動いている可能性があるため、ここでは進捗追跡を諦めてロック解除する。
+                        clearSweepProgressPolling();
+                        sweepOperationId.current = null;
+                        setIsSweeping(false);
+                        setIsSystemBusy(false);
+                        toast.error("Lost progress updates from backend.");
+                        systemApi.postLogs("ERROR", "Sweep progress polling failed repeatedly").catch((logErr) => console.debug("※ログ送信も失敗しました:", logErr));
+                    }
+                }
+            }, 500);
         } catch (e) {
             console.error(e);
-            toast.error("Sweep interrupted or failed");
-            systemApi.postLogs("ERROR", `Sweep interrupted or failed: ${e}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
-        } finally {
+            // sweep の開始自体が失敗した場合も、UI と録画状態を確実に元へ戻す。
+            clearSweepProgressPolling();
+            sweepOperationId.current = null;
+            setSweepProgress(null);
             setIsSweeping(false);
             setIsSystemBusy(false);
-            // タイマーのクリア（念のため）
-            if (recordStartTimer.current) clearTimeout(recordStartTimer.current);
-            if (recordStopTimer.current) clearTimeout(recordStopTimer.current);
-            if (autoRecord && !stopSignal.current) setIsRecording(false);
-
-            // 【追加】速度設定をデフォルト（高速）に戻す
-            // スイープで低速に設定されたままだと、その後の手動操作（Jog/Absolute）も遅くなってしまうため、
-            // 処理終了後（成功・中断・エラー問わず）に必ず元の設定に戻します。
-            try {
-                await stageApi.setSpeed(minSpeedPPS, maxSpeedLimitPPS, accelTimeMS);
-                console.log("Speed reset to default.");
-            } catch (e) {
-                console.warn("Failed to reset speed:", e);
-            }
+            toast.error("Sweep interrupted or failed");
+            systemApi.postLogs("ERROR", `Sweep interrupted or failed: ${e}`).catch((logErr) => console.debug("※ログ送信も失敗しました:", logErr));
         }
     }
 
@@ -459,11 +466,6 @@ export function ManualView() {
     const handleStop = async () => {
         try {
             stopSignal.current = true; // 停止ボタンが押されたことを記録（waitForIdle後の処理をキャンセルするため）
-
-            // 録画予約タイマーを即座にキャンセル
-            if (recordStartTimer.current) clearTimeout(recordStartTimer.current);
-            if (recordStopTimer.current) clearTimeout(recordStopTimer.current);
-            setIsRecording(false);
 
             await stageApi.stop(false); // immediate = false (減速停止)
             toast.info("Stopping...");
@@ -741,6 +743,27 @@ export function ManualView() {
                                             {isSweeping ? "Running..." : "Run"}
                                         </Button>
                                     </div>
+                                    {sweepProgress && (
+                                        // backend から受け取った progress を、そのまま視覚化する表示ブロック。
+                                        // phase / percent / message / remainingMs を1か所に集約して出すことで、
+                                        // フロントとバックエンドの状態がずれていないことをユーザーが確認できる。
+                                        <div className="space-y-1 rounded-lg border border-border/60 bg-secondary/20 p-2">
+                                            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                                                <span className="font-medium uppercase tracking-wider">{sweepProgress.phase}</span>
+                                                <span>{sweepProgress.percent}%</span>
+                                            </div>
+                                            <div className="h-2 overflow-hidden rounded-full bg-muted">
+                                                <div
+                                                    className="h-full rounded-full bg-amber-600 transition-all duration-300"
+                                                    style={{ width: `${Math.max(0, Math.min(100, sweepProgress.percent))}%` }}
+                                                />
+                                            </div>
+                                            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                                                <span className="truncate pr-2">{sweepProgress.message}</span>
+                                                <span>{Math.max(0, Math.ceil(sweepProgress.remainingMs / 1000))}s left</span>
+                                            </div>
+                                        </div>
+                                    )}
                                     {!sweepSpeedVal.success && (
                                         <p className="text-[10px] text-destructive leading-tight text-right">
                                             {sweepSpeedVal.error.issues[0].message}
