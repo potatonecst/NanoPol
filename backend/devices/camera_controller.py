@@ -828,29 +828,27 @@ class CameraController:
         return success
 
     # ============================================================================
-    # 【録画】 start_recording / stop_recording
+    # 【録画】 prepare_recording / trigger_recording / start_recording / stop_recording
     # ============================================================================
 
-    def start_recording(self) -> bool:
-        """【Recording】動画（マルチページTIFF）の保存を開始する（常に自動保存）"""
-        if not self.is_connected or self.is_recording:
+    def prepare_recording(self) -> bool:
+        """【Recording】録画の事前準備（ファイル作成とオープン）を行う。
+        
+        Sweep測定時の「遅延ゼロ録画」のために使用します。
+        このメソッドではTIFF/CSVファイルを作成して開きますが、`is_recording` フラグは False のままにします。
+        そのため、裏で走っている `_capture_loop` (特急レーン) はまだ書き込みを開始しません（スタンバイ状態）。
+        """
+        if not self.is_connected or self.is_recording or self.tiff_writer is not None:
             return False
-            
-        # 動画はSSD直書きのリアルタイム性が重要なため、ダイアログは出さずに常に自動保存とする
+
         out_dir = self.settings.get("outputDirectory", os.getcwd())
         prefix = self.settings.get("recordPrefix", "record_")
         # 直下にファイルをばら撒かず、録画専用のサブフォルダへ集約する。
-        # これにより、テスト実行時や開発時に outputDirectory の直下が record*.tif / .csv で
-        # 埋まるのを防ぎ、生成物をまとめて .gitignore しやすくする。
         record_dir = os.path.join(out_dir, "videos")
-        # 動画保存でも snapshot と同様に、保存先・接頭辞・raw TIFF の扱いを
-        # ログに残しておくと、Windows での権限問題やパス誤設定を追いやすい。
         logger.info(
-            f"{self.log_tag} Recording save requested: out_dir={out_dir}, record_dir={record_dir}, prefix={prefix}, keepRawTiff={self.settings.get('keepRawTiff', True)}"
+            f"{self.log_tag} Recording prepare requested: out_dir={out_dir}, record_dir={record_dir}, prefix={prefix}, keepRawTiff={self.settings.get('keepRawTiff', True)}"
         )
         try:
-            # 録画先ディレクトリの作成失敗は、ファイル書き込みより前に検出して
-            # より原因を絞り込めるようにしている。
             os.makedirs(record_dir, exist_ok=True)
         except Exception:
             logger.exception(f"{self.log_tag} Failed to create recording output directory: {record_dir}")
@@ -858,7 +856,6 @@ class CameraController:
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.record_filepath = os.path.join(record_dir, f"{prefix}{timestamp}.tif")
-        # 実際に作成される TIFF のフルパスを残し、CSV と合わせて後から追跡しやすくする。
         logger.info(f"{self.log_tag} Recording target path: {self.record_filepath}")
 
         try:
@@ -866,9 +863,9 @@ class CameraController:
             csv_filepath = os.path.join(record_dir, f"{prefix}{timestamp}.csv")
 
             with self._recording_lock:
+                # append=True モードで TIFF ファイルを開いておく（この処理に数十〜数百msかかる場合がある）
                 self.tiff_writer = tifffile.TiffWriter(self.record_filepath, append=True)
 
-                # CSVファイルも同時に開き、ヘッダーを書き込む
                 self.csv_file = open(csv_filepath, mode='w', newline='', encoding='utf-8')
                 self.csv_writer = csv.writer(self.csv_file)
                 self.csv_writer.writerow([
@@ -880,25 +877,55 @@ class CameraController:
                     "Input_BPP",
                 ])
                 self.record_frame_count = 0
-
-                # 全ての準備が成功した場合にのみ、録画中フラグを立てる（重要）
-                self.is_recording = True
-            logger.info(f"{self.log_tag} Recording started: {self.record_filepath}")
+                
+                # 重要: ここでは is_recording = False のままとする（スタンバイ）
+                # これにより、ファイルは開いているが、_capture_loop はまだ書き込みを行わない
+            logger.info(f"{self.log_tag} Recording prepared (standby): {self.record_filepath}")
             return True
         except Exception:
-            logger.exception(f"{self.log_tag} Failed to start recording")
-            # 失敗した場合は、途中で開いたファイルをクリーンアップする
+            logger.exception(f"{self.log_tag} Failed to prepare recording")
+            # 失敗した場合はクリーンアップ
             if self.tiff_writer: self.tiff_writer.close()
             if self.csv_file: self.csv_file.close()
+            self.tiff_writer = None
+            self.csv_file = None
+            self.csv_writer = None
             return False
+
+    def trigger_recording(self) -> bool:
+        """【Recording】スタンバイ状態から録画を即座に開始する。
+        
+        Sweepの Start 角度を超えた瞬間に呼び出されます。
+        `is_recording` フラグを True にする「だけ」の極めて軽量な処理です。
+        フラグが立つと、裏で回っている `_capture_loop` が次のフレームから即座に TIFFへの直書きを開始します。
+        """
+        if not self.is_connected or self.is_recording or self.tiff_writer is None:
+            return False
+        with self._recording_lock:
+            self.is_recording = True
+        logger.info(f"{self.log_tag} Recording triggered: {self.record_filepath}")
+        return True
+
+    def start_recording(self) -> bool:
+        """【Recording】動画の保存を開始する（準備＋即時トリガー）
+        
+        ヘッダーの手動録画ボタン等から呼ばれた場合に使用します。
+        既存の挙動を変えないためのラッパー（包み紙）です。
+        """
+        if self.prepare_recording():
+            return self.trigger_recording()
+        return False
 
     def stop_recording(self) -> Optional[str]:
         """【Recording】動画の保存を停止し、事後処理（貨物レーン）をキックする"""
-        if not self.is_recording:
+        # is_recording が False でも、prepare されて tiff_writer が開いているなら
+        # 閉じる処理（キャンセル）へ進む必要があるため条件を緩和
+        if not self.is_recording and self.tiff_writer is None:
             return None
 
         # capture loop 側と writer を取り合わないように、参照を切るところまでをロックする。
         with self._recording_lock:
+            was_recording = self.is_recording
             self.is_recording = False
             tiff_writer = self.tiff_writer
             csv_file = self.csv_file
@@ -913,8 +940,13 @@ class CameraController:
         if csv_file is not None:
             csv_file.close()
             
-        logger.info(f"{self.log_tag} Recording stopped: {self.record_filepath}")
+        logger.info(f"{self.log_tag} Recording stopped: {self.record_filepath} (was_recording={was_recording})")
         
+        # 録画が開始されておらず（準備段階でキャンセルされた等）、フレームが0なら
+        # MP4変換などは不要なのでここで終了
+        if not was_recording or self.record_frame_count == 0:
+            return self.record_filepath
+
         # MP4への自動変換がONなら、重い処理を非同期スレッド(貨物レーン)に投げる
         if self.settings.get("autoConvertMp4", False):
             threading.Thread(

@@ -10,6 +10,7 @@ import asyncio
 import json
 import signal
 import threading
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -137,14 +138,20 @@ def _build_sweep_plan(start_deg: float, end_deg: float, speed_deg_s: float) -> d
 
     actual_start = align_to_step(actual_start_raw)
     actual_end = align_to_step(actual_end_raw)
-    wrapped_by_360 = False
+    
+    total_offset = 0
     # 負の角度が出た場合は 360 度加算で正の表現へ寄せます。
     # これにより allow_overflow を許可した絶対移動でも、
     # デバイス側の「負パルス禁止」ルールに触れにくい経路を作れます。
     while actual_start < 0 or actual_end < 0:
         actual_start += 360
         actual_end += 360
-        wrapped_by_360 = True
+        total_offset += 360
+
+    # 【重要】トリガー判定に使う角度も、移動位置と同じ分だけオフセットさせます。
+    # これにより 0/360度の境界をまたぐスイープでも、同じ座標系で正しく比較できます。
+    trigger_start = start_deg + total_offset
+    trigger_end = end_deg + total_offset
 
     # 助走位置から終端位置までを1本の相対移動として扱うことで、
     # chunk 分割や途中停止を避け、速度制御と安全チェックを単純化します。
@@ -162,11 +169,13 @@ def _build_sweep_plan(start_deg: float, end_deg: float, speed_deg_s: float) -> d
         "kind": "sweep",
         "input_start_deg": float(start_deg),
         "input_end_deg": float(end_deg),
+        "trigger_start_deg": trigger_start,
+        "trigger_end_deg": trigger_end,
         "actual_start_deg": actual_start,
         "actual_end_deg": actual_end,
         "relative_total_deg": relative_total,
         "direction": "forward" if direction >= 0 else "reverse",
-        "wrapped_by_360": wrapped_by_360,
+        "total_offset_deg": total_offset,
         "estimated_approach_ms": estimated_approach_ms,
         "estimated_sweep_ms": estimated_sweep_ms,
         "requested_speed_deg_s": float(speed_deg_s),
@@ -350,9 +359,10 @@ def _run_sweep_operation(operation_id: str, request_data: dict, plan: dict):
     フロー概要:
     1) 受理済み状態をセット -> progress API が operation_id を返せるようにする
     2) 速度設定を sweep 用に切り替え
-    3) 助走位置へ絶対移動（allow_overflow=True）
+    3) 助走位置へ絶対移動（allow_overflow=True）し、到着まで待機
     4) 助走完了後、相対移動で sweep 本体を一度に実行
-    5) 後処理（速度復帰、成功/失敗状態のセット）
+    5) 高速監視ループで Start/End 角度をまたいだ瞬間に録画トリガーを引く
+    6) 後処理（速度復帰、成功/失敗状態のセット、録画の安全終了）
 
     重要な設計上のポイント:
     - キャンセル判定: 各主要ステップの後に `_get_sweep_state_snapshot().get("cancel_requested")` を
@@ -381,8 +391,47 @@ def _run_sweep_operation(operation_id: str, request_data: dict, plan: dict):
             finalize_estimated_ms=1000.0,
         )
 
+        auto_record = request_data.get("auto_record", False)
+
+        # 【録画の事前準備】
+        # 録画用ファイル（TIFF/CSV）の作成とオープンをここで行います。
+        # ファイルI/O（読み書き）は、OSやディスクの状態によって数秒間フリーズする可能性があるため、
+        # メインの実行処理を止めないよう、別スレッド（Thread）を使ってタイムアウト付きで実行します。
+        if auto_record:
+            prepare_success = False
+
+            # スレッド内で実行する処理の定義
+            def _do_prepare():
+                # `nonlocal` キーワード:
+                # この関数（_do_prepare）の外側にある変数（prepare_success）を、内部から書き換えるために必要です。
+                nonlocal prepare_success
+                try:
+                    # prepare_recording: ファイルを開いてスタンバイするメソッド。
+                    # 戻り値: 成功なら True, 失敗なら False。
+                    prepare_success = camera.prepare_recording()
+                except Exception:
+                    prepare_success = False
+            
+            # 1. 新しい作業用スレッド（Thread）を作成します。
+            # target: スレッドで実行する関数。 daemon=True: アプリ終了時にこのスレッドも強制終了させる設定。
+            prepare_thread = threading.Thread(target=_do_prepare, daemon=True)
+            # 2. スレッドの実行を開始（非同期にスタート）します。
+            prepare_thread.start()
+            
+            # 3. .join(timeout=3.0) メソッド:
+            # 「指定した秒数（ここでは3秒）だけ、そのスレッドの完了を待ち合わせる」という命令です。
+            # 3秒以内に終われば即座に次の行へ進みます。3秒経っても終わらなければ、諦めて次の行へ進みます。
+            prepare_thread.join(timeout=3.0)
+            
+            # 4. .is_alive() メソッド:
+            # 3秒経った後もスレッドがまだ動いている（alive）かどうかをチェックします。
+            # True の場合は、ファイルI/Oがフリーズ（タイムアウト）していると判断し、エラーにします。
+            if prepare_thread.is_alive():
+                raise Exception("Recording preparation timed out (>3s). Storage may be unresponsive.")
+            if not prepare_success:
+                raise Exception("Failed to prepare recording. Check storage permissions and disk space.")
+
         # Sweep の本番前には速度設定を専用値へ切り替えます。
-        # ここで失敗した場合は、以降の移動を行わず失敗終了に倒します。
         if not stage.set_speed(stage.speed_min_pps, plan["safe_speed_pps"], stage.speed_accel_ms):
             raise StageCommandError("Failed to apply sweep speed")
 
@@ -390,32 +439,71 @@ def _run_sweep_operation(operation_id: str, request_data: dict, plan: dict):
             _set_sweep_state(status="cancelled", phase="prepare", percent=0, message="Sweep cancelled before start")
             return
 
-        # 1段目: 助走位置まで絶対移動します。
-        # allow_overflow=True を使うのは、助走の都合で 360 度を越える場合でも
-        # デバイスが拒否しないようにするためです。ただし安全性はパルスベースで別途担保します。
+        # 1段目: 助走位置（Startより少し手前）まで絶対移動します。
         _set_sweep_state(phase="approach", phase_started_at_ms=_now_ms(), message="Moving to approach position")
         stage.move_absolute(plan["actual_start_deg"], allow_overflow=True)
 
-        if _get_sweep_state_snapshot().get("cancel_requested"):
-            _set_sweep_state(status="cancelled", phase="approach", message="Sweep cancelled during approach")
-            return
+        # 【移動開始の検知待ち】
+        # monitor_loop (100ms) が is_busy=True を検知するまで最大 0.5秒待機します。
+        # これをしないと、移動開始前に while ループを抜けてしまう可能性があります。
+        wait_start = time.time()
+        while not app_state.is_busy and (time.time() - wait_start < 0.5):
+            time.sleep(0.02)
 
-        # 2段目: 助走位置から終端位置までを1回の相対移動で流し切ります。
-        # 分割移動を避けることで、途中で速度が崩れたり、停止点ごとに再判定が走るのを防ぎます。
-        #
-        # キャンセル処理:
-        # - 各段終了後に _get_sweep_state_snapshot().get("cancel_requested") をチェックしており、
-        #   フロントからのキャンセル要求が来ていれば安全に早期終了します。
+        while app_state.is_busy:
+            if _get_sweep_state_snapshot().get("cancel_requested"):
+                _set_sweep_state(status="cancelled", phase="approach", message="Sweep cancelled during approach")
+                return
+            # monitor_loop による app_state の更新を待ちます
+            time.sleep(0.05)
+
+        # 2段目: 助走位置から終端位置までを、1回の相対移動コマンドで流し切ります。
         _set_sweep_state(phase="sweep", phase_started_at_ms=_now_ms(), message="Sweeping")
         stage.move_relative(plan["relative_total_deg"], current_angle_hint=app_state.current_angle)
 
-        if _get_sweep_state_snapshot().get("cancel_requested"):
-            _set_sweep_state(status="cancelled", phase="finalize", percent=0, message="Sweep cancelled by user")
-            return
+        # 移動開始の検知待ち
+        wait_start = time.time()
+        while not app_state.is_busy and (time.time() - wait_start < 0.5):
+            time.sleep(0.02)
 
-        # 後処理として、通常の待機用速度設定に戻します。
-        # ここを抜けた後は手動操作や次回の別コマンドに戻れるよう、
-        # 実行状態を完了扱いにし、フラグ類も片付けます。
+        # 【本番移動中の高速監視と録画トリガー】
+        # 10ms間隔で app_state (モニターが 100ms ごとに更新) をチェックします。
+        direction_forward = plan["direction"] == "forward"
+        start_deg = plan["trigger_start_deg"]
+        end_deg = plan["trigger_end_deg"]
+        
+        has_started_recording = False
+        has_stopped_recording = False
+        
+        while app_state.is_busy:
+            if _get_sweep_state_snapshot().get("cancel_requested"):
+                _set_sweep_state(status="cancelled", phase="finalize", percent=0, message="Sweep cancelled by user")
+                return
+                
+            current_angle = app_state.current_angle
+            
+            if auto_record:
+                if not has_started_recording:
+                    # Start角度を越えたかを判定
+                    if (direction_forward and current_angle >= start_deg) or (not direction_forward and current_angle <= start_deg):
+                        camera.trigger_recording()
+                        has_started_recording = True
+                
+                if has_started_recording and not has_stopped_recording:
+                    # End角度を越えたかを判定
+                    if (direction_forward and current_angle >= end_deg) or (not direction_forward and current_angle <= end_deg):
+                        camera.stop_recording()
+                        has_stopped_recording = True
+
+            time.sleep(0.01)
+
+        # 【フェイルセーフ】
+        # 移動が終了しても録画が止まっていない場合は確実に停止させる
+        if auto_record and has_started_recording and not has_stopped_recording:
+            camera.stop_recording()
+            has_stopped_recording = True
+
+        # 後処理
         _set_sweep_state(phase="finalize", phase_started_at_ms=_now_ms(), message="Finalizing sweep")
         if not stage.set_speed(stage.speed_min_pps, stage.speed_max_pps, stage.speed_accel_ms):
             raise StageCommandError("Failed to restore default speed")
@@ -425,7 +513,19 @@ def _run_sweep_operation(operation_id: str, request_data: dict, plan: dict):
     except Exception as e:
         _set_sweep_state(status="failed", phase="finalize", message=str(e))
     finally:
+        # 【全経路共通の後始末】
+        if request_data.get("auto_record", False):
+            try:
+                # 既に停止済み（has_stopped_recording=True）なら重ねて呼ばないように
+                # ここではフラグが関数スコープなので、念のため CameraController 側の状態も考慮されるべきですが、
+                # 少なくともこのスレッド内での重複は防ぎます。
+                if not locals().get("has_stopped_recording", False):
+                    camera.stop_recording()
+            except Exception:
+                pass
+
         try:
+            # 速度を元に戻す処理（安全のため finally でも実行）
             stage.set_speed(stage.speed_min_pps, stage.speed_max_pps, stage.speed_accel_ms)
         except Exception:
             pass
@@ -1076,6 +1176,16 @@ def stage_sweep_run(req: SweepRunRequest):
     """Sweep を開始し、進捗追跡に必要な operation_id と計画を返す。"""
     if not stage.is_connected:
         raise HTTPException(status_code=400, detail="Stage not connected")
+
+    # 安全のためのバリデーション: スイープ時間が極端に短い（0.2秒未満）場合は拒否します。
+    # 理由: カメラの録画処理（ファイルのオープン・ヘッダー書き込み等）が完了する前に
+    # 停止命令が飛ぶと、TIFFファイルが破損して開けなくなるリスクが高いためです。
+    duration = abs(req.end_deg - req.start_deg) / req.speed_deg_s
+    if duration < 0.2:
+        raise HTTPException(
+            status_code=400, 
+            detail="Sweep duration too short (min 0.2s). Widen the angle or decrease the speed."
+        )
 
     # このエンドポイントは「実際の移動をここで完了させる」のではなく、
     # 「実行を受付けてバックグラウンドへ渡す」ことが責務です。

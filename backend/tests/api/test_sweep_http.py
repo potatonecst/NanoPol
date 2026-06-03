@@ -43,6 +43,9 @@ class _SweepTestGuard:
             main.stage.speed_min_pps = 500
             main.stage.speed_max_pps = 5000
             main.stage.speed_accel_ms = 200
+            main.stage._mock_move_cancel = True
+            main.stage._mock_pulse = 0
+            main.stage._mock_is_busy = False
             main.app_state.current_angle = 0.0
             main.app_state.is_busy = False
             main.app_state.is_measuring = False
@@ -61,28 +64,7 @@ def teardown_function():
     _guard.reset()
 
 
-def _patch_fast_sweep(monkeypatch, move_delay: float = 0.05):
-    def fake_set_speed(min_pps, max_pps, accel_time_ms):
-        return True
-
-    def fake_move_absolute(angle, allow_overflow=False):
-        time.sleep(move_delay)
-        main.app_state.current_angle = angle
-        return True
-
-    def fake_move_relative(delta_angle, current_angle_hint=None):
-        time.sleep(move_delay)
-        main.app_state.current_angle += delta_angle
-        return True
-
-    monkeypatch.setattr(main.stage, "set_speed", fake_set_speed)
-    monkeypatch.setattr(main.stage, "move_absolute", fake_move_absolute)
-    monkeypatch.setattr(main.stage, "move_relative", fake_move_relative)
-
-
 def test_sweep_run_returns_operation_and_progress(monkeypatch):
-    _patch_fast_sweep(monkeypatch, move_delay=0.03)
-
     response = client.post(
         "/stage/sweep/run",
         json={"start_deg": 10.0, "end_deg": 80.0, "speed_deg_s": 15.0, "auto_record": False},
@@ -105,21 +87,20 @@ def test_sweep_run_returns_operation_and_progress(monkeypatch):
     assert progress_body["status"] in {"running", "succeeded"}
     assert 0 <= progress_body["percent"] <= 100
 
-    for _ in range(50):
+    # Mock は合計で 1秒 (approach 0.5s + sweep 0.5s) ほどかかる
+    for _ in range(100):
         latest = client.get("/stage/sweep/progress", params={"operation_id": operation_id})
         assert latest.status_code == 200
         latest_body = latest.json()
         if latest_body["status"] == "succeeded":
             assert latest_body["percent"] == 100
             break
-        time.sleep(0.05)
+        time.sleep(0.1)
     else:
         raise AssertionError("sweep did not complete in time")
 
 
 def test_sweep_blocks_manual_move_while_running(monkeypatch):
-    _patch_fast_sweep(monkeypatch, move_delay=0.2)
-
     response = client.post(
         "/stage/sweep/run",
         json={"start_deg": 10.0, "end_deg": 80.0, "speed_deg_s": 15.0, "auto_record": False},
@@ -132,7 +113,52 @@ def test_sweep_blocks_manual_move_while_running(monkeypatch):
 
 
 def test_sweep_progress_rejects_unknown_operation_id(monkeypatch):
-    _patch_fast_sweep(monkeypatch, move_delay=0.01)
-
     response = client.get("/stage/sweep/progress", params={"operation_id": "sweep_missing"})
     assert response.status_code == 404
+
+def test_sweep_with_auto_record(monkeypatch):
+    """
+    auto_record=True で Sweep を実行した際、カメラの録画メソッドが
+    prepare -> trigger -> stop の順で正しく呼ばれることを確認するテスト。
+    """
+    # カメラの録画メソッドが呼ばれた回数を記録する
+    call_counts = {"prepare": 0, "trigger": 0, "stop": 0}
+    
+    def mock_prepare_recording():
+        call_counts["prepare"] += 1
+        return True
+        
+    def mock_trigger_recording():
+        call_counts["trigger"] += 1
+        return True
+        
+    def mock_stop_recording():
+        call_counts["stop"] += 1
+        return "mock_path.tif"
+
+    monkeypatch.setattr(main.camera, "prepare_recording", mock_prepare_recording)
+    monkeypatch.setattr(main.camera, "trigger_recording", mock_trigger_recording)
+    monkeypatch.setattr(main.camera, "stop_recording", mock_stop_recording)
+
+    # auto_record=True で開始
+    with client:
+        response = client.post(
+            "/stage/sweep/run",
+            json={"start_deg": 10.0, "end_deg": 80.0, "speed_deg_s": 15.0, "auto_record": True},
+        )
+        assert response.status_code == 200
+        operation_id = response.json()["operation_id"]
+
+        # 完了まで待機
+        for _ in range(100):
+            latest = client.get("/stage/sweep/progress", params={"operation_id": operation_id})
+            if latest.json()["status"] == "succeeded":
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("sweep did not complete in time")
+
+    # メソッドが期待通りに呼ばれたか検証
+    assert call_counts["prepare"] == 1, "prepare_recording が1回呼ばれるべき"
+    assert call_counts["trigger"] == 1, "trigger_recording が1回呼ばれるべき"
+    assert call_counts["stop"] == 1, "stop_recording が1回呼ばれるべき"

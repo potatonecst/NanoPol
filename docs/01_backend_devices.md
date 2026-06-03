@@ -307,9 +307,12 @@ return image_data
 #### `take_snapshot() -> Optional[str]`
 *   **役割:** 最新フレームの静止画取得と保存を行います。設定に応じて自動保存するか、メモリに保持してフロントエンドからの指示（ダイアログ）を待ちます。
 
-#### `start_recording() -> bool`
-*   **役割:** マルチページTIFFとCSVへの超高速直書きを開始します。必要なビット深度や出力形式は `uc480` 側の取得設定に従います。
-*   **ログ:** `Recording save requested` → `Recording target path` → `Recording started` の順で追跡します。
+#### `prepare_recording() -> bool` / `trigger_recording() -> bool` / `start_recording() -> bool`
+*   **非同期準備の仕組み**: ファイルシステムのI/O遅延がSweep測定時の録画トリガー（角度判定）を阻害しないよう、録画開始処理は2段階に分離されています。
+    *   **`prepare_recording()`**: TIFFファイルとCSVファイルを事前に作成・オープンし、ヘッダーを書き込みます。この時点ではまだ録画は開始されず（`is_recording = False`）、スタンバイ状態となります。
+    *   **`trigger_recording()`**: スタンバイ状態から即座に `is_recording = True` に切り替えます。フラグ操作のみの軽量な処理であるため、遅延ゼロで録画を開始できます。
+    *   **`start_recording()`**: 上記2つを連続して実行するラッパーです。手動録画時など、即時性が厳密に問われない場面で使用されます。
+*   **ログ:** `Recording prepare requested` → `Recording target path` → `Recording prepared (standby)` → `Recording triggered` の順で追跡します。
 *   **注意:** 録画停止直後に `Error writing frame to TIFF/CSV` が1回だけ出ても、`Recording stopped` と `videos/` 内の実ファイルが残っていれば、停止と書き込みの競合ログである可能性があります。
 
 #### `stop_recording() -> Optional[str]`

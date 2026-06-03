@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store/useAppStore";
 import { stageApi, systemApi } from "@/api/client";
-import { manualControlSchema, angleInputSchema } from "@/schemas/manualControlSchema";
+import { manualControlSchema, angleInputSchema, sweepParamsSchema } from "@/schemas/manualControlSchema";
 import { z } from "zod";
 
 import { Button } from "../ui/button";
@@ -93,6 +93,14 @@ export function ManualView() {
     const sweepStartVal = angleInputSchema.safeParse(sweepStart);
     const sweepEndVal = angleInputSchema.safeParse(sweepEnd);
     const sweepSpeedVal = manualControlSchema.shape.sweepSpeed.safeParse(sweepSpeed);
+
+    // スイープ全体の相関バリデーション（0.2秒制限など）を実行
+    // スイープに関係ない項目（targetAngleなど）を除いた専用スキーマでチェック
+    const sweepFullVal = sweepParamsSchema.safeParse({
+        sweepStart,
+        sweepEnd,
+        sweepSpeed,
+    });
 
     // Note: Detailed trace logs were removed to avoid flooding the log store.
     // Keep high-level `systemApi.postLogs` for important events only.
@@ -736,7 +744,7 @@ export function ManualView() {
                                             className="h-8 w-28 bg-amber-600 hover:bg-amber-600/90 text-white shrink-0"
                                             disabled={
                                                 !sweepStart || !sweepEnd || !sweepSpeed || !isStageConnected || isSystemBusy ||
-                                                !sweepStartVal.success || !sweepEndVal.success || !sweepSpeedVal.success
+                                                !sweepFullVal.success
                                             }
                                         >
                                             {isSweeping ? <RefreshCw className="size-3 mr-1 animate-spin" /> : <Play className="size-3 mr-1" />}
@@ -764,11 +772,20 @@ export function ManualView() {
                                             </div>
                                         </div>
                                     )}
-                                    {!sweepSpeedVal.success && (
-                                        <p className="text-[10px] text-destructive leading-tight text-right">
+
+                                    {/* エラー表示: 
+                                        1. まず速度自体の形式エラー（正の数か、など）を優先表示
+                                        2. 形式が正しければ、全体の時間制限エラー（0.2秒制限）を表示
+                                    */}
+                                    {!sweepSpeedVal.success ? (
+                                        <p className="text-[10px] text-destructive leading-tight text-left">
                                             {sweepSpeedVal.error.issues[0].message}
                                         </p>
-                                    )}
+                                    ) : !sweepFullVal.success ? (
+                                        <p className="text-[10px] text-destructive leading-relaxed text-left">
+                                            {sweepFullVal.error.issues[0].message}
+                                        </p>
+                                    ) : null}
                                 </div>
                             </div>
                         </div>

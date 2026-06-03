@@ -37,15 +37,30 @@ export const angleInputSchema = z
         message: `値は ${STEP_RESOLUTION} の倍数である必要があります`,
     });
 
-// 個別の操作に対するスキーマ定義（必要に応じて拡張可能）
+// スイープ操作専用のスキーマ（相関バリデーション用）
+export const sweepParamsSchema = z
+    .object({
+        sweepStart: angleInputSchema,
+        sweepEnd: angleInputSchema,
+        sweepSpeed: z.coerce.number().positive("速度は正の値である必要があります"),
+    })
+    .refine(
+        (data) => {
+            // Sweep時間のバリデーション: 角度差 / 速度 が 0.2秒以上であることを確認
+            const duration = Math.abs(data.sweepEnd - data.sweepStart) / data.sweepSpeed;
+            return duration >= 0.2;
+        },
+        {
+            message: "スイープ時間が短すぎます。角度を広げるか速度を遅くして、0.2秒以上になるよう調整してください。",
+            path: ["sweepEnd"],
+        }
+    );
+
+// 個別の操作に対するスキーマ定義（全体用）
 export const manualControlSchema = z.object({
-    // 上で作った共通スキーマを再利用
     moveStep: angleInputSchema,
     targetAngle: angleInputSchema,
     sweepStart: angleInputSchema,
     sweepEnd: angleInputSchema,
-
-    // sweepSpeed（回転速度）は倍数制限なしだが、正の値である必要がある
-    // z.coerce.number() は文字列 "10" を数値 10 に変換します。
     sweepSpeed: z.coerce.number().positive("速度は正の値である必要があります"),
 });

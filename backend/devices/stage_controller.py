@@ -73,7 +73,9 @@ class StageController:
         self.speed_max_pps = 5000
         self.speed_accel_ms = 200
         
-        self._mock_pulse = 0 #Mock用の内部変数
+        self._capture_thread = None
+        self._mock_pulse = 0
+        self._mock_is_busy = False # Mock用の移動中フラグ
 
         # 起動時にステージ実行モードの判定根拠を残す（切り分け用）
         logger.info(
@@ -292,11 +294,35 @@ class StageController:
         
         logger.info(f"{self.log_tag} Move Abs to {target_angle} deg ({direction}{abs_pulse} pulses)")
         
-        #Mockモードの場合
+        #Mockモードの場合: スレッドで少しずつ角度を変化させて実機の挙動をシミュレートする
         if self.is_mock_env:
-            time.sleep(0.5)
-            self._mock_pulse = target_pulse
-            logger.info(f"{self.log_tag} Move Abs Complete: {target_angle} deg")
+            self._mock_move_cancel = False
+            self._mock_is_busy = True # スレッド開始前に即座にBusy状態にする
+            def _mock_abs_move():
+                start_pulse = self._mock_pulse
+                diff = target_pulse - start_pulse
+                
+                # 実機の速度（PPS）に基づいて所要時間を計算する
+                speed_pps = max(1, self.speed_max_pps)
+                total_time = abs(diff) / speed_pps
+                
+                # 50ms間隔で更新する
+                steps = max(1, int(total_time / 0.05))
+                step_pulse = diff / steps
+                step_time = total_time / steps
+                
+                for _ in range(steps):
+                    if getattr(self, "_mock_move_cancel", False):
+                        break
+                    time.sleep(step_time)
+                    self._mock_pulse += step_pulse
+                
+                if not getattr(self, "_mock_move_cancel", False):
+                    self._mock_pulse = target_pulse # 最後に正確な値へ合わせる
+                self._mock_is_busy = False
+                logger.info(f"{self.log_tag} Move Abs Complete: {target_angle} deg")
+
+            threading.Thread(target=_mock_abs_move, daemon=True).start()
             return True
         
         # 1. 移動量設定コマンド送信: A:1{方向}P{パルス数}
@@ -348,11 +374,34 @@ class StageController:
         
         logger.info(f"{self.log_tag} Move Rel {delta_angle} deg ({direction}{abs_pulse} pulses)")
         
-        #Mockモードの場合
+        #Mockモードの場合: スレッドで少しずつ角度を変化させて実機の挙動をシミュレートする
         if self.is_mock_env:
-            time.sleep(0.2)
-            self._mock_pulse += delta_pulse
-            logger.info(f"{self.log_tag} Move Rel Complete: {delta_angle} deg")
+            self._mock_move_cancel = False
+            self._mock_is_busy = True # スレッド開始前に即座にBusy状態にする
+            def _mock_rel_move():
+                target_pulse = self._mock_pulse + delta_pulse
+                
+                # 実機の速度（PPS）に基づいて所要時間を計算する
+                speed_pps = max(1, self.speed_max_pps)
+                total_time = abs(delta_pulse) / speed_pps
+                
+                # 50ms間隔で更新する
+                steps = max(1, int(total_time / 0.05))
+                step_pulse = delta_pulse / steps
+                step_time = total_time / steps
+                
+                for _ in range(steps):
+                    if getattr(self, "_mock_move_cancel", False):
+                        break
+                    time.sleep(step_time)
+                    self._mock_pulse += step_pulse
+                
+                if not getattr(self, "_mock_move_cancel", False):
+                    self._mock_pulse = target_pulse # 最後に正確な値へ合わせる
+                self._mock_is_busy = False
+                logger.info(f"{self.log_tag} Move Rel Complete: {delta_angle} deg")
+
+            threading.Thread(target=_mock_rel_move, daemon=True).start()
             return True
         
         # 1. 移動量設定: M:1{方向}P{パルス数}
@@ -397,10 +446,11 @@ class StageController:
         # L:1 (減速停止) or L:E (非常停止/即停止)
         logger.info(f"{self.log_tag} Stopping... (Immediate={immediate})")
         if self.is_mock_env:
-            logger.info(f"{self.log_tag} Stopped")
+            self._mock_move_cancel = True
+            self._mock_is_busy = False
             return True
         
-        cmd = "L:E" if immediate else "L:1" #immediate=TrueでL:E
+        cmd = "L:E" if immediate else "L:1"
         resp = self._send_command(cmd)
         
         if resp == "OK":
@@ -448,8 +498,8 @@ class StageController:
         logger.debug(f"{self.log_tag} get_status requested")
         if self.is_mock_env:
             angle = self._pulse_to_deg(self._mock_pulse)
-            logger.debug(f"{self.log_tag} get_status mock response: angle={angle}, busy=False")
-            return angle, False
+            logger.debug(f"{self.log_tag} get_status mock response: angle={angle}, busy={self._mock_is_busy}")
+            return angle, self._mock_is_busy
         
         resp = self._send_command("Q:")
         
