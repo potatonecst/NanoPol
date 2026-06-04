@@ -90,14 +90,13 @@
 **【State 0: セッション開始 (Session Entry)】**
 Autoモードに入った最初の状態。サイドバーに表示。
 
-  * **Base Folder:** `~/Documents/NanoPol` (設定から自動反映)
-  * **Date Folder:** `YYYYMMDD` (当日日付で自動生成)
   * **[ 📄 新規測定 (New) ]**
-      * `Sample Name`: `Sample_1` (自動採番で重複回避。編集可)。
-      * `[Create & Start]` ボタン。
+      * `Sample Name`: デフォルトで自動採番された名前（例: `Sample_1`）が入力済み。ユーザーが任意の名称に変更することも可能。
+      * `[Create & Start]` ボタン: 押下するとフォルダを作成し、**State A** へ遷移。
   * **[ 📂 つづきから (Load) ]**
-      * 既存のサンプルフォルダを選択。
-      * `settings.json` を読み込み、**State A** へ遷移。
+      * **今日のリスト**: 今日の日付フォルダ (`AutoMeasurementData/YYYYMMDD/`) 内にある既存サンプルがリスト表示され、1クリックで再開可能。
+      * **[ 🔍 Browse... ]** ボタン: OS標準のフォルダ選択ダイアログが開き、別の日付や場所のサンプルフォルダを選択して読み込み（`settings.json` のロード）ができる。
+  * **遷移:** 選択完了後、**State A** へ遷移。
 
 **【State A: 測定選択 (Selection)】**
 
