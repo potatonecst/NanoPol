@@ -233,6 +233,43 @@ class TestCameraControllerBasics:
 class TestCameraControllerImageProcessing:
     """カメラ画像処理関連のテスト"""
     
+    def test_get_raw_frame_preserves_type(self):
+        """
+        _get_raw_frame メソッドが、入力されたビット深度に応じて
+        適切なデータ型を維持し、値の加工を行わないことを確認するテスト。
+        
+        【テスト内容】
+        1. src_bpp = 8 の場合、入力が float 等でも uint8 に変換されるか
+        2. src_bpp = 10 の場合、uint16 として保持されるか
+        3. src_bpp = 16 の場合、uint16 として保持されるか
+        
+        【なぜこのテストが必要か】
+        定量的な光学測定において、カメラから受信した生のカウント値を
+        スケーリング（水増し）せずにそのまま保存・解析することが必須なため。
+        """
+        CameraController = _load_camera_controller_class()
+        controller = CameraController()
+        
+        import numpy as np
+        
+        # 1. 8-bit の場合
+        frame_8 = np.array([[0, 128, 255]], dtype=np.float32)
+        raw_8 = controller._get_raw_frame(frame_8, src_bpp=8)
+        assert raw_8.dtype == np.uint8
+        assert raw_8[0][1] == 128
+        
+        # 2. 10-bit の場合
+        frame_10 = np.array([[0, 512, 1023]], dtype=np.float32)
+        raw_10 = controller._get_raw_frame(frame_10, src_bpp=10)
+        assert raw_10.dtype == np.uint16
+        assert raw_10[0][2] == 1023  # 値がスケーリング（*64など）されていないことを確認
+        
+        # 3. 16-bit の場合
+        frame_16 = np.array([[0, 32768, 65535]], dtype=np.float32)
+        raw_16 = controller._get_raw_frame(frame_16, src_bpp=16)
+        assert raw_16.dtype == np.uint16
+        assert raw_16[0][1] == 32768
+    
     def test_bayer_color_conversion_code_exists(self):
         """
         _get_bayer_color_conversion_code メソッドが存在するテスト。

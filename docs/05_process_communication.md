@@ -128,3 +128,17 @@ React側は、Rustからポート番号が一定時間返ってこない場合�
 3. 応答を受け取れない/タイムアウトした場合は、Rust 側が AppData の `logs/system.log` に追記する補助手段（shutdown note）を実行する。
 
 この追加により、ユーザーがウィンドウを閉じたときでも、可能な限り最後のログとクリーンアップを保持することが期待できます。ログが見つからない場合は、上のフローのどの段階で止まったかを切り分けてください。
+
+## 7. API エンドポイント・リファレンス (主要なもの)
+
+### 7.1 自動測定 (Auto Mode) セッション管理
+
+フロントエンドの「Auto Mode」画面で使用される、測定データの保存・読込用 API です。
+
+| メソッド | パス | 説明 | リクエスト/レスポンス |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/measurement/sessions` | 今日の日付フォルダ内の既存セッション一覧を取得 | 返り値: `{sessions: string[], base_dir: string, today_dir: string}` |
+| `POST` | `/measurement/session` | 新規セッション（サンプル）を作成 | 体: `{sample_name: string}`<br>返り値: `{status: "success", sample_name: string, folder_path: string}` |
+| `GET` | `/measurement/session/settings` | 指定フォルダの `settings.json` を読込 | クエリ: `folder_path` (必須)<br>返り値: settings.json の内容 (dict) |
+
+**注意:** これらの API はバックエンド側の `camera.settings["outputDirectory"]` が設定されている必要があります。未設定時は `/measurement/sessions` は空リストを返し、`/measurement/session` (POST) は 400 エラーを返します。

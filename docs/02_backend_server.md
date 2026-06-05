@@ -124,27 +124,7 @@ PYTHONPATH=.. uv run python - <<'PY'
 from backend.main import camera
 print(camera.has_uc480, camera.is_mock_env)
 PY
-
 ```
-
-## テスト対象のAPI
-
-バックエンドの API は、デバイス層の単体テストに加えて HTTP レベルでも確認しています。
-
-- `backend/tests/api/test_camera_connect_http.py`: `/camera/connect` の応答に `exposure_range` と `gain_range` が含まれることを確認します。
-- `backend/tests/api/test_camera_config_and_disconnect_http.py`: `/camera/config` の前提条件と、`/camera/disconnect` の idempotency を確認します。
-- `backend/tests/test_logger_filter.py`: `/system/logs` の成功アクセスがノイズになりにくいことを確認します。
-
-また、録画停止まわりは `backend/tests/devices/test_disconnect_during_recording.py` で競合を再現して確認しています。
-
-```sh
-# 開発サーバー起動（自動再読み込み）
-PYTHONPATH=.. uv run python -m uvicorn main:app --reload --host 127.0.0.1 --port 14201
-```
-
-注意事項:
-- `--reload` は開発専用です。本番や Tauri 経由の起動では使用しないでください。
-- `uv run` はプロジェクトルートからの相対パス指定をシンプルにするために便利です。CI や配布環境では直接 `uvicorn` や PyInstaller での実行を検討してください。
 
 ### 2.6 ステージ明示的切断エンドポイント (`/stage/disconnect`)
 
@@ -257,6 +237,23 @@ backend の終了確認では、次のログを順に確認する。
 
 > 注意: `windows_dll_candidates` は**診断表示用の候補一覧**であり、`uc480` の内部探索経路そのものではありません。
 
+### 2.9 自動測定セッション管理 API (Auto Measurement Sessions)
+
+自動測定（Auto Mode）の進行管理を行うための API です。`backend/utils/data_saver.py` と連携し、ファイルシステム上のディレクトリ構造を管理します。
+
+#### エンドポイント一覧
+
+| メソッド | パス | 役割 | 備考 |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/measurement/sessions` | 今日のセッション一覧取得 | `outputDirectory` 内をスキャンします |
+| `POST` | `/measurement/session` | 新規セッション作成 | フォルダと `settings.json` を生成します |
+| `GET` | `/measurement/session/settings` | セッション設定の読込 | 指定フォルダの進捗状況を返します |
+
+#### 設計のポイント
+*   **保存先の参照**: これらの API は、設定画面で保存された `outputDirectory` を `camera.settings` から取得して動作します。
+*   **自動採番**: `POST /measurement/session` で名前を空にすると、`Sample_1`, `Sample_2` といった連番が自動的に割り振られます。
+*   **不備の検出**: 保存先が設定されていない状態でセッションを作成しようとすると、HTTP 400 エラーを返し、フロントエンドに設定を促します。
+
 ---
 
 ## 3. ロギングシステム (Logging)
@@ -325,6 +322,27 @@ async def lifespan(app: FastAPI):
     # Ctrl+Cなどで停止命令が来ると、ここから再開されます。
     # 開きっぱなしのファイルや通信ポートをここで閉じます。
     print("サーバー終了。お疲れ様でした。")
+```
 
 この仕組みがないと、サーバーを強制終了したときに、カメラが「使用中」のままロックされてしまい、PCを再起動しないと治らない…といったトラブルが起きます。
 本プロジェクトでは、ここで確実に `camera.disconnect()` を呼ぶことで安全性を担保しています。
+
+## テスト対象のAPI
+
+バックエンドの API は、デバイス層の単体テストに加えて HTTP レベルでも確認しています。
+
+- `backend/tests/api/test_camera_connect_http.py`: `/camera/connect` の応答に `exposure_range` と `gain_range` が含まれることを確認します。
+- `backend/tests/api/test_camera_config_and_disconnect_http.py`: `/camera/config` の前提条件と、`/camera/disconnect` の idempotency を確認します。
+- `backend/tests/api/test_auto_measurement_session_http.py`: 自動測定セッションの作成・一覧取得・設定読込のフローを確認します。
+- `backend/tests/test_logger_filter.py`: `/system/logs` の成功アクセスがノイズになりにくいことを確認します。
+
+また、録画停止まわりは `backend/tests/devices/test_disconnect_during_recording.py` で競合を再現して確認しています。
+
+```sh
+# 開発サーバー起動（自動再読み込み）
+PYTHONPATH=.. uv run python -m uvicorn main:app --reload --host 127.0.0.1 --port 14201
+```
+
+注意事項:
+- `--reload` は開発専用です。本番や Tauri 経由の起動では使用しないでください。
+- `uv run` はプロジェクトルートからの相対パス指定をシンプルにするために便利です。CI や配布環境では直接 `uvicorn` や PyInstaller での実行を検討してください。

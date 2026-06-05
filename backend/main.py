@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from utils.logger import logger, log_buffer
+from utils import data_saver
 from devices.stage_controller import StageController
 from devices.stage_controller import StageCommandError
 # `StageCommandError` はデバイス層（`StageController`）が運用上の理由でコマンドを
@@ -782,6 +783,9 @@ class SaveSnapshotRequest(BaseModel):
 class LogPostRequest(BaseModel):
     level: str # ログレベル（"ERROR", "WARNING", "INFO" など）
     message: str # 記録するログメッセージ
+
+class MeasurementSessionCreateRequest(BaseModel):
+    sample_name: str = "" # 空の場合は自動採番されます
 
 # ==========================================
 # システム関連 API
@@ -1579,6 +1583,138 @@ def post_log(req: LogPostRequest):
         logger.info(msg)
     
     return {"status": "success"}
+
+# ==========================================
+# 自動測定（Auto Mode）セッション管理 API
+# ==========================================
+# これらの API は、自動測定の「進行状況」と「保存フォルダ」を管理する中核機能です。
+# 詳細な設計思想については docs/08_auto_measurement.md を参照してください。
+
+@app.get("/measurement/sessions")
+def get_measurement_sessions():
+    """
+    今日の日付フォルダ内にある既存の測定セッション（サンプル）一覧を取得します。
+    
+    【用途】
+    フロントエンドの Auto Mode 起動直後（State 0）にて、
+    「今日すでに行った測定の続きから始める」ためのリストを表示するために使用します。
+
+    【動作詳細】
+    1. camera.settings["outputDirectory"] から保存先のルートを取得します。
+    2. その配下の AutoMeasurementData/<今日の日付>/ をスキャンします。
+    3. settings.json が存在する有効なフォルダのみを抽出し、名前順で返します。
+
+    戻り値:
+        dict: {
+            "sessions": 有効なサンプル名のリスト,
+            "base_dir": 自動測定データの保存起点,
+            "today_dir": 今日の日付フォルダのフルパス
+        }
+    """
+    # 保存先ディレクトリは設定画面で指定された値（camera.settings内）を使用します。
+    # camera.settings は /system/settings 経由で config.json の内容が同期されています。
+    output_dir = camera.settings.get("outputDirectory")
+    
+    if not output_dir or output_dir.strip() == "":
+        # 保存先が未設定の場合は、エラーではなく空のリストを返し、
+        # フロントエンド側で適切に（「保存先を設定してください」等）表示できるようにします。
+        return {"sessions": [], "base_dir": "", "today_dir": ""}
+    
+    try:
+        # data_saver を使って、今日の日付フォルダ内の有効なセッションを探します。
+        sessions = data_saver.get_today_sessions(output_dir)
+        base_dir = data_saver.get_base_dir(output_dir)
+        today_dir = data_saver.get_today_dir(base_dir)
+        
+        return {
+            "sessions": sessions,
+            "base_dir": base_dir,
+            "today_dir": today_dir
+        }
+    except Exception as e:
+        logger.error(f"[AUTO] Failed to get sessions from {output_dir}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to scan sessions: {str(e)}")
+
+@app.post("/measurement/session")
+def create_measurement_session(req: MeasurementSessionCreateRequest):
+    """
+    新しい測定セッション（サンプルフォルダと初期 settings.json）を物理的に作成します。
+
+    【用途】
+    新しいサンプルに対して測定を開始する際（State 0 -> A への遷移）に呼び出されます。
+
+    【動作詳細】
+    1. 名前が空の場合は "Sample_1", "Sample_2" と自動で採番します。
+    2. 名前が重複している場合は "SampleName_2" のように枝番を付けて衝突を回避します。
+    3. 物理的なフォルダを作成し、中に空の履歴を持つ settings.json を生成します。
+
+    引数:
+        req (MeasurementSessionCreateRequest): 
+            - sample_name: ユーザーが入力した希望のサンプル名（空でも可）
+
+    戻り値:
+        dict: {
+            "status": "success",
+            "sample_name": 最終的に決まったサンプル名,
+            "folder_path": 作成されたフォルダのフルパス
+        }
+    """
+    output_dir = camera.settings.get("outputDirectory")
+    if not output_dir or output_dir.strip() == "":
+        # 書き込み先が不明な状態でフォルダを作ることは、データ紛失のリスクがあるため
+        # HTTP 400 (Bad Request) で厳格に拒否します。
+        raise HTTPException(status_code=400, detail="Output directory is not configured. Please set it in Settings.")
+    
+    try:
+        # 新しいフォルダと settings.json を作成し、確定した名前とパスを返します。
+        result = data_saver.create_new_session(output_dir, req.sample_name)
+        logger.info(f"[AUTO] Created new session: {result['sample_name']} at {result['folder_path']}")
+        
+        return {
+            "status": "success",
+            "sample_name": result["sample_name"],
+            "folder_path": result["folder_path"]
+        }
+    except Exception as e:
+        logger.error(f"[AUTO] Failed to create session: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create session directory: {str(e)}")
+
+@app.get("/measurement/session/settings")
+def get_session_settings(folder_path: str):
+    """
+    指定されたフォルダパスにある settings.json を読み込み、現在の測定進捗を返します。
+
+    【用途】
+    既存のセッションをロードした際（State 0 -> A）に、
+    「どの項目が測定済みか」「過去のROIはどこか」を復元するために使用します。
+
+    引数:
+        folder_path (str): 読み込みたいサンプルフォルダの絶対パス
+
+    戻り値:
+        dict: settings.json の中身（app_version, sample_name, measurements 等）
+
+    例外:
+        - HTTP 404: 指定されたフォルダに settings.json が存在しない場合。
+        - HTTP 500: ファイルが壊れていて JSON としてパースできない場合。
+    """
+    if not folder_path:
+        raise HTTPException(status_code=400, detail="folder_path is required")
+
+    try:
+        # 指定されたパスにある settings.json を辞書形式で読み込みます。
+        settings = data_saver.read_session_settings(folder_path)
+        return settings
+    except FileNotFoundError as e:
+        # ファイルがない場合は 404 Not Found。UI 側で「データが見つかりません」と表示できます。
+        raise HTTPException(status_code=404, detail=str(e))
+    except json.JSONDecodeError as e:
+        # ファイルはあるが JSON 形式として不正な場合は 500 Error。
+        logger.error(f"[AUTO] Broken settings.json in {folder_path}: {e}")
+        raise HTTPException(status_code=500, detail="settings.json is corrupted")
+    except Exception as e:
+        logger.error(f"[AUTO] Failed to read session settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def write_backend_port_hint(app_data_dir: str | None, port: int) -> None:
     """

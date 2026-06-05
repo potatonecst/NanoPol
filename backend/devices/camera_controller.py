@@ -1021,16 +1021,17 @@ class CameraController:
             except Exception:
                 preview = frame_data.astype(np.uint8) if getattr(frame_data, 'dtype', None) != np.uint8 else frame_data
 
-            # 内部 uint16 はまだ不要であれば遅延（None）。16bitで来ていれば即時保持。
-            frame_uint16 = None
-            if src_bpp >= 16 or getattr(frame_data, 'dtype', None) == np.uint16:
-                frame_uint16 = self._to_internal_uint16(frame_data, src_bpp)
+            # 【生データ（RAW）の保持】
+            # 8-bitカメラからは uint8、10-bit以上のカメラからは uint16 が渡されます。
+            # 値を一切加工（掛け算など）せず、型の整合性だけを整えて保持します。
+            # これにより、定量解析（自動測定等）においてノイズやカウント値の重みが狂うのを防ぎます。
+            raw_frame = self._get_raw_frame(frame_data, src_bpp)
 
             with self.frame_condition:
                 self.latest_preview = preview
-                # latest_frame は既存API互換のために元データか uint16 を保持
-                self.latest_frame = frame_uint16 if frame_uint16 is not None else frame_data
-                self.latest_frame_uint16 = frame_uint16
+                # latest_frame は常に「無加工の生データ」として保持します。
+                # 解析やCSVへの書き出し（Sum/Max計算）は、この latest_frame を用いて行われます。
+                self.latest_frame = raw_frame
                 self.frame_condition.notify_all()
 
             # ========================================================================
@@ -1046,11 +1047,10 @@ class CameraController:
                     csv_writer = self.csv_writer
                     record_index = self.record_frame_count
                     if tiff_writer is not None and csv_writer is not None and record_index < self.MAX_FRAMES:
-                        # 録画用には必ず uint16 を書き込む。受信が uint8 の場合はここで一度だけ拡張する。
-                        if getattr(frame_data, 'dtype', None) == np.uint16:
-                            write_frame = frame_data
-                        else:
-                            write_frame = self._to_internal_uint16(frame_data, self.input_bpp)
+                        # 【重要】録画時もスケーリングは行わず、生データをそのまま書き込みます。
+                        # tifffile ライブラリは、write_frame が uint8 なら 8-bit TIFF を、
+                        # uint16 なら 16-bit TIFF を自動的に生成してくれます。
+                        write_frame = raw_frame
 
                         frame_timestamp_ms = time.time() * 1000.0
                         angle_sample_timestamp_ms = self.current_angle_timestamp_ms
@@ -1167,31 +1167,42 @@ class CameraController:
             logger.exception("[CAMERA] Capture failed")
             return None
 
-    def _to_internal_uint16(self, frame: np.ndarray, src_bpp: int) -> np.ndarray:
+    def _get_raw_frame(self, frame: np.ndarray, src_bpp: int) -> np.ndarray:
         """
-        受信フレームを内部で扱う uint16 表現に変換するヘルパー。
-        - src_bpp >= 16: そのまま uint16 にキャスト
-        - src_bpp <= 8: ビット拡張（リニアスケーリング）して uint16 にする
-        - 10/12bit 等も想定し、一般式でスケールする
-        戻り値は dtype が uint16 の numpy 配列
+        【重要】カメラから受信したフレームデータを、スケーリング（値の引き伸ばし）を一切行わずに
+        真の生データ（RAW）としてそのまま返すヘルパー関数です。
+
+        引数:
+            frame (np.ndarray): カメラドライバから取得した画像データ（Numpy配列）。
+            src_bpp (int): センサーの入力ビット深度（8, 10, 12, 16など）。
+
+        戻り値:
+            np.ndarray: 値の加工を行っていない、生のカウント値を持つNumpy配列。
+                        8-bitの場合は uint8、それ以上（10-bit等）の場合は uint16 の型になります。
+
+        【変更の意図と理論的背景】
+        以前の実装では、8-bitのデータを16-bitフルレンジ（0-65535）に合わせるために
+        値を掛け算（リニアスケーリング）して引き伸ばしていました。
+        しかし、定量的な光散乱強度測定においては、「センサーに光子が何個当たったか」という
+        生のカウント値（1カウントの重み）を正確に保持することが最も重要です。
+        スケーリングを行ってしまうと、ノイズが不当に増幅され、解析時のS/N比評価が狂うため、
+        この関数では受け取ったデータを一切加工せずにそのまま上位（保存・解析モジュール）へ流します。
+
+        使用している標準ライブラリ（NumPy）の解説:
+            np.ndarray: 数値計算に特化した多次元配列。画像データはピクセル値の2次元配列として表現されます。
+            frame.dtype: その配列が持っているデータの「型」（8ビット整数、16ビット整数など）を表します。
         """
         if frame is None:
             return None
 
-        if src_bpp >= 16 or frame.dtype == np.uint16:
+        # 既にuint16、または8bitより大きい（10-bit等）データの場合は、
+        # 型が欠損しないように uint16 として扱います（値自体は変更しません）。
+        if src_bpp > 8 or frame.dtype == np.uint16:
             return frame.astype(np.uint16)
 
-        # 一般式: scale = 65535 / (2**src_bpp - 1)
-        max_in = (1 << src_bpp) - 1
-        if max_in <= 0:
-            scale = 1
-        else:
-            scale = 65535.0 / float(max_in)
-
-        # float 演算後に丸めして uint16 化（vectorized）
-        arr = frame.astype(np.float32) * scale
-        arr = np.clip(np.rint(arr), 0, 65535).astype(np.uint16)
-        return arr
+        # 8-bitデータの場合は、ストレージ容量とI/O速度の最適化のため、
+        # そのまま uint8 として扱います。
+        return frame.astype(np.uint8)
 
     def _to_preview_uint8(self, frame: np.ndarray, src_bpp: int) -> np.ndarray:
         """
