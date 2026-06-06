@@ -3,8 +3,9 @@
 本ドキュメントは、仕様書に定義されているが未実装の機能や、今後の開発タスクを管理するためのチェックリストです。
 
 ## 🎯 次の目標 (Next Actions)
-- [ ] **Auto Mode フロントエンド実装 (State 0: セッション開始)**
-  - `settings.json` の読み込みと `Base Folder`, `Date Folder` の表示。
+- [ ] **Auto Mode フロントエンド実装 (Session Management)**
+  - `Table` によるセッション一覧表示。
+  - `Calendar` & `Popover` による日付選択 (Date Picker) の実装。
   - `Sample Name` の自動採番ロジックと新規作成フローの実装。
 
 ## 🔧 ハードウェア制御 (Backend / Python)
@@ -14,12 +15,13 @@
   - 測定のリニアリティを担保するため、カメラ接続時に `Gamma=1.0` 固定、`AWB=Off`、RGB各ゲイン固定のコマンドを発行する。
 
 ## 🖥️ フロントエンド機能 (Frontend / React)
-- [ ] **Auto Mode 実装 (State A: 測定選択)**
-  - 過去の測定履歴リストの表示。
-  - 測定箇所（Left/Front など）の選択メニュー実装。
-- [ ] **Auto Mode 実装 (State B: 準備と実行)**
-  - レーザーパワー、Fiber位置の入力フォーム。
-  - `[Pre-Scan]` ボタンと `[START MEASUREMENT]` ボタンの実装。
+- [ ] **Auto Mode 実装 (Category Selection)**
+  - `Category Card` による測定箇所の選択メニュー実装。
+  - `settings.json` の履歴に基づく「✅ 完了」バッジの表示。
+- [ ] **Auto Mode 実装 (Measurement Execution)**
+  - `ResizablePanelGroup` による映像とグラフの上下分割レイアウト。
+  - `recharts` を使用した散乱強度リアルタイムグラフの実装。
+  - `Measurement Manager` パネル（パラメータ入力、Pre-Scan、実行）。
 - [ ] **CameraPanel の拡張操作**
   - 映像上でのマウスホイールズーム、ドラッグによるパン（移動）機能。
 - [ ] **ROI (関心領域) の管理機能**

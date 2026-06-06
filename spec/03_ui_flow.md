@@ -46,7 +46,7 @@
 
 ### 3.3 各モードの詳細仕様
 
-#### ① 🔌 Devices Mode (接続管理) - **Implemented**
+#### ① Devices Mode (接続管理) - **Implemented**
 
 `src/components/views/DevicesView.tsx`
 
@@ -66,7 +66,7 @@
   * **Code Quality:**
       * `RefreshButton` などの内部コンポーネントはファイル外または別ファイルに切り出し、不要な再レンダリングを防止する。
 
-#### ② 🛠️ Manual Mode (調整) - **Implemented**
+#### ② Manual Mode (調整) - **Implemented**
 
 `src/components/views/ManualView.tsx`
 
@@ -79,54 +79,65 @@
       * **Sweep:** `Start`, `End`, `Speed (deg/s)` を指定して連続回転。
           * 内部で `PPS` に変換し、安全速度リミット (`maxSpeedLimitPPS`) を適用。
           * 実行中は `[Stop]` ボタンで中断可能。
-      * **Emergency Stop:** `[⚠️]` ボタンで即時停止 (`L:E`). 減速なし。
+      * **Emergency Stop:** 警告アイコンボタンで即時停止 (`L:E`). 減速なし。
   * **Camera View:**
       * `CameraPanel` コンポーネントにてバックエンドからのMJPEGストリーム (`/camera/video_feed`) を表示する。ズームやパン操作に対応。
 
-#### ③ 📉 Auto Mode (自動測定) - **Planned**
+#### ③ Auto Mode (自動測定) - **Planned**
 
-サイドバーの状態遷移でフローを管理する。
+`src/components/views/AutoView.tsx`
 
-**【State 0: セッション開始 (Session Entry)】**
-Autoモードに入った最初の状態。サイドバーに表示。
+サイドバーの状態（フェーズ）遷移でフローを管理する。
 
-  * **[ 📄 新規測定 (New) ]**
-      * `Sample Name`: デフォルトで自動採番された名前（例: `Sample_1`）が入力済み。ユーザーが任意の名称に変更することも可能。
-      * `[Create & Start]` ボタン: 押下するとフォルダを作成し、**State A** へ遷移。
-  * **[ 📂 つづきから (Load) ]**
-      * **今日のリスト**: 今日の日付フォルダ (`AutoMeasurementData/YYYYMMDD/`) 内にある既存サンプルがリスト表示され、1クリックで再開可能。
-      * **[ 🔍 Browse... ]** ボタン: OS標準のフォルダ選択ダイアログが開き、別の日付や場所のサンプルフォルダを選択して読み込み（`settings.json` のロード）ができる。
-  * **遷移:** 選択完了後、**State A** へ遷移。
+**【Session Management (セッション管理)】**
+Autoモードに入った最初のフェーズ。サンプルの新規作成または履歴のロードを行う。
 
-**【State A: 測定選択 (Selection)】**
+  * **レイアウト:** 左側に操作パネル、右側に `CameraPanel` を表示。
+  * **[ New Sample ]**
+      * `Sample Name`: デフォルトで自動採番された名前（例: `Sample_1`）が入力済み。
+      * `[Create & Start]` ボタン (Plusアイコン): 押下するとフォルダを作成し、**Category Selection** へ遷移。
+  * **[ Load Session ]**
+      * **Date Picker**: `shadcn/ui` の `Calendar` を使用。今日以外の日付のデータもスキャン可能。
+      * **Browse Button** (FolderOpenアイコン): OS標準のフォルダ選択ダイアログを開き、任意の位置の `settings.json` をロード。
+      * **Session Table**: `shadcn/ui` の `Table` を使用。サンプル名、作成時刻、進捗 (例: 2/4) を一覧表示。
+      * `[Resume]` ボタン (ChevronRightアイコン): 1クリックでそのセッションを再開。
+  * **遷移:** 選択完了後、**Category Selection** へ遷移。
 
-  * **履歴リスト (History):** 過去の測定（ID, ステータス）を表示。
-  * **次アクション選択:**
-      * `[ 1. Left / Front ]`
-      * `[ 2. Right / Front ]`
-      * `[ 3. Left / Back ]`
-      * `[ 4. Right / Back ]`
-      * `[ 5. Custom ]`
-      * `[ Finish Experiment ]` (State 0に戻る)
-  * **遷移:** ボタン選択 → **State B** へ。
+**【Category Selection (測定項目選択)】**
+どの条件を測定するか選ぶ、実験ノートの目次のようなフェーズ。
 
-**【State B: 準備・実行 (Setup & Run)】**
+  * **サンプル情報:** 選択中のサンプル名を表示。 `[Exit Session]` で最初のフェーズに戻る。
+  * **Category Cards:** 4つの測定条件（Left-Front等）をカード形式で配置。
+      * 測定完了済み項目にはステータスアイコン（Check）を表示。
+  * **遷移:** カテゴリ選択 → **Measurement Execution** へ。
 
-  * **Header:** `Target: 1. Left / Front` (クリックでState Aに戻る)。
-  * **Instruction:** 「レーザーを左、サンプルを手前にセット」。
+**【Measurement Execution (測定実行)】**
+具体的な測定パラメータの入力と、アライメント、本番測定を行うフェーズ。
+
+  * **レイアウト:** 
+      * 左側: パラメータ入力および実行ボタン。
+      * 右側: `ResizablePanelGroup` を使用し、上段に `CameraPanel`、下段に `GraphPanel` を配置。
   * **Input (Mandatory):**
       * `Laser Power`: `[ ] mW` (空欄・必須)。
-      * `Fiber Pos`: `X:[ ] Y:[ ]` (前回値保持・必須)。
+      * `Fiber Pos`: `X:[ ] Y:[ ]` (メモ入力・必須)。
+  * **Control Options:**
+      * **Auto-start after Pre-Scan** (Toggle): ON の場合、アライメント成功後に本番測定へ自動遷移する（リスク警告あり）。
   * **Action Buttons:**
-      * `[<] [>]`: **Mini Jog** (微調整用)。
-      * `[📷 Test Shot]`: 1枚撮影・ROI解析値表示。
-      * `[🔍 Pre-Scan]`: **必須**。ROIオートセンタリング。
-      * `[▶ START MEASUREMENT]`: 本番開始。
+      * **Mini Jog**: `<` `>` アイコンボタン。ステージを微小角度（相対移動）させてアライメントの最終調整を行う。
+      * `[Pre-Scan]` (Searchアイコン): **必須**。ROIオートセンタリングを実行。実行中、最大輝度をリアルタイム表示。
+      * `[START MEASUREMENT]` (Playアイコン): 本番開始。
+  * **Status & Feedback:**
+      * **Countdown**: 自動開始設定時、Pre-Scan 完了後に「Starting in 3...」とカウントダウンを表示。
+      * **Max Intensity**: Pre-Scan 中および完了後に検出された最大輝度値を大きく表示。
+  * **Graph Panel:**
+      * `recharts` を使用。測定中の角度ごとの Sum 輝度をリアルタイムでプロット。
   * **Progress:**
-      * 実行中: `Angle / 360`, プログレスバー。
-      * `[🛑 ABORT / PAUSE]`: 緊急停止。
+      * 実行中: 現在の角度、残り枚数、プログレスバーを表示。
+      * `[ABORT / PAUSE]` (Stopアイコン): 緊急停止。
+  * **遷移:** 完了または中断後、**Category Selection** へ戻る。
 
-#### ④ ⚙️ Settings Mode (設定) - **Implemented**
+
+#### ④ Settings Mode (設定) - **Implemented**
 
 `src/components/views/SettingsView.tsx`
 
@@ -147,10 +158,10 @@ Autoモードに入った最初の状態。サイドバーに表示。
       * 設定は `AppConfig` ディレクトリ（OS標準のアプリ設定場所）にある `config.json` に保存され、次回起動時に自動的に読み込まれる。
       * 保存時 (`[Save Settings]`) およびアプリ起動時、バックエンドの `/system/settings` APIにJSONを送信し、ハードウェアの設定（プレビューのColor/Monoモードなど）に即時反映させる。
 
-#### ⑤ ❓ Help Mode (ヘルプ) - **Planned**
+#### ⑤ Help Mode (ヘルプ) - **Planned**
 
   * **用途:** ソフトウェアの操作マニュアル、ショートカットキー一覧、およびトラブルシューティングの表示。
   * **現状:** UIレイアウト（サイドバーの `HelpCircle` アイコン）のみ存在し、ルーティングおよび画面コンポーネントは未接続。
 
 ---
-*Last Updated: 2026-04-21*
+*Last Updated: 2026-06-06*

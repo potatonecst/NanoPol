@@ -284,4 +284,48 @@ export const systemApi = {
             method: "POST",
             body: JSON.stringify({ settings })
         }),
-};
+    };
+
+    // ==========================================
+    // 自動測定API (autoApi)
+    // ==========================================
+    // 自動測定（Auto Mode）のセッション管理、進行状態の保存などを行うAPI群です。
+
+    export const autoApi = {
+    /**
+     * 今日の日付フォルダ内にあるセッション一覧を取得します。
+     * 
+     * @returns セッション名のリスト、および保存先フォルダの情報
+     */
+    getSessions: () =>
+        request<{
+            sessions: string[],
+            base_dir: string,
+            today_dir: string
+        }>("/measurement/sessions"),
+
+    /**
+     * 新しい測定セッション（サンプルフォルダ）を作成します。
+     * 
+     * @param sampleName 希望のサンプル名（空の場合は自動採番）
+     * @returns 実際に決まったサンプル名とフォルダパス
+     */
+    createSession: (sampleName: string = "") =>
+        request<{
+            status: string,
+            sample_name: string,
+            folder_path: string
+        }>("/measurement/session", {
+            method: "POST",
+            body: JSON.stringify({ sample_name: sampleName })
+        }),
+
+    /**
+     * 指定されたセッションフォルダ内の settings.json を読み込みます。
+     * 
+     * @param folderPath セッションフォルダの絶対パス
+     * @returns settings.json の内容
+     */
+    getSessionSettings: (folderPath: string) =>
+        request<any>(`/measurement/session/settings?folder_path=${encodeURIComponent(folderPath)}`),
+    };

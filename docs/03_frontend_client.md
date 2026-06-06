@@ -56,6 +56,19 @@ const { stagePort, isStageConnected } = useAppStore(
     *   ステージ移動中や測定シーケンス実行中に `true` に設定されます。
     *   各ボタン（移動ボタン、タブ切り替えなど）は `disabled={isSystemBusy}` のように実装されており、処理中にユーザーが誤って別の操作をするのを防ぎます。
 
+### 1.3 自動測定 (Auto Mode) のワークフロー管理
+
+Auto Mode では、単一の画面内で「サンプルの新規作成」「カテゴリ選択」「実行」という複雑な状態遷移が発生します。これを `autoPhase` という状態変数で集中管理しています。
+
+*   **`select_session` (Session Management):**
+    *   初期状態。今日の日付フォルダをスキャンし、連番での自動採番や過去の履歴表示を行います。
+*   **`select_category` (Category Selection):**
+    *   セッションが確定した後の「目次」画面。4つの測定条件（Left-Front等）の進捗を `currentSession.settings.measurements` の履歴から判定し、チェックマークを表示します。
+*   **`measuring` (Measurement Execution):**
+    *   具体的なパラメータ入力とハードウェア制御の委譲を行うフェーズ。
+
+このフェーズ管理により、ユーザーが今「実験のどの段階にいるか」を確実に保証し、不正な操作（セッション未確定での測定開始など）を構造的に防いでいます。
+
 ---
 
 ## 2. APIクライアント (API Client)
@@ -125,7 +138,15 @@ const result = await request<{ status: string }>("/stage/connect");
 
 これらは見た目はローカル通信でも、WebView から見ると「別 origin への通信」なので、CORS の許可設定が必要です。
 
-### 2.5 バックグラウンドポーリング分離 (`useStagePolling.ts`)
+### 2.5 自動測定API (autoApi)
+
+自動測定のセッション管理を担うAPI群です。
+
+*   **`getSessions()`**: 今日の日付フォルダ内の既存セッション（サンプル）一覧を取得します。
+*   **`createSession(sampleName)`**: 新しいサンプルフォルダを自動採番または指定名で作成し、初期 `settings.json` を生成します。
+*   **`getSessionSettings(folderPath)`**: 指定したフォルダの `settings.json` を読み込み、過去の測定履歴やROI設定を復元します。
+
+### 2.6 バックグラウンドポーリング分離 (`useStagePolling.ts`)
 
 ステージの角度 (`currentAngle`) など、高頻度で更新される値はReactのメイン描画サイクルに負荷をかけないよう、専用のカスタムフックに分離しています。
 
@@ -275,7 +296,16 @@ toast.success("移動完了！");
 *   **タイムアウト:** デフォルト5分（Sweep等の長時間動作に対応）。計算された所要時間に基づいて動的に延長されます。
 *   **リトライ:** 一時的な通信エラーで即死しないよう、連続5回のエラーまでは許容します。
 
-### 3.4 ログ表示パネル (LogPanel.tsx)
+### 3.4 自動測定画面 (AutoView.tsx)
+
+自動測定の進行を管理する主要な画面です。
+
+*   **フェーズ連動型UI**: ストアの `autoPhase` に基づき、左側の操作パネルを動的に切り替えます（Session Management / Category Selection / Measurement Execution）。
+*   **右側ビューパネル (Resizable)**:
+    *   `shadcn/ui` の `ResizablePanelGroup` を採用。
+    *   上段に `CameraPanel`、下段に `GraphPanel` (`recharts`) を配置し、映像とグラフの比率をユーザーが調整可能です。
+
+### 3.5 ログ表示パネル (LogPanel.tsx)
 
 システム全体の動作状況を可視化するためのコンポーネントです。
 `02. APIサーバー層` で解説されている通り、バックエンドは最新のログをメモリ上に保持しており、フロントエンドはそれを定期的に取得して表示します。
@@ -308,7 +338,7 @@ toast.success("移動完了！");
 しかし、スクロール位置の制御のような「物理的な挙動」に関しては、ブラウザのDOM要素を直接操作する**命令的**な記述が必要です。
 本パネルでは `useRef` を使用してこれを実現しています。（詳細は「4. 開発者向けガイド」の `useRef` の項を参照）
 
-### 3.5 設定画面 (`SettingsView.tsx`)
+### 3.6 設定画面 (`SettingsView.tsx`)
 
 アプリケーションの動作設定を管理する画面です。TauriのファイルシステムAPIを活用し、永続的な設定管理を実現しています。
 

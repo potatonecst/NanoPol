@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { AppMode, StageSettings } from '@/types';
+import { AppMode, StageSettings, AutoMeasurementPhase, MeasurementSession } from '@/types';
 
 //インターフェース: ストアの中身（データと関数）の設計図
 interface AppState {
@@ -63,6 +63,19 @@ interface AppState {
     setZoomLevel: (zoom: number) => void; //ズームレベルを設定する関数
     panOffset: { x: number; y: number }; //パンオフセット
     setPanOffset: (offset: { x: number; y: number }) => void; //パンオフセットを設定する関数
+
+    // --- 自動測定 (Auto Mode) 専用の状態 ---
+    autoPhase: AutoMeasurementPhase;
+    setAutoPhase: (phase: AutoMeasurementPhase) => void;
+    
+    currentSession: MeasurementSession | null;
+    setCurrentSession: (session: MeasurementSession | null) => void;
+    
+    selectedCategory: string | null; // 現在選択中の測定カテゴリ (例: "Left_Front")
+    setSelectedCategory: (category: string | null) => void;
+
+    // 自動測定に関わる状態のみを初期化
+    resetAutoMeasurement: () => void;
 
     //System Actions
     resetAllConnections: () => void; //接続をリセットする関数
@@ -129,6 +142,23 @@ export const useAppStore = create<AppState>((set) => ({
     panOffset: { x: 0, y: 0 }, //初期値
     setPanOffset: (offset) => set({ panOffset: offset }), //set関数
 
+    // --- 自動測定 (Auto Mode) 専用の状態 ---
+    autoPhase: 'select_session',
+    setAutoPhase: (phase) => set({ autoPhase: phase }),
+    
+    currentSession: null,
+    setCurrentSession: (session) => set({ currentSession: session }),
+    
+    selectedCategory: null,
+    setSelectedCategory: (category) => set({ selectedCategory: category }),
+
+    resetAutoMeasurement: () => set({
+        autoPhase: 'select_session',
+        currentSession: null,
+        selectedCategory: null,
+        isMeasuring: false,
+    }),
+
     //アプリ側の状態を強制的に「未接続・初期状態」に戻す
     resetAllConnections: () => set({
         isStageConnected: false,
@@ -148,6 +178,10 @@ export const useAppStore = create<AppState>((set) => ({
         cameraExposureRange: null,
         zoomLevel: 1,
         panOffset: { x: 0, y: 0 },
+        // 自動測定の状態もリセット
+        autoPhase: 'select_session',
+        currentSession: null,
+        selectedCategory: null,
     }),
 
     //設定の初期値
