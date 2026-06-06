@@ -245,11 +245,12 @@ backend の終了確認では、次のログを順に確認する。
 
 | メソッド | パス | 役割 | 備考 |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/measurement/sessions` | 今日のセッション一覧取得 | `outputDirectory` 内をスキャンします |
+| `GET` | `/measurement/sessions` | 測定セッション一覧取得 | `date_dir` 引数で過去日の参照が可能（省略時は今日）。 |
 | `POST` | `/measurement/session` | 新規セッション作成 | フォルダと `settings.json` を生成します |
 | `GET` | `/measurement/session/settings` | セッション設定の読込 | 指定フォルダの進捗状況を返します |
 
 #### 設計のポイント
+*   **日付指定のスキャン**: `/measurement/sessions?date_dir=YYYYMMDD` をリクエストすることで、過去の実験履歴をフロントエンドからブラウズできます。応答には現在表示中の日付フォルダのフルパス (`selected_dir`) も含まれます。
 *   **保存先の参照**: これらの API は、設定画面で保存された `outputDirectory` を `camera.settings` から取得して動作します。
 *   **自動採番**: `POST /measurement/session` で名前を空にすると、`Sample_1`, `Sample_2` といった連番が自動的に割り振られます。
 *   **不備の検出**: 保存先が設定されていない状態でセッションを作成しようとすると、HTTP 400 エラーを返し、フロントエンドに設定を促します。

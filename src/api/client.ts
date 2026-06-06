@@ -293,16 +293,22 @@ export const systemApi = {
 
     export const autoApi = {
     /**
-     * 今日の日付フォルダ内にあるセッション一覧を取得します。
+     * 指定された日付フォルダ（デフォルトは今日）内にあるセッション一覧を取得します。
      * 
+     * @param dateDir 日付フォルダ名 (例: "20260606")。省略時は今日の日付が対象。
      * @returns セッション名のリスト、および保存先フォルダの情報
      */
-    getSessions: () =>
-        request<{
+    getSessions: (dateDir?: string) => {
+        const url = dateDir 
+            ? `/measurement/sessions?date_dir=${encodeURIComponent(dateDir)}`
+            : "/measurement/sessions";
+        return request<{
             sessions: string[],
             base_dir: string,
-            today_dir: string
-        }>("/measurement/sessions"),
+            today_dir: string,
+            selected_dir: string
+        }>(url);
+    },
 
     /**
      * 新しい測定セッション（サンプルフォルダ）を作成します。

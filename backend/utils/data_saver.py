@@ -40,64 +40,63 @@ def get_base_dir(output_dir: str) -> str:
     """
     return os.path.join(output_dir, "AutoMeasurementData")
 
-def get_today_dir(base_dir: str) -> str:
+def get_date_dir(base_dir: str, date_str: str | None = None) -> str:
     """
-    今日の測定データを保存するための日付フォルダパスを生成します。
+    指定された日付（YYYYMMDD形式）のフォルダパスを生成します。
+    引数が None の場合は、現在の日付（今日）を使用します。
 
     解説:
-        日付形式は "YYYYMMDD" (例: 20260605) としています。
-        ハイフンを入れないのは、ファイルシステム上での視認性と、プログラムでのパースのしやすさ、
-        およびWindows/Mac両方のフォルダ名制約に最も安全に適合するためです。
-
-    使用している標準ライブラリ:
-        datetime.now(): 実行した瞬間の現在日時を取得します。
-        strftime("%Y%m%d"): 日時を「20260601」のような8桁の文字列にフォーマット（変換）します。
+        「過去のデータを見たい」というリクエストと「今日のデータを保存したい」
+        というリクエストの両方に対応するための共通部品です。
     """
-    # 常にローカルの日付を使う（夜を徹した実験などではUTCだと日付がずれるため）
-    today_str = datetime.now().strftime("%Y%m%d")
-    return os.path.join(base_dir, today_str)
+    if date_str is None:
+        date_str = datetime.now().strftime("%Y%m%d")
+    return os.path.join(base_dir, date_str)
 
-def get_today_sessions(output_dir: str) -> list[str]:
+def get_today_dir(base_dir: str) -> str:
     """
-    今日の日付フォルダ内にある既存のサンプル（セッション）名のリストを取得します。
-    State 0 の「今日のリスト (Load)」を表示するために使われます。
+    今日（実行当日）の測定データを保存するための日付フォルダパスを生成します。
+    """
+    return get_date_dir(base_dir, None)
+
+def get_sessions(output_dir: str, date_str: str | None = None) -> list[str]:
+    """
+    指定された日付フォルダ内にある既存のサンプル（セッション）名のリストを取得します。
+    date_str が None の場合は、自動的に今日の日付を対象にします。
 
     ロジックの解説:
-        1. まず今日の日付フォルダ（today_dir）が存在するか確認します。
-        2. フォルダ内の全項目をループし、以下の条件を満たすものだけを「セッション」と認めます。
-           - それ自体が「フォルダ（ディレクトリ）」であること
-           - その中に「settings.json」という名前のファイルが実在すること
-        これにより、ユーザーが手動で入れたゴミファイルや、作成途中で失敗した空フォルダを
-        UIに表示させない「防波堤」の役割を果たします。
+        1. 指定された日付、または今日の日付フォルダを特定します。
+        2. フォルダ内の各項目を走査し、「フォルダである」かつ「settings.jsonがある」
+           ものだけを有効なセッションとして抽出します。
 
     引数:
         output_dir (str): 大元の保存先パス
+        date_str (str | None): 対象の日付文字列 (例: "20260601")。None なら今日。
 
     戻り値:
-        list[str]: ["Sample_1", "Sample_2"] のような文字列のリスト
-
-    使用している標準ライブラリ:
-        os.path.exists(path): 指定したパスが存在するかどうかを True/False で返します。
-        os.listdir(path): 指定したフォルダの中にあるファイルやフォルダの名前をリストで返します。
-        os.path.isdir(path): そのパスがファイルではなく「フォルダ（ディレクトリ）」かどうかを判定します。
+        list[str]: 有効なサンプル名のリスト
     """
-    today_dir = get_today_dir(get_base_dir(output_dir))
+    base_dir = get_base_dir(output_dir)
+    target_dir = get_date_dir(base_dir, date_str)
     
-    if not os.path.exists(today_dir):
-        # フォルダが存在しなければ、まだ今日の測定は1回も行われていないので空リストを返します。
+    if not os.path.exists(target_dir):
+        # 指定された日付のフォルダがまだ作られていなければ空リストを返します。
         return []
     
     sessions = []
-    # today_dir の中にある全ての項目（ファイルとフォルダ）を1つずつ調べます。
-    for entry in os.listdir(today_dir):
-        full_path = os.path.join(today_dir, entry)
-        # それが「フォルダ」であり、かつ「settings.json」を含んでいるなら、
-        # 正しい測定セッションフォルダだとみなしてリストに追加します。
+    for entry in os.listdir(target_dir):
+        full_path = os.path.join(target_dir, entry)
+        # 有効なセッションフォルダかどうかの厳密なチェック（settings.jsonの存在確認）
         if os.path.isdir(full_path) and os.path.exists(os.path.join(full_path, "settings.json")):
             sessions.append(entry)
             
-    # 名前順（Sample_1, Sample_2...）に並び替えて返します。
     return sorted(sessions)
+
+def get_today_sessions(output_dir: str) -> list[str]:
+    """
+    【後方互換用】今日の日付フォルダ内のセッション一覧を取得します。
+    """
+    return get_sessions(output_dir, None)
 
 def create_new_session(output_dir: str, requested_name: str = "") -> dict:
     """

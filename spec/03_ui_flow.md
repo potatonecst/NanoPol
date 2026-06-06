@@ -83,18 +83,21 @@
   * **Camera View:**
       * `CameraPanel` コンポーネントにてバックエンドからのMJPEGストリーム (`/camera/video_feed`) を表示する。ズームやパン操作に対応。
 
-#### ③ Auto Mode (自動測定) - **Planned**
+#### ③ Auto Mode (自動測定) - **Partially Implemented**
 
 `src/components/views/AutoView.tsx`
 
 サイドバーの状態（フェーズ）遷移でフローを管理する。
 
-**【Session Management (セッション管理)】**
+**【Session Management (セッション管理)】** - **Implemented**
 Autoモードに入った最初のフェーズ。サンプルの新規作成または履歴のロードを行う。
 
   * **レイアウト:** 左側に操作パネル、右側に `CameraPanel` を表示。
   * **[ New Sample ]**
-      * `Sample Name`: デフォルトで自動採番された名前（例: `Sample_1`）が入力済み。
+      * `Sample Name`: 
+          * **UI改善:** 明示的なラベル「Sample Name」を追加。
+          * **注釈:** ラベルの横に `Optional (Auto-generated if empty)` と表示し、未入力時の自動採番（例: `Sample_1`）を明示。
+          * **Placeholder:** `Enter name or leave blank...` とし、ユーザーの迷いを払拭。
       * `[Create & Start]` ボタン (Plusアイコン): 押下するとフォルダを作成し、**Category Selection** へ遷移。
   * **[ Load Session ]**
       * **Date Picker**: `shadcn/ui` の `Calendar` を使用。今日以外の日付のデータもスキャン可能。

@@ -62,6 +62,7 @@ Auto Mode では、単一の画面内で「サンプルの新規作成」「カ�
 
 *   **`select_session` (Session Management):**
     *   初期状態。今日の日付フォルダをスキャンし、連番での自動採番や過去の履歴表示を行います。
+    *   **UI改善 (Sample Name入力):** 自動採番の挙動を前提としつつ、ユーザーが入力項目を迷わないよう、明示的なラベルと「Optional (Auto-generated if empty)」という注釈を追加しました。プレースホルダーも `Enter name or leave blank...` とすることで、未入力時のシステム動作を直感的に伝えています。
 *   **`select_category` (Category Selection):**
     *   セッションが確定した後の「目次」画面。4つの測定条件（Left-Front等）の進捗を `currentSession.settings.measurements` の履歴から判定し、チェックマークを表示します。
 *   **`measuring` (Measurement Execution):**

@@ -1591,7 +1591,7 @@ def post_log(req: LogPostRequest):
 # 詳細な設計思想については docs/08_auto_measurement.md を参照してください。
 
 @app.get("/measurement/sessions")
-def get_measurement_sessions():
+def get_measurement_sessions(date_dir: str | None = None):
     """
     今日の日付フォルダ内にある既存の測定セッション（サンプル）一覧を取得します。
     
@@ -1601,14 +1601,15 @@ def get_measurement_sessions():
 
     【動作詳細】
     1. camera.settings["outputDirectory"] から保存先のルートを取得します。
-    2. その配下の AutoMeasurementData/<今日の日付>/ をスキャンします。
+    2. その配下の AutoMeasurementData/<指定または今日の日付>/ をスキャンします。
     3. settings.json が存在する有効なフォルダのみを抽出し、名前順で返します。
 
     戻り値:
         dict: {
             "sessions": 有効なサンプル名のリスト,
             "base_dir": 自動測定データの保存起点,
-            "today_dir": 今日の日付フォルダのフルパス
+            "today_dir": 今日の日付フォルダのフルパス,
+            "selected_dir": 現在リストアップ対象となっている日付フォルダのフルパス
         }
     """
     # 保存先ディレクトリは設定画面で指定された値（camera.settings内）を使用します。
@@ -1618,21 +1619,23 @@ def get_measurement_sessions():
     if not output_dir or output_dir.strip() == "":
         # 保存先が未設定の場合は、エラーではなく空のリストを返し、
         # フロントエンド側で適切に（「保存先を設定してください」等）表示できるようにします。
-        return {"sessions": [], "base_dir": "", "today_dir": ""}
+        return {"sessions": [], "base_dir": "", "today_dir": "", "selected_dir": ""}
     
     try:
-        # data_saver を使って、今日の日付フォルダ内の有効なセッションを探します。
-        sessions = data_saver.get_today_sessions(output_dir)
+        # data_saver を使って、指定された日付（または今日）のセッションを探します。
+        sessions = data_saver.get_sessions(output_dir, date_dir)
         base_dir = data_saver.get_base_dir(output_dir)
         today_dir = data_saver.get_today_dir(base_dir)
+        selected_dir = data_saver.get_date_dir(base_dir, date_dir)
         
         return {
             "sessions": sessions,
             "base_dir": base_dir,
-            "today_dir": today_dir
+            "today_dir": today_dir,
+            "selected_dir": selected_dir
         }
     except Exception as e:
-        logger.error(f"[AUTO] Failed to get sessions from {output_dir}: {e}")
+        logger.error(f"[AUTO] Failed to get sessions from {output_dir} (date={date_dir}): {e}")
         raise HTTPException(status_code=500, detail=f"Failed to scan sessions: {str(e)}")
 
 @app.post("/measurement/session")

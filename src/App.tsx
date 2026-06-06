@@ -19,6 +19,7 @@ import { IconWaveSine } from "@tabler/icons-react"
 
 import { DevicesView } from "./components/views/DevicesView";
 import { ManualView } from "./components/views/ManualView";
+import { AutoView } from "./components/views/AutoView";
 import { SettingsView } from "./components/views/SettingsView";
 import type { Settings } from "./schemas/settingsSchema";
 
@@ -565,7 +566,7 @@ function App() {
       case "manual":
         return <ManualView />;
       case "auto":
-        return <div className="p-8 text-2xl font-bold text-muted-foreground">▶️ Auto Mode Area</div>;
+        return <AutoView />;
       case "settings":
         return <SettingsView />;
       default:
