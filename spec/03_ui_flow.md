@@ -81,7 +81,9 @@
           * 実行中は `[Stop]` ボタンで中断可能。
       * **Emergency Stop:** 警告アイコンボタンで即時停止 (`L:E`). 減速なし。
   * **Camera View:**
-      * `CameraPanel` コンポーネントにてバックエンドからのMJPEGストリーム (`/camera/video_feed`) を表示する。ズームやパン操作に対応。
+      * `CameraPanel` コンポーネントにてバックエンドからのMJPEGストリーム (`/camera/video_feed`) を表示する。
+      * **操作性:** マウスホイールによるズーム、ドラッグによるパンに加え、`Ctrl + Click` によるROI作成、`Alt + Click` による削除に対応。
+      * **情報表示:** 画面右上にROIごとの座標や簡易統計（Sum/Max）を表示するフローティングパネルを配置。
 
 #### ③ Auto Mode (自動測定) - **Partially Implemented**
 

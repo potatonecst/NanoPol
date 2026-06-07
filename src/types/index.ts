@@ -19,6 +19,21 @@ export interface LogEntry {
     name: string; //ログ発生元の名前
 }
 
+/**
+ * ROI（関心領域）のデータ型
+ * 
+ * カメラ映像上の特定の領域（粒子など）を指し示し、その範囲内の輝度を計算するために使用します。
+ * 座標はカメラの生ピクセル座標（1280x1024など）を基準とし、表示上の拡大率に左右されません。
+ */
+export interface ROIData {
+    id: string;      // ユニークなID
+    index: number;   // 固定インデックス (1, 2, 3...)
+    x: number;       // 中心座標 X (ピクセル)
+    y: number;       // 中心座標 Y (ピクセル)
+    size: number;    // 辺の長さ (ピクセル)。常に奇数であることを期待します。
+    color?: string;  // 表示用の色（オプション）
+}
+
 // --- 自動測定（Auto Mode）関連の型定義 ---
 
 /**

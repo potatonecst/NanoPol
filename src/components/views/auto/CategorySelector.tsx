@@ -21,12 +21,7 @@ import {
     TableHeader,
     TableHead,
 } from '@/components/ui/table';
-import {
-    Tooltip,
-    TooltipContent,
-    TooltipProvider,
-    TooltipTrigger,
-} from '@/components/ui/tooltip';
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { Badge } from '@/components/ui/badge';
 
 /**

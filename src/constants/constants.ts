@@ -52,3 +52,36 @@ export const DEFAULT_EXPOSURE_STEP_MS = 0.06675;
 
 export const DEFAULT_GAIN_MIN = 1.0;
 export const DEFAULT_GAIN_MAX = 13.0;
+
+/**
+ * ROI (Region of Interest) 関連の定数
+ */
+export const MAX_ROIS = 20;
+export const MIN_ROI_SIZE = 3;
+
+/**
+ * ROIに順番に割り当てるカラーパレット（高視認性 20色）
+ * 1-10番は特に区別しやすい鮮やかな色、11-20番も可能な限り視認性を確保
+ */
+export const ROI_COLORS = [
+    "rgba(255, 255, 0, 0.8)",   // 1: Yellow
+    "rgba(0, 255, 255, 0.8)",   // 2: Cyan
+    "rgba(255, 0, 255, 0.8)",   // 3: Magenta
+    "rgba(0, 255, 0, 0.8)",     // 4: Green (Lime)
+    "rgba(255, 50, 50, 0.8)",   // 5: Red
+    "rgba(255, 165, 0, 0.8)",   // 6: Orange
+    "rgba(180, 0, 255, 0.8)",   // 7: Purple
+    "rgba(0, 150, 255, 0.8)",   // 8: Azure Blue
+    "rgba(180, 255, 0, 0.8)",   // 9: Chartreuse
+    "rgba(255, 105, 180, 0.8)", // 10: Hot Pink
+    "rgba(255, 215, 0, 0.8)",   // 11: Gold
+    "rgba(0, 255, 127, 0.8)",   // 12: Spring Green
+    "rgba(123, 104, 238, 0.8)", // 13: Medium Slate Blue
+    "rgba(255, 69, 0, 0.8)",    // 14: Orange Red
+    "rgba(127, 255, 212, 0.8)", // 15: Aquamarine
+    "rgba(255, 20, 147, 0.8)",  // 16: Deep Pink
+    "rgba(70, 130, 180, 0.8)",  // 17: Steel Blue
+    "rgba(218, 112, 214, 0.8)", // 18: Orchid
+    "rgba(0, 128, 128, 0.8)",   // 19: Teal
+    "rgba(240, 230, 140, 0.8)", // 20: Khaki
+];

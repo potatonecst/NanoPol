@@ -80,7 +80,7 @@ graph TD
 | :------------------------------------------------------------------------ | :------------------------------------------------- | :----------------------------- |
 | **[01. ハードウェア制御層](01_backend_devices.md)**                       | ステージ/カメラの制御ロジック、Mock機能、Pitch処理 | `backend/devices/*`            |
 | **[02. APIサーバー層](02_backend_server.md)**                             | FastAPI実装、ライフサイクル、ロギング設計          | `backend/main.py`              |
-| **[03. フロントエンド層](03_frontend_client.md)**                         | React/Zustand実装、ポーリング、非同期UI設計        | `src/*`                        |
+| **[03. フロントエンド層](03_frontend_client.md)**                         | React/Zustand実装、ポーリング、ROI（関心領域）管理、非同期UI設計 | `src/*`                        |
 | **[04. 入力バリデーションと数値処理](04_validation_guide.md)**            | Zodを利用した入力制約、浮動小数点誤差とEPSILON     | `src/schemas/*`                |
 | **[05. プロセス間連携と動的ポート割り当て](05_process_communication.md)** | 動的ポート割り当て、開発/本番のハイブリッド構成    | `main.py`, `App.tsx`, `lib.rs` |
 

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { AppMode, StageSettings, AutoMeasurementPhase, MeasurementSession } from '@/types';
+import { AppMode, StageSettings, AutoMeasurementPhase, MeasurementSession, ROIData } from '@/types';
+import { MAX_ROIS, ROI_COLORS } from '@/constants/constants';
 
 //インターフェース: ストアの中身（データと関数）の設計図
 interface AppState {
@@ -63,6 +64,13 @@ interface AppState {
     setZoomLevel: (zoom: number) => void; //ズームレベルを設定する関数
     panOffset: { x: number; y: number }; //パンオフセット
     setPanOffset: (offset: { x: number; y: number }) => void; //パンオフセットを設定する関数
+
+    // ROI (Region of Interest) 管理
+    rois: ROIData[]; // ROIのリスト
+    addROI: (roi: Omit<ROIData, 'id'>) => void; // ROIを追加
+    updateROI: (id: string, updates: Partial<ROIData>) => void; // ROIを更新
+    removeROI: (id: string) => void; // ROIを削除
+    clearROIs: () => void; // 全てのROIをクリア
 
     // --- 自動測定 (Auto Mode) 専用の状態 ---
     autoPhase: AutoMeasurementPhase;
@@ -142,6 +150,83 @@ export const useAppStore = create<AppState>((set) => ({
     panOffset: { x: 0, y: 0 }, //初期値
     setPanOffset: (offset) => set({ panOffset: offset }), //set関数
 
+    // ROI (Region of Interest) 管理
+    rois: [],
+    addROI: (roi) => set((state) => {
+        // 最大数制限のチェック
+        if (state.rois.length >= MAX_ROIS) return state;
+
+        // 最小の未使用インデックス (1-based) を探す
+        const usedIndices = state.rois.map(r => r.index);
+        let smallestAvailableIndex = 1;
+        while (usedIndices.includes(smallestAvailableIndex) && smallestAvailableIndex <= MAX_ROIS) {
+            smallestAvailableIndex++;
+        }
+
+        // 万が一空きがない場合（通常は length チェックで弾かれる）
+        if (smallestAvailableIndex > MAX_ROIS) return state;
+
+        const { width, height } = state.cameraResolution;
+        // 型安全のため、sizeを確実に数値として取得
+        const size = typeof roi.size === 'number' ? roi.size : 11;
+        
+        // 中心座標が画像枠内に収まるようにクランプ
+        const halfSize = size / 2;
+        const clampedX = Math.max(halfSize, Math.min(width - halfSize, roi.x));
+        const clampedY = Math.max(halfSize, Math.min(height - halfSize, roi.y));
+
+        // インデックスに紐づく色を割り当てる (0-based に変換して取得)
+        const color = ROI_COLORS[(smallestAvailableIndex - 1) % ROI_COLORS.length];
+
+        // ID生成: crypto.randomUUID が使えない環境へのフォールバック
+        const id = (typeof crypto !== 'undefined' && (crypto as any).randomUUID) 
+            ? (crypto as any).randomUUID() 
+            : Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
+
+        // 新しいROIオブジェクトを作成
+        const newROI: ROIData = {
+            ...roi,
+            id,
+            index: smallestAvailableIndex,
+            x: clampedX,
+            y: clampedY,
+            size,
+            color
+        };
+
+        // UIで見やすいようにインデックス順でソートして保持
+        return {
+            rois: [...state.rois, newROI].sort((a, b) => a.index - b.index)
+        };
+    }),
+    updateROI: (id, updates) => set((state) => {
+        const { width, height } = state.cameraResolution;
+        
+        return {
+            rois: state.rois.map((r) => {
+                if (r.id !== id) return r;
+
+                // 更新後の値を計算（無ければ現在の値）
+                const newSize = updates.size ?? r.size;
+                const halfSize = newSize / 2;
+
+                // 座標またはサイズが更新される場合、常に枠内にクランプ
+                let newX = updates.x ?? r.x;
+                let newY = updates.y ?? r.y;
+
+                // クランプ処理
+                newX = Math.max(halfSize, Math.min(width - halfSize, newX));
+                newY = Math.max(halfSize, Math.min(height - halfSize, newY));
+
+                return { ...r, ...updates, x: newX, y: newY, size: newSize };
+            })
+        };
+    }),
+    removeROI: (id) => set((state) => ({
+        rois: state.rois.filter((r) => r.id !== id)
+    })),
+    clearROIs: () => set({ rois: [] }),
+
     // --- 自動測定 (Auto Mode) 専用の状態 ---
     autoPhase: 'select_session',
     setAutoPhase: (phase) => set({ autoPhase: phase }),
@@ -157,6 +242,7 @@ export const useAppStore = create<AppState>((set) => ({
         currentSession: null,
         selectedCategory: null,
         isMeasuring: false,
+        rois: [], // ROIもリセット
     }),
 
     //アプリ側の状態を強制的に「未接続・初期状態」に戻す
@@ -178,6 +264,7 @@ export const useAppStore = create<AppState>((set) => ({
         cameraExposureRange: null,
         zoomLevel: 1,
         panOffset: { x: 0, y: 0 },
+        rois: [],
         // 自動測定の状態もリセット
         autoPhase: 'select_session',
         currentSession: null,
