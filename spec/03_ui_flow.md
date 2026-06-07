@@ -106,12 +106,17 @@ Autoモードに入った最初のフェーズ。サンプルの新規作成ま�
       * `[Resume]` ボタン (ChevronRightアイコン): 1クリックでそのセッションを再開。
   * **遷移:** 選択完了後、**Category Selection** へ遷移。
 
-**【Category Selection (測定項目選択)】**
+**【Category Selection (測定項目選択)】** - **Implemented**
 どの条件を測定するか選ぶ、実験ノートの目次のようなフェーズ。
 
   * **サンプル情報:** 選択中のサンプル名を表示。 `[Exit Session]` で最初のフェーズに戻る。
-  * **Category Cards:** 4つの測定条件（Left-Front等）をカード形式で配置。
-      * 測定完了済み項目にはステータスアイコン（Check）を表示。
+  * **Category Cards:** 以下の4つの測定条件をカード形式で配置（指定順序）。
+      1. **Left - Front**: レーザー左入射、プレート手前。
+      2. **Right - Front**: レーザー右入射、プレート手前。
+      3. **Left - Rear**: レーザー左入射、プレート奥 (Rear)。
+      4. **Right - Rear**: レーザー右入射、プレート奥 (Rear)。
+      * 測定完了済み項目（`status: completed`）にはステータスアイコン（Check）を表示。
+  * **Session History:** セッション内の全測定履歴（ID、開始時刻、最終ステータス）をテーブル形式で一覧表示。
   * **遷移:** カテゴリ選択 → **Measurement Execution** へ。
 
 **【Measurement Execution (測定実行)】**
@@ -137,7 +142,7 @@ Autoモードに入った最初のフェーズ。サンプルの新規作成ま�
   * **Progress:**
       * 実行中: 現在の角度、残り枚数、プログレスバーを表示。
       * `[ABORT / PAUSE]` (Stopアイコン): 緊急停止。
-  * **遷移:** 完了または中断後、**Category Selection** へ戻る。
+  * **遷移:** 完了または中断後, **Category Selection** へ戻る。
 
 
 #### ④ Settings Mode (設定) - **Implemented**
@@ -148,7 +153,7 @@ Autoモードに入った最初のフェーズ。サンプルの新規作成ま�
       * **Output Directory:** 測定データの保存先フォルダ。
           * **Default:** `Documents/NanoPol` (OSのドキュメントフォルダ配下)。
           * **Behavior:** 設定保存時にフォルダが存在しない場合、自動的に再帰作成される。
-          * **Action:** `[Browse]` ボタンでネイティブのフォルダ選択ダイアログを開く。
+          * **Action:** `[Browse]` BUTTONでネイティブのフォルダ選択ダイアログを開く。
       * **Filename Prefix:** ファイル名の接頭辞 (Default: `scan_`)。
       * **Image Format:** 保存画像のフォーマット (TIFF/PNG/JPG)。
   * **Stage Motion Defaults:**

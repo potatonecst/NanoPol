@@ -145,8 +145,8 @@ Autoモードに入った最初の状態。サイドバーに表示。
   * **次アクション選択:**
       * `[ 1. Left / Front ]`
       * `[ 2. Right / Front ]`
-      * `[ 3. Left / Back ]`
-      * `[ 4. Right / Back ]`
+      * `[ 3. Left / Rear ]`
+      * `[ 4. Right / Rear ]`
       * `[ 5. Custom ]`
       * `[ Finish Experiment ]` (State 0に戻る)
   * **遷移:** ボタン選択 → **State B** へ。

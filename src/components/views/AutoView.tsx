@@ -7,6 +7,7 @@ import {
     ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { SessionManager } from './auto/SessionManager';
+import { CategorySelector } from './auto/CategorySelector';
 
 /**
  * 自動測定画面 (Auto View) コンポーネント
@@ -54,10 +55,7 @@ export function AutoView() {
                                     Choose the specific measurement condition (e.g., Left-Front) to perform.
                                 </p>
                             </div>
-                            {/* TODO: CategorySelector コンポーネント */}
-                            <div className="p-8 border-2 border-dashed rounded-xl bg-secondary/10 text-center text-xs text-muted-foreground">
-                                Category Selection UI
-                            </div>
+                            <CategorySelector />
                         </div>
                     )}
 
