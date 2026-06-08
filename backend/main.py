@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from serial.tools import list_ports
+from typing import Optional
 import sys
 import os
 import asyncio
@@ -47,6 +48,118 @@ class SystemState:
         # Sweep の進捗を progress API から返すための、操作単位の状態オブジェクトです。
         # ここには operation_id、現在フェーズ、計画値、キャンセル要求フラグなどをまとめて保持します。
         self.sweep_operation = None
+        # 自動測定（Auto Mode）専用の状態管理
+        self.auto_measurement = AutoMeasurementState()
+
+class AutoMeasurementState:
+    """
+    自動測定（Auto Mode）中における、精密測定データの蓄積・管理を担当します。
+
+    【設計の意図: トリガーベースへの移行】
+    以前はカメラからのデータをすべて受け取っていましたが、測定精度の向上（撮影画像と
+    数値の完全な一致）のため、「Snapshot指示があった瞬間の確定データ」のみを
+    蓄積する「トリガーベース」の設計に変更されました。
+    これにより、グラフに表示される1点1点が、確実に保存された画像と対応することが保証されます。
+    """
+    def __init__(self):
+        # 自動測定セッションが現在有効（実行中）かどうか
+        self.is_active = False
+
+        # 測定対象のサンプル名と、データの保存先ディレクトリ
+        self.sample_name = ""
+        self.folder_path = ""
+
+        # グラフ表示用の時系列データバッファ
+        # 構造: { roi_index: [ { angle: float, sum: float, max: float, timestamp: float }, ... ] }
+        # 各 ROI ごとに、角度と輝度のペアをリスト形式で保持します。
+        self.data_buffer = {}
+
+        # バッファの最大保持数（メモリ保護のための安全装置）
+        # 1測定で数千点のデータを扱うことがありますが、メモリの際限ない肥大化を防ぐため
+        # 10,000点を超えると古いデータから順に削除されます。
+        self.MAX_BUFFER_POINTS = 10000
+
+        # マルチスレッド（APIスレッドとキャプチャスレッド）からの同時アクセスを防ぐロック
+        self._lock = threading.Lock()
+
+    def reset(self):
+        """
+        新しい測定を開始する前に、すべてのバッファと状態をクリアします。
+        これにより、前の測定データが混ざることを防ぎます。
+        """
+        with self._lock:
+            self.is_active = False
+            self.sample_name = ""
+            self.folder_path = ""
+            self.data_buffer = {}
+            logger.info("[AUTO STATE] Reset complete. Buffer cleared for new measurement.")
+
+    def start_session(self, sample_name: str, folder_path: str):
+        """
+        新しい自動測定セッションを開始します。
+
+        Args:
+            sample_name (str): 測定対象の名前（ファイル名や設定に使用）
+            folder_path (str): 測定画像やログの保存先フォルダ
+        """
+        with self._lock:
+            self.reset()
+            self.is_active = True
+            self.sample_name = sample_name
+            self.folder_path = folder_path
+            logger.info(f"[AUTO STATE] Session started for: {sample_name}")
+
+    def add_point(self, angle: float, roi_stats: dict):
+        """
+        確定した測定データ（1点）をバッファに追加します。
+
+        CameraController.take_snapshot() で得られた「撮影画像と直結した解析結果」を
+        ここに流し込むことで、時系列グラフ用のデータが構築されます。
+        """
+        if not self.is_active:
+            # 測定中でない場合は無視します
+            return
+
+        with self._lock:
+            timestamp = time.time()
+
+            # roi_stats の例: { "0": {"sum": 100, ...}, "1": {...} }
+            for roi_key, stats in roi_stats.items():
+                # キーを統一するため "roi_0", "roi_1" 形式で管理
+                key = f"roi_{roi_key}"
+                if key not in self.data_buffer:
+                    self.data_buffer[key] = []
+
+                buf = self.data_buffer[key]
+
+                # バッファに新しいデータ点を追加
+                buf.append({
+                    "angle": angle,           # 撮影時の角度
+                    "sum": stats.get("sum", 0),# 輝度合計（メインの測定値）
+                    "max": stats.get("max", 0),# 最大輝度（飽和チェック用）
+                    "timestamp": timestamp     # 記録時刻
+                })
+
+                # --- メモリ保護ロジック ---
+                # 非常に細かいステップで長時間測定した場合でも、
+                # ブラウザやバックエンドのメモリが溢れないよう、古いデータを切り捨てます。
+                if len(buf) > self.MAX_BUFFER_POINTS:
+                    buf.pop(0)
+
+    def get_plot_data(self, roi_index: Optional[int] = None) -> dict:
+        """
+        フロントエンドのグラフ表示用に、現在蓄積されているデータを返します。
+
+        Args:
+            roi_index (int, optional): 特定の ROI だけのデータが欲しい場合に指定。
+                指定なし（None）の場合は、すべての ROI のデータを返します。
+        """
+        with self._lock:
+            if roi_index is not None:
+                key = f"roi_{roi_index}"
+                return {key: self.data_buffer.get(key, [])}
+            # 辞書のコピーを返すことで、外部での変更が内部バッファに影響しないようにします。
+            return dict(self.data_buffer)
 
 app_state = SystemState()
 stage_command_lock = threading.Lock()
@@ -618,6 +731,13 @@ async def lifespan(app: FastAPI):
     """
     logger.info("[SYSTEM] Backend Starting...")
     logger.debug(f"[SYSTEM] Backend PID={os.getpid()} PPID={os.getppid()}")
+
+    # 【システム連携】
+    # 以前はここでカメラの解析データを常時バッファに流し込む設定をしていましたが、
+    # 測定精度の確保（撮影画像と計算値の厳密な一致）のため、
+    # 蓄積は自動測定シーケンス内での明示的な Snapshot 呼び出し時に行う方針に変更されました。
+    camera.on_roi_stats_computed = None
+    logger.info("[SYSTEM] Data pipeline initialized (Trigger-based mode)")
     
     # 常時監視タスクの起動
     # asyncio.create_task は、非同期関数をバックグラウンドで並行実行させる標準機能です。
@@ -1402,6 +1522,26 @@ def config_camera(req: CameraConfigRequest):
     camera.set_gain(req.gain)
     return {"status": "success"}
 
+@app.post("/camera/rois")
+async def set_camera_rois(rois: list):
+    """解析対象の ROI リストを更新します"""
+    try:
+        camera.set_rois(rois)
+        return {"status": "success", "count": len(rois)}
+    except Exception as e:
+        logger.exception("Failed to set ROIs")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/camera/roi_stats")
+async def get_camera_roi_stats():
+    """最新の ROI 解析統計（Sum, Max, Centroid）を取得します"""
+    try:
+        stats = camera.get_latest_roi_stats()
+        return stats
+    except Exception as e:
+        logger.exception("Failed to get ROI stats")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/system/cameras")
 def get_cameras():
     """
@@ -1698,8 +1838,8 @@ def get_session_settings(folder_path: str):
         dict: settings.json の中身（app_version, sample_name, measurements 等）
 
     例外:
-        - HTTP 404: 指定されたフォルダに settings.json が存在しない場合。
-        - HTTP 500: ファイルが壊れていて JSON としてパースできない場合。
+        - HTTP 404: 指定されたフォルダに settings.json が存在しない場合.
+        - HTTP 500: ファイルが壊れていて JSON としてパースできない場合.
     """
     if not folder_path:
         raise HTTPException(status_code=400, detail="folder_path is required")
@@ -1717,6 +1857,31 @@ def get_session_settings(folder_path: str):
         raise HTTPException(status_code=500, detail="settings.json is corrupted")
     except Exception as e:
         logger.error(f"[AUTO] Failed to read session settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/measurement/plot_data")
+def get_measurement_plot_data(roi_index: Optional[int] = None):
+    """
+    自動測定中のグラフ表示用データ（角度ごとの輝度）を返します。
+    フロントエンドのグラフコンポーネントが定期的に（例: 500msごと）呼び出すことを想定しています。
+    """
+    try:
+        return app_state.auto_measurement.get_plot_data(roi_index)
+    except Exception as e:
+        logger.exception("Failed to get plot data")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/measurement/reset")
+def reset_measurement_data():
+    """
+    バックエンドのメモリ上に蓄積された測定データをリセットします。
+    新しいカテゴリの測定（Pre-Scan から Main への切り替え時など）に呼び出されます。
+    """
+    try:
+        app_state.auto_measurement.reset()
+        return {"status": "success"}
+    except Exception as e:
+        logger.exception("Failed to reset measurement data")
         raise HTTPException(status_code=500, detail=str(e))
 
 def write_backend_port_hint(app_data_dir: str | None, port: int) -> None:

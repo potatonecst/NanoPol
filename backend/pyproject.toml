@@ -10,6 +10,7 @@ dependencies = [
     "opencv-python>=4.11.0.86",
     "pylablib-lightweight>=1.4.3",
     "pyserial>=3.5",
+    "python-multipart>=0.0.32",
     "tifffile>=2025.10.16",
     "uvicorn>=0.38.0",
 ]

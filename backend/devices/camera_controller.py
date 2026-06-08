@@ -19,6 +19,7 @@ except ImportError as e:
     UC480_IMPORT_ERROR = str(e)
 
 from utils.logger import logger
+from utils.roi_processor import ROIProcessor
 
 if not HAS_UC480:
     logger.warning(f"[CAMERA INIT] pylablib.devices.uc480 import failed: {UC480_IMPORT_ERROR}")
@@ -89,6 +90,16 @@ class CameraController:
         self.latest_preview = None
         # 新規フレーム到着時に _capture_loop() から notify_all() し、配信/保存側が wait() で受け取る。
         self.frame_condition = threading.Condition()
+
+        # ROI 関連の状態管理
+        self.rois = []  # 現在の解析対象 ROI リスト
+        self.latest_roi_stats = {}  # 最新フレームの解析結果（Sum, Max, Centroid）
+        self.enable_centroid_calc = True  # 重心計算を行うかどうか
+        self._roi_lock = threading.Lock()  # ROI 設定の更新を保護するロック
+        
+        # 解析完了時に呼ばれる外部コールバック
+        # 署名: callback(angle: float, roi_stats: dict)
+        self.on_roi_stats_computed = None
 
         self._capture_thread = None  # 特急レーン（最速で画像を取得し続ける）のバックグラウンドスレッド
         self._mock_angle = 0.0  # Mock画像生成用の内部状態
@@ -755,12 +766,37 @@ class CameraController:
             
         logger.info(f"{self.log_tag} Settings updated: {new_settings}")
 
+    def set_rois(self, rois: list):
+        """解析対象の ROI リストを更新します"""
+        with self._roi_lock:
+            self.rois = rois
+        logger.info(f"{self.log_tag} ROI list updated: {len(rois)} items")
+
+    def set_centroid_calc_enabled(self, enabled: bool):
+        """重心計算の有効/無効を切り替えます"""
+        with self._roi_lock:
+            self.enable_centroid_calc = enabled
+        logger.info(f"{self.log_tag} Centroid calculation {'enabled' if enabled else 'disabled'}")
+
+    def get_latest_roi_stats(self) -> dict:
+        """最新フレームの ROI 解析結果を返します"""
+        with self.frame_condition:
+            return dict(self.latest_roi_stats)
+
     # ============================================================================
     # 【スナップショット】 take_snapshot / save_pending_snapshot
     # ============================================================================
 
-    def take_snapshot(self) -> Optional[str]:
-        """【Snapshot】最新のフレームを取得し、メモリに一時保持または自動保存する"""
+    def take_snapshot(self) -> Optional[dict]:
+        """
+        【Snapshot】最新のフレームを取得し、メモリに一時保持または自動保存します。
+        単に画像を保存するだけでなく、その「撮影された瞬間の画像」に対して ROI 解析を
+        即座に実行し、画像と数値を完全に紐付けた状態で返します。
+
+        【マルチスレッド設計の重要性】
+        このメソッドは、カメラが画像を撮り続けるスレッドとは別のスレッド（APIリクエスト等）から
+        呼ばれます。そのため、データの整合性を守るための工夫が施されています。
+        """
         if not self.is_connected:
             return None
             
@@ -768,51 +804,93 @@ class CameraController:
             if self.latest_frame is None:
                 logger.error(f"{self.log_tag} Snapshot failed: No frame available.")
                 return None
-            frame = self.latest_frame
             
+            # --- 【最重要】画像の確保 (Deep Copy) ---
+            # self.latest_frame はカメラループによって常に上書きされ続けています。
+            # .copy() を行わずに参照だけを持ってしまうと、この後の解析や保存をしている最中に
+            # 中身が次のフレームに書き換わってしまい、データに矛盾が生じる「レースコンディション」が起きます。
+            # ここで独立したメモリ空間にコピーを作ることで、この時点の「静止画」を確定させます。
+            frame = self.latest_frame.copy()
+            angle = self.current_angle
+            
+        # ========================================================================
+        # 【正確な計算】撮影した「この画像」に対して、その場で ROI 解析を実行
+        # ========================================================================
+        # 画面表示用のループ（30fps等）で行われている解析は、あくまでモニタリング用です。
+        # 測定データとして保存する数値は、上記で確保した「保存対象の画像」そのものから
+        # 算出しなければなりません。ここで再計算を行うことで、画像ファイルと数値の
+        # 1:1 の対応関係を科学的に保証します。
+        with self._roi_lock:
+            current_rois = list(self.rois)
+            current_enable_centroid = self.enable_centroid_calc
+        
+        # 確保した frame を使って計算。実行時間は数マイクロ秒と極めて短時間です。
+        roi_stats = ROIProcessor.calculate_stats(frame, current_rois, current_enable_centroid)
+
+        # 保存用フォーマットの決定（デフォルトは非可逆圧縮なしの TIFF）
         fmt = self.settings.get("imageFormat", "TIFF")
         save_img = frame
         
-        # モードとフォーマットに応じた画像変換
+        # --- 画像形式の変換 ---
+        # Rawデータ（ベイヤー配列）のままでは一般的な画像閲覧ソフトで見られないため、
+        # プレビュー時と同様のカラー変換（デモザイク処理）を、保存用画像にも施します。
         bayer_code = self._get_bayer_color_conversion_code()
         if bayer_code is not None:
             save_img = cv2.cvtColor(save_img, bayer_code)
             
+        # JPEG/PNG の場合、16-bit データのままだと保存できないため、
+        # 表示可能な 8-bit にスケーリング（正規化）を行います。
         if fmt in ["JPEG", "PNG"] and save_img.dtype == np.uint16:
             save_img = cv2.normalize(save_img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
             
-        # ダイアログで保存先を聞く設定の場合、メモリに保持してフロントエンドからの保存指示を待つ
+        # 返却用情報の構築
+        result_info = {
+            "angle": angle,           # 撮影時のステージ角度
+            "roi_stats": roi_stats,   # 撮影画像から直接計算された輝度統計
+            "timestamp": time.time(), # 撮影完了時刻
+            "filepath": None          # 保存された場合のファイルパス（後述）
+        }
+
+        # --- 保存処理 ---
+        # ダイアログで保存先を聞く設定（askSavePath）が True の場合、
+        # まだ保存先が決まっていないため、画像をメモリ（_pending_snapshot）に保持して一旦終了します。
         if self.settings.get("askSavePath", False):
             self._pending_snapshot = save_img
             logger.info(f"{self.log_tag} Snapshot captured in memory. Waiting for save path...")
-            return "PENDING"
+            result_info["filepath"] = "PENDING"
+            return result_info
             
-        # 自動保存の場合
+        # 自動保存設定の場合の処理
         out_dir = self.settings.get("outputDirectory", os.getcwd())
         prefix = self.settings.get("snapshotPrefix", "snapshot_")
-        # ここでは「どこに」「どの形式で」「どの接頭辞で」保存しようとしたかを
-        # ログに残す。Windows 実機で Permission denied が出た場合でも、
-        # 原因パスをすぐ特定できるようにするための診断ログです。
+        
+        # Windows 実機環境でのトラブル（Permission denied等）を迅速に診断できるよう、
+        # 保存を試みる直前のディレクトリやプレフィックス情報を詳細にログ出力します。
         logger.info(
             f"{self.log_tag} Auto snapshot save requested: out_dir={out_dir}, format={fmt}, prefix={prefix}"
         )
-        # Use a dedicated snapshots/ subdirectory to avoid cluttering outputDirectory root
+        
+        # スナップショット専用のサブディレクトリを作成
         snapshot_dir = os.path.join(out_dir, "snapshots")
         try:
             os.makedirs(snapshot_dir, exist_ok=True)
         except Exception:
             logger.exception(f"{self.log_tag} Failed to create snapshot output directory: {snapshot_dir}")
-            return None
+            return result_info
 
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        # タイムスタンプを含むファイル名を生成
+        timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         ext = ".tif" if fmt == "TIFF" else (".jpg" if fmt == "JPEG" else ".png")
-        filepath = os.path.join(snapshot_dir, f"{prefix}{timestamp}{ext}")
-        # 最終的な保存先を明示することで、ログからそのまま再現できるようにする。
+        filepath = os.path.join(snapshot_dir, f"{prefix}{timestamp_str}{ext}")
+        
+        # 最終的な保存先パスをログに出力。問題発生時の追跡を容易にします。
         logger.info(f"{self.log_tag} Auto snapshot target path: {filepath}")
         
+        # ディスクへの書き込み。成功すればパスを result_info にセットします。
         if self._write_image_to_disk(filepath, save_img):
-            return filepath
-        return None
+            result_info["filepath"] = filepath
+            
+        return result_info
 
     def save_pending_snapshot(self, filepath: str) -> bool:
         """【Snapshot】メモリに保持していた画像を、指定されたパスに保存する"""
@@ -1027,12 +1105,39 @@ class CameraController:
             # これにより、定量解析（自動測定等）においてノイズやカウント値の重みが狂うのを防ぎます。
             raw_frame = self._get_raw_frame(frame_data, src_bpp)
 
+            # ========================================================================
+            # 【ROI解析】表示・モニタリング用（リアルタイム路）
+            # ========================================================================
+            # カメラから届いたばかりの生データ（raw_frame）を用いて、指定された領域を解析します。
+            # この計算は毎フレーム実行され、UIの数値表示をリアルタイムに更新するために使われます。
+            # ※自動測定の記録用には、ここでの「流し見」の数値ではなく、Snapshot 時の正確な数値を使用します。
+            with self._roi_lock:
+                # 解析対象の ROI リストと、重心計算を行うかどうかのフラグを安全に取得。
+                current_rois = list(self.rois)
+                current_enable_centroid = self.enable_centroid_calc
+            
+            # ROIProcessor を呼び出して計算。
+            # raw_frame はまだ書き換えられていない最新のフレームデータです。
+            roi_stats = ROIProcessor.calculate_stats(raw_frame, current_rois, current_enable_centroid)
+
             with self.frame_condition:
+                # プレビュー用画像（8-bit）を更新。
                 self.latest_preview = preview
-                # latest_frame は常に「無加工の生データ」として保持します。
-                # 解析やCSVへの書き出し（Sum/Max計算）は、この latest_frame を用いて行われます。
+                
+                # 生データ（raw_frame）を最新フレームとして保持。
+                # この latest_frame は、take_snapshot() が呼ばれた際にコピー元のソースとなります。
                 self.latest_frame = raw_frame
+                
+                # 計算結果を保存。UI 側はこの値を GET /camera/roi_stats で取得して表示します。
+                self.latest_roi_stats = roi_stats
+                
+                # 新しいフレームが準備できたことを、wait() で待機している他のスレッドに通知します。
                 self.frame_condition.notify_all()
+
+            # --- 設計上の注意 ---
+            # 以前はここでデータをバッファに常時蓄積（垂れ流し）していましたが、
+            # 「今、この瞬間を測る」という測定の厳密さを期すため、
+            # 自動測定用のデータ蓄積は、明示的に take_snapshot() が呼ばれたタイミングに限定されました。
 
             # ========================================================================
             # 【録画処理】特急レーン（超高速・直書き）
