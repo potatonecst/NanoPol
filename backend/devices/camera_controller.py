@@ -787,7 +787,7 @@ class CameraController:
     # 【スナップショット】 take_snapshot / save_pending_snapshot
     # ============================================================================
 
-    def take_snapshot(self) -> Optional[dict]:
+    def take_snapshot(self, filename_override: Optional[str] = None, save_dir_override: Optional[str] = None) -> Optional[dict]:
         """
         【Snapshot】最新のフレームを取得し、メモリに一時保持または自動保存します。
         単に画像を保存するだけでなく、その「撮影された瞬間の画像」に対して ROI 解析を
@@ -796,6 +796,12 @@ class CameraController:
         【マルチスレッド設計の重要性】
         このメソッドは、カメラが画像を撮り続けるスレッドとは別のスレッド（APIリクエスト等）から
         呼ばれます。そのため、データの整合性を守るための工夫が施されています。
+        
+        Args:
+            filename_override: 指定された場合、自動生成されるタイムスタンプ名の代わりに
+                               このファイル名（拡張子付き）を使用して保存します。
+            save_dir_override: 指定された場合、設定画面の保存先ではなく
+                               このディレクトリに保存します（自動測定用）。
         """
         if not self.is_connected:
             return None
@@ -806,10 +812,11 @@ class CameraController:
                 return None
             
             # --- 【最重要】画像の確保 (Deep Copy) ---
-            # self.latest_frame はカメラループによって常に上書きされ続けています。
+            # self.latest_frame はカメラが常に更新し続けている共有のメモリ空間にあります。
             # .copy() を行わずに参照だけを持ってしまうと、この後の解析や保存をしている最中に
             # 中身が次のフレームに書き換わってしまい、データに矛盾が生じる「レースコンディション」が起きます。
-            # ここで独立したメモリ空間にコピーを作ることで、この時点の「静止画」を確定させます。
+            # ここで独立したメモリ空間にコピーを作ることで、この時点の「静止画」を完全に固定し、
+            # 後の解析と保存が「全く同じ画像」に対して行われることを保証します。
             frame = self.latest_frame.copy()
             angle = self.current_angle
             
@@ -819,74 +826,97 @@ class CameraController:
         # 画面表示用のループ（30fps等）で行われている解析は、あくまでモニタリング用です。
         # 測定データとして保存する数値は、上記で確保した「保存対象の画像」そのものから
         # 算出しなければなりません。ここで再計算を行うことで、画像ファイルと数値の
-        # 1:1 の対応関係を科学的に保証します。
+        # 1:1 の物理的な対応関係を科学的に保証します。
         with self._roi_lock:
             current_rois = list(self.rois)
             current_enable_centroid = self.enable_centroid_calc
         
-        # 確保した frame を使って計算。実行時間は数マイクロ秒と極めて短時間です。
+        # 確保した frame を使って計算を実行します。
+        # ROIProcessor.calculate_stats は OpenCV を利用した高速な行列演算を行うため、
+        # 実行時間は数ミリ秒〜数十ミリ秒程度と極めて短時間です。
         roi_stats = ROIProcessor.calculate_stats(frame, current_rois, current_enable_centroid)
 
-        # 保存用フォーマットの決定（デフォルトは非可逆圧縮なしの TIFF）
+        # 保存用フォーマットの決定（設定から取得。デフォルトは非可逆圧縮なしの TIFF）
         fmt = self.settings.get("imageFormat", "TIFF")
         save_img = frame
         
-        # --- 画像形式の変換 ---
-        # Rawデータ（ベイヤー配列）のままでは一般的な画像閲覧ソフトで見られないため、
-        # プレビュー時と同様のカラー変換（デモザイク処理）を、保存用画像にも施します。
+        # --- 画像形式の変換と現像処理 ---
+        # 1. デモザイク処理 (Bayer to Color)
+        # 本カメラのRawデータ（ベイヤー配列）は、そのままだと格子状の模様に見え、
+        # 一般的な画像閲覧ソフトでは正しく表示されません。
+        # プレビュー時と同様のカラー変換を施すことで、人間が見て理解できる「写真」にします。
         bayer_code = self._get_bayer_color_conversion_code()
         if bayer_code is not None:
             save_img = cv2.cvtColor(save_img, bayer_code)
             
-        # JPEG/PNG の場合、16-bit データのままだと保存できないため、
-        # 表示可能な 8-bit にスケーリング（正規化）を行います。
+        # 2. 8-bit スケーリング (Normalized for JPEG/PNG)
+        # JPEG や PNG 形式は 16-bit データの保持に対応していない（または互換性が低い）ため、
+        # 16-bit の階調を 8-bit (0-255) にスケーリング（正規化）します。
+        # これにより、Windows フォトビューアーなどで開いた際も適切な明るさで表示されます。
         if fmt in ["JPEG", "PNG"] and save_img.dtype == np.uint16:
             save_img = cv2.normalize(save_img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
             
         # 返却用情報の構築
+        # API 経由でフロントエンドに返される、このスナップショットの「全情報」をまとめます。
         result_info = {
-            "angle": angle,           # 撮影時のステージ角度
+            "angle": angle,           # 撮影時のステージ角度（理想値）
             "roi_stats": roi_stats,   # 撮影画像から直接計算された輝度統計
             "timestamp": time.time(), # 撮影完了時刻
-            "filepath": None          # 保存された場合のファイルパス（後述）
+            "filepath": None          # 保存された場合のファイルパス（後述の保存処理で設定）
         }
 
         # --- 保存処理 ---
-        # ダイアログで保存先を聞く設定（askSavePath）が True の場合、
-        # まだ保存先が決まっていないため、画像をメモリ（_pending_snapshot）に保持して一旦終了します。
-        if self.settings.get("askSavePath", False):
-            self._pending_snapshot = save_img
-            logger.info(f"{self.log_tag} Snapshot captured in memory. Waiting for save path...")
-            result_info["filepath"] = "PENDING"
-            return result_info
-            
-        # 自動保存設定の場合の処理
-        out_dir = self.settings.get("outputDirectory", os.getcwd())
-        prefix = self.settings.get("snapshotPrefix", "snapshot_")
-        
-        # Windows 実機環境でのトラブル（Permission denied等）を迅速に診断できるよう、
-        # 保存を試みる直前のディレクトリやプレフィックス情報を詳細にログ出力します。
-        logger.info(
-            f"{self.log_tag} Auto snapshot save requested: out_dir={out_dir}, format={fmt}, prefix={prefix}"
-        )
-        
-        # スナップショット専用のサブディレクトリを作成
-        snapshot_dir = os.path.join(out_dir, "snapshots")
-        try:
-            os.makedirs(snapshot_dir, exist_ok=True)
-        except Exception:
-            logger.exception(f"{self.log_tag} Failed to create snapshot output directory: {snapshot_dir}")
-            return result_info
+        # 保存先ディレクトリの決定ロジック
+        if save_dir_override:
+            # 【自動測定モード】
+            # 自動測定シーケンス側から指定された専用のディレクトリを使用します。
+            # 通常、測定プロジェクトごとのサブフォルダなどが指定されます。
+            target_dir = save_dir_override
+            try:
+                # ディレクトリが存在しない場合は自動で作成します（親ディレクトリも含む）。
+                os.makedirs(target_dir, exist_ok=True)
+            except Exception:
+                logger.exception(f"{self.log_tag} Failed to create override directory: {target_dir}")
+                return result_info
+        else:
+            # 【手動スナップショットモード】
+            # 設定画面で「保存先を毎回尋ねる (askSavePath)」が有効な場合、
+            # まだ保存先が決まっていないため、画像を一時的にメモリに保持して処理を中断します。
+            if self.settings.get("askSavePath", False):
+                self._pending_snapshot = save_img
+                logger.info(f"{self.log_tag} Snapshot captured in memory. Waiting for save path...")
+                result_info["filepath"] = "PENDING"
+                return result_info
+                
+            # 「自動保存」設定の場合、設定画面で指定された出力ディレクトリを使用します。
+            out_dir = self.settings.get("outputDirectory", os.getcwd())
+            # スナップショット専用のサブディレクトリ "snapshots" を作成します。
+            target_dir = os.path.join(out_dir, "snapshots")
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+            except Exception:
+                logger.exception(f"{self.log_tag} Failed to create snapshot directory: {target_dir}")
+                return result_info
 
-        # タイムスタンプを含むファイル名を生成
-        timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        ext = ".tif" if fmt == "TIFF" else (".jpg" if fmt == "JPEG" else ".png")
-        filepath = os.path.join(snapshot_dir, f"{prefix}{timestamp_str}{ext}")
+        # ファイル名の決定ロジック
+        if filename_override:
+            # 【自動測定モード】角度情報を含んだ「ゼロ埋め」されたファイル名などが渡されます。
+            filename = filename_override
+        else:
+            # 【手動スナップショットモード】プレフィックスと現在の時刻を組み合わせた名前を生成します。
+            prefix = self.settings.get("snapshotPrefix", "snapshot_")
+            timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            ext = ".tif" if fmt == "TIFF" else (".jpg" if fmt == "JPEG" else ".png")
+            filename = f"{prefix}{timestamp_str}{ext}"
+            
+        filepath = os.path.join(target_dir, filename)
         
-        # 最終的な保存先パスをログに出力。問題発生時の追跡を容易にします。
-        logger.info(f"{self.log_tag} Auto snapshot target path: {filepath}")
+        # 最終的なフルパスをログに出力。
+        # 保存に失敗した場合、このログを見ることで権限不足やパスの間違いを特定できます。
+        logger.info(f"{self.log_tag} Snapshot target path: {filepath}")
         
-        # ディスクへの書き込み。成功すればパスを result_info にセットします。
+        # ディスクへの物理的な書き込み。
+        # OpenCV の `cv2.imwrite` を内部で呼び出し、成功すればファイルパスを返り値にセットします。
         if self._write_image_to_disk(filepath, save_img):
             result_info["filepath"] = filepath
             

@@ -9,9 +9,12 @@ import sys
 import os
 import asyncio
 import json
+import csv
 import signal
 import threading
 import time
+import shutil
+import glob
 from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -50,6 +53,21 @@ class SystemState:
         self.sweep_operation = None
         # 自動測定（Auto Mode）専用の状態管理
         self.auto_measurement = AutoMeasurementState()
+        
+        # 自動測定（Step & Shoot）の進捗管理
+        self.auto_operation = None
+
+auto_operation_lock = threading.Lock()
+
+def _set_auto_operation_state(**kwargs):
+    with auto_operation_lock:
+        current = dict(app_state.auto_operation or {})
+        current.update(kwargs)
+        app_state.auto_operation = current
+
+def _get_auto_operation_snapshot() -> dict:
+    with auto_operation_lock:
+        return dict(app_state.auto_operation or {})
 
 class AutoMeasurementState:
     """
@@ -65,12 +83,11 @@ class AutoMeasurementState:
         # 自動測定セッションが現在有効（実行中）かどうか
         self.is_active = False
 
-        # 測定対象のサンプル名と、データの保存先ディレクトリ
-        self.sample_name = ""
+        # データの保存先ディレクトリ
         self.folder_path = ""
 
         # グラフ表示用の時系列データバッファ
-        # 構造: { roi_index: [ { angle: float, sum: float, max: float, timestamp: float }, ... ] }
+        # 構造: { roi_index: [ { angle: float, sum: float, max: float, timestamp: float, filepath: str }, ... ] }
         # 各 ROI ごとに、角度と輝度のペアをリスト形式で保持します。
         self.data_buffer = {}
 
@@ -89,27 +106,24 @@ class AutoMeasurementState:
         """
         with self._lock:
             self.is_active = False
-            self.sample_name = ""
             self.folder_path = ""
             self.data_buffer = {}
             logger.info("[AUTO STATE] Reset complete. Buffer cleared for new measurement.")
 
-    def start_session(self, sample_name: str, folder_path: str):
+    def start_session(self, folder_path: str):
         """
         新しい自動測定セッションを開始します。
 
         Args:
-            sample_name (str): 測定対象の名前（ファイル名や設定に使用）
             folder_path (str): 測定画像やログの保存先フォルダ
         """
         with self._lock:
             self.reset()
             self.is_active = True
-            self.sample_name = sample_name
             self.folder_path = folder_path
-            logger.info(f"[AUTO STATE] Session started for: {sample_name}")
+            logger.info(f"[AUTO STATE] Session started at: {folder_path}")
 
-    def add_point(self, angle: float, roi_stats: dict):
+    def add_point(self, angle: float, roi_stats: dict, filepath: Optional[str] = None):
         """
         確定した測定データ（1点）をバッファに追加します。
 
@@ -137,7 +151,8 @@ class AutoMeasurementState:
                     "angle": angle,           # 撮影時の角度
                     "sum": stats.get("sum", 0),# 輝度合計（メインの測定値）
                     "max": stats.get("max", 0),# 最大輝度（飽和チェック用）
-                    "timestamp": timestamp     # 記録時刻
+                    "timestamp": timestamp,    # 記録時刻
+                    "filepath": filepath       # 保存された画像パス
                 })
 
                 # --- メモリ保護ロジック ---
@@ -649,6 +664,198 @@ def _run_sweep_operation(operation_id: str, request_data: dict, plan: dict):
                 app_state.last_stage_command = None
 
 
+def _run_auto_measurement(
+    operation_id: str,
+    start_angle: float,
+    end_angle: float,
+    step_angle: float,
+    save_directory: str
+):
+    """
+    Step & Shoot 方式による精密な自動測定シーケンスをバックグラウンドで実行します。
+
+    【設計思想】
+    この関数は FastAPI のメインスレッドとは別のバックグラウンドスレッドで実行されます。
+    これにより、測定中に数十秒〜数分間ステージの移動を「待機 (sleep)」していても、
+    フロントエンドからの他の通信（進捗ポーリングなど）を一切ブロックしません。
+    """
+    try:
+        # 初期状態のセット: 進捗 API がこの ID を認識できるようにします。
+        _set_auto_operation_state(
+            operation_id=operation_id,
+            status="running",
+            percent=0,
+            message="Initializing measurement...",
+            current_angle=start_angle,
+            target_angle=end_angle,
+            cancel_requested=False
+        )
+
+        # 測定セッションの開始（データバッファのリセットと保存先の確定）
+        app_state.auto_measurement.start_session(save_directory)
+
+        # --- CSVファイル名の決定（測定IDに一致させる） ---
+        # 例: save_directory が ".../1_Left_Front_001" の場合 -> "1_Left_Front_001.csv"
+        # これにより、ファイルが単体で移動されても、どの測定セッションのものか判別可能になります。
+        csv_filename = os.path.basename(os.path.normpath(save_directory)) + ".csv"
+        csv_path = os.path.join(save_directory, csv_filename)
+
+        # --- CSVヘッダーの準備 ---
+        # 測定が始まる前に、まずヘッダー行を書き込みます。
+        # 万が一測定が1点も行われずに終了しても、ファイル構造だけは作成されます。
+        try:
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                # 基本項目: 角度、タイムスタンプ、個別画像へのパス
+                headers = ["Angle", "Timestamp", "Filepath"]
+                
+                # ROI項目の追加: 現在設定されているROIの数に応じて動的にヘッダーを生成します
+                # 例: ["roi_0_Sum", "roi_0_Max", "roi_1_Sum", ...]
+                # ※この時点の ROI リストを基準にします。
+                current_rois = camera.rois # CameraController から現在のROIリストを取得
+                for i in range(len(current_rois)):
+                    headers.extend([f"roi_{i}_Sum", f"roi_{i}_Max"])
+                writer.writerow(headers)
+            logger.info(f"[AUTO] CSV initialized at {csv_path}")
+        except Exception as e:
+            logger.error(f"[AUTO] Failed to initialize CSV: {e}")
+
+        # --- Step & Shoot メインループ ---
+        for i, target_deg in enumerate(angles):
+            # 1. ループ開始時のキャンセル要求チェック
+            # ユーザーがUI上で「停止」ボタンを押した場合、このフラグが True になります。
+            # 重い処理の前にチェックを入れることで、速やかにループを抜けて安全に中止できます。
+            if _get_auto_operation_snapshot().get("cancel_requested"):
+                _set_auto_operation_state(status="cancelled", message="Measurement cancelled by user")
+                logger.info(f"[AUTO] Auto measurement {operation_id} cancelled.")
+                break
+
+            # 進捗パーセンテージの更新（UIのプログレスバー表示に使用されます）
+            percent = int((i / num_steps) * 100)
+            _set_auto_operation_state(
+                percent=percent,
+                message=f"Moving to {target_deg:.2f}°",
+                current_angle=app_state.current_angle
+            )
+
+            # 2. 移動 (Step)
+            # 算出された絶対角度へステージを動かします。
+            # `allow_overflow=True` を指定することで、360度を越える連続回転（例：720度まで測定など）
+            # もコントローラ側で適切に処理されるようになります。
+            stage.move_absolute(target_deg, allow_overflow=True)
+
+            # 3. 停止待ち (Wait)
+            # ステージが移動を開始するまでごく僅かな猶予(0.1s)を与え、その後 busy フラグが落ちるまで待ちます。
+            time.sleep(0.1)
+            while app_state.is_busy:
+                # 移動中もキャンセル要求を監視し、中止できるようにします。
+                # （※ stage.stop() を呼ぶ処理は、キャンセル API 側で既に行われています）
+                if _get_auto_operation_snapshot().get("cancel_requested"):
+                    break
+                time.sleep(0.05)
+
+            if _get_auto_operation_snapshot().get("cancel_requested"):
+                _set_auto_operation_state(status="cancelled", message="Measurement cancelled by user")
+                break
+
+            # ステージが電気的に停止した直後、物理的な「慣性振動」が残っている可能性があります。
+            # この微小な揺れが収まり、散乱像がブレないようにするための重要な物理的タメ時間(0.2s)です。
+            time.sleep(0.2)
+
+            # 4. 撮影と解析 (Shoot)
+            _set_auto_operation_state(message=f"Taking snapshot at {target_deg:.2f}°")
+            
+            # --- 【ファイル名の決定：ゼロ埋めパディング】 ---
+            # 本装置の最小分解能(0.0025度)に対応するため、小数部を4桁で固定表示にします。
+            # 例: 45.5度 -> "angle_0045.5000.tif" (整数部4桁、小数部4桁)
+            # こうすることで、後でフォルダ内のファイルを名前順で取得した際、
+            # 数値的な大きさに関わらず「角度順」に完璧にソートされた状態で解析できます。
+            filename = f"angle_{target_deg:09.4f}.tif"
+            
+            # カメラに「今の瞬間を撮って解析し、特定のフォルダに保存せよ」と命じます。
+            # 引数として images_dir と filename を渡すことで、一時保存フォルダにバラバラに格納されます。
+            snapshot_result = camera.take_snapshot(filename_override=filename, save_dir_override=images_dir)
+            
+            if snapshot_result and snapshot_result.get("roi_stats"):
+                stats = snapshot_result["roi_stats"]
+                
+                # --- 【最重要】CSVへの逐次追記 (Incremental Save) ---
+                # 測定が1点終わるたびに、即座にディスクへ書き込みます。
+                # これにより、測定中にPCがクラッシュしても、直前までのデータが確実に保存されます。
+                try:
+                    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+                        writer = csv.writer(f)
+                        row = [snapshot_result["angle"], snapshot_result["timestamp"], snapshot_result.get("filepath", "")]
+                        
+                        # 各 ROI のデータを横に並べます
+                        # ※ ROI インデックス順に並ぶようにソートして出力します
+                        for r_idx in sorted(stats.keys()):
+                            r_data = stats[r_idx]
+                            row.extend([r_data.get("sum", 0), r_data.get("max", 0)])
+                        writer.writerow(row)
+                except Exception as e:
+                    logger.error(f"[AUTO] Failed to append to CSV: {e}")
+
+                # メモリバッファ（グラフ表示用）にも追記します。
+                app_state.auto_measurement.add_point(
+                    angle=target_deg,
+                    roi_stats=stats,
+                    filepath=snapshot_result.get("filepath")
+                )
+            else:
+                # 稀にカメラ通信エラー等で撮影に失敗した場合は、エラーで止めてしまうと
+                # それまでのデータが無駄になるため、警告を残して次の角度へ続行します。
+                logger.warning(f"[AUTO] Snapshot failed at {target_deg:.2f}°")
+
+        # --- ループ終了後の後処理（TIFFスタック化） ---
+        current_state = _get_auto_operation_snapshot()
+        if current_state.get("status") != "cancelled":
+            # 6. 【マルチページTIFF化】バラバラの画像を1つのスタックに変換
+            # ImageJ 等の解析ソフトでは、数百枚のファイルをバラで開くよりも
+            # 1つの「マルチページTIFF（スタック）」として開くほうが圧倒的に扱いやすいため、変換を行います。
+            _set_auto_operation_state(percent=100, message="Generating Multipage TIFF...")
+            try:
+                import tifffile
+                # 先ほど「ゼロ埋め」して保存したおかげで、名前順にソートするだけで
+                # 角度順（＝正しい時間の流れ）で画像が並びます。
+                image_files = sorted(glob.glob(os.path.join(images_dir, "*.tif")))
+                
+                if image_files:
+                    multipaged_path = os.path.join(save_directory, "images.tif")
+                    # 1つの大きなファイルとして書き込みを開始します。
+                    with tifffile.TiffWriter(multipaged_path, append=False) as tif:
+                        for img_file in image_files:
+                            # 1枚ずつ画像を読み込み、マルチページTIFFの「次のページ」として追加します。
+                            img = tifffile.imread(img_file)
+                            if img is not None:
+                                tif.write(img)
+                    logger.info(f"[AUTO] Multipage TIFF successfully generated at {multipaged_path}")
+                    
+                    # 【重要：クリーンアップ】
+                    # TIFF変換が成功した場合、元の一時的なバラ画像（数百枚〜数GB）は不要になります。
+                    # ディスク容量を節約し、解析者が混乱しないよう、一時フォルダごと削除します。
+                    shutil.rmtree(images_dir)
+                    logger.info("[AUTO] Temporary images directory removed.")
+            except ImportError:
+                logger.error("[AUTO] tifffile library not found. Skipping multipage TIFF generation.")
+            except Exception as e:
+                # 変換に失敗した場合は、最悪の事態（データ紛失）を避けるため
+                # 元のバラバラの画像（images_dir）は削除せずに残し、ログにエラーを記録します。
+                logger.error(f"[AUTO] Failed to generate Multipage TIFF: {e}")
+
+            # 全ての工程が完了。状態を succeeded にして UI に通知します。
+            _set_auto_operation_state(status="succeeded", message="Measurement complete")
+
+    except Exception as e:
+        # 予期せぬエラー（通信切断など）が起きた場合は、状態を Failed にして UI に通知します。
+        logger.exception("[AUTO] Error during auto measurement")
+        _set_auto_operation_state(status="failed", message=str(e))
+    finally:
+        # 正常・異常・キャンセルに関わらず、最後に必ずロックを解除し、システムの測定中フラグを落とします。
+        with stage_command_lock:
+            app_state.is_measuring = False
+
+
 def _terminate_backend_process():
     """/system/shutdown 応答送信後に、バックエンド自身を終了させる。"""
     pid = os.getpid()
@@ -883,6 +1090,12 @@ class SweepRunRequest(BaseModel):
     end_deg: float
     speed_deg_s: float
     auto_record: bool = False
+
+class AutoMeasurementRunRequest(BaseModel):
+    start_angle: float
+    end_angle: float
+    step_angle: float
+    save_directory: str
 
 class UpdateConfigRequest(BaseModel):
     pulses_per_degree: int # 1度回転させるために必要なモーターのパルス数（分解能）
@@ -1397,6 +1610,74 @@ def stage_sweep_progress(operation_id: str | None = None):
         raise HTTPException(status_code=404, detail="Sweep operation not found")
 
     return _compute_sweep_progress(state)
+
+@app.post("/measurement/auto/run")
+def measurement_auto_run(req: AutoMeasurementRunRequest):
+    """Step & Shoot 方式による自動測定シーケンスを開始します。"""
+    if not stage.is_connected or not camera.is_connected:
+        raise HTTPException(status_code=400, detail="Stage or Camera not connected")
+
+    with auto_operation_lock:
+        current_state = dict(app_state.auto_operation or {})
+        if current_state.get("status") == "running":
+            raise HTTPException(status_code=409, detail="Auto measurement is already running")
+        if app_state.is_measuring:
+            raise HTTPException(status_code=409, detail="System is busy with another measurement")
+
+        operation_id = f"auto_{uuid4().hex[:12]}"
+        
+        # 共有ステートを更新
+        app_state.is_measuring = True
+        app_state.auto_operation = {
+            "operation_id": operation_id,
+            "status": "starting",
+            "percent": 0,
+            "message": "Starting auto measurement...",
+            "cancel_requested": False
+        }
+
+    logger.info(f"[AUTO API] Auto measurement requested: {req.dict()}")
+
+    worker = threading.Thread(
+        target=_run_auto_measurement,
+        args=(operation_id, req.start_angle, req.end_angle, req.step_angle, req.save_directory),
+        daemon=True,
+    )
+    worker.start()
+
+    return {
+        "status": "accepted",
+        "operation_id": operation_id,
+    }
+
+@app.get("/measurement/auto/progress")
+def measurement_auto_progress(operation_id: str | None = None):
+    """自動測定の進捗状況を返します。"""
+    state = _get_auto_operation_snapshot()
+    
+    if not state:
+        if operation_id is not None:
+            raise HTTPException(status_code=404, detail="Operation not found")
+        return {"status": "idle", "percent": 0, "message": "No active measurement"}
+
+    if operation_id is not None and state.get("operation_id") != operation_id:
+        raise HTTPException(status_code=404, detail="Operation not found")
+
+    return state
+
+@app.post("/measurement/auto/cancel")
+def measurement_auto_cancel():
+    """実行中の自動測定をキャンセルします。"""
+    with auto_operation_lock:
+        if not app_state.auto_operation or app_state.auto_operation.get("status") != "running":
+            return {"status": "ignored", "message": "No running measurement to cancel"}
+            
+        app_state.auto_operation["cancel_requested"] = True
+        app_state.auto_operation["message"] = "Cancellation requested..."
+        
+    logger.info("[AUTO API] Auto measurement cancellation requested by user")
+    
+    return {"status": "success", "message": "Cancellation requested"}
 
 @app.get("/stage/position")
 def stage_get_position():
