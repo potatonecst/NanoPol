@@ -787,7 +787,7 @@ class CameraController:
     # 【スナップショット】 take_snapshot / save_pending_snapshot
     # ============================================================================
 
-    def take_snapshot(self, filename_override: Optional[str] = None, save_dir_override: Optional[str] = None) -> Optional[dict]:
+    def take_snapshot(self, filename_override: Optional[str] = None, save_dir_override: Optional[str] = None, force_centroid: bool = False) -> Optional[dict]:
         """
         【Snapshot】最新のフレームを取得し、メモリに一時保持または自動保存します。
         単に画像を保存するだけでなく、その「撮影された瞬間の画像」に対して ROI 解析を
@@ -802,6 +802,8 @@ class CameraController:
                                このファイル名（拡張子付き）を使用して保存します。
             save_dir_override: 指定された場合、設定画面の保存先ではなく
                                このディレクトリに保存します（自動測定用）。
+            force_centroid: Trueの場合、カメラ設定の enable_centroid_calc に関係なく
+                            必ず重心計算を実行します（Pre-Scan アライメント用）。
         """
         if not self.is_connected:
             return None
@@ -829,7 +831,7 @@ class CameraController:
         # 1:1 の物理的な対応関係を科学的に保証します。
         with self._roi_lock:
             current_rois = list(self.rois)
-            current_enable_centroid = self.enable_centroid_calc
+            current_enable_centroid = self.enable_centroid_calc or force_centroid
         
         # 確保した frame を使って計算を実行します。
         # ROIProcessor.calculate_stats は OpenCV を利用した高速な行列演算を行うため、

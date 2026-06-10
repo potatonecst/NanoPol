@@ -334,4 +334,68 @@ export const systemApi = {
      */
     getSessionSettings: (folderPath: string) =>
         request<any>(`/measurement/session/settings?folder_path=${encodeURIComponent(folderPath)}`),
+
+    /**
+     * 指定されたカテゴリの新しい測定ブランチ（フォルダ）を作成します。
+     * 
+     * @param sessionPath セッションのルートフォルダパス
+     * @param category 測定カテゴリ (例: "Left_Front")
+     * @returns 作成された測定IDとフォルダパス
+     */
+    generateBranch: (sessionPath: string, category: string) =>
+        request<{
+            measurement_id: string,
+            folder_path: string
+        }>("/measurement/branch/generate", {
+            method: "POST",
+            body: JSON.stringify({ session_path: sessionPath, category: category })
+        }),
+
+    /**
+     * 精密自動測定（Step & Shoot）または Pre-Scan を開始します。
+     */
+    runAutoMeasurement: (params: {
+        start_angle: number,
+        end_angle: number,
+        step_angle: number,
+        save_directory: string,
+        is_prescan?: boolean,
+        attempt_number?: number
+    }) =>
+        request<{
+            status: string,
+            operation_id: string
+        }>("/measurement/auto/run", {
+            method: "POST",
+            body: JSON.stringify(params)
+        }),
+
+    /**
+     * 自動測定の進捗状況を取得します。
+     */
+    getAutoMeasurementProgress: (operationId?: string) => {
+        const url = operationId 
+            ? `/measurement/auto/progress?operation_id=${encodeURIComponent(operationId)}`
+            : "/measurement/auto/progress";
+        return request<{
+            operation_id: string,
+            status: "starting" | "running" | "succeeded" | "failed" | "cancelled" | "idle",
+            percent: number,
+            message: string,
+            current_angle: number,
+            target_angle: number,
+            cancel_requested: boolean
+        }>(url);
+    },
+
+    /**
+     * 実行中の自動測定をキャンセルします。
+     */
+    cancelAutoMeasurement: () =>
+        request<{
+            status: string,
+            message: string
+        }>("/measurement/auto/cancel", {
+            method: "POST"
+        }),
     };
