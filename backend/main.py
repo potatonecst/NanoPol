@@ -732,6 +732,29 @@ def _run_auto_measurement(
 
         # 測定の方向（正の回転か、負の回転か）を判定します。
 
+        # --- 測定角度リストの生成 ---
+        # 開始角度から終了角度まで、指定したステップで分割したリストを作成します。
+        # numpy.arange は浮動小数点誤差が出やすいため、手動で安全に計算します。
+        if start_angle == end_angle:
+            angles = [start_angle]
+        else:
+            # 割り切れない場合を考慮し、丸め誤差を防ぐため小数を丸めます
+            direction = 1 if end_angle > start_angle else -1
+            step = abs(step_angle) * direction
+            
+            angles = []
+            curr = start_angle
+            
+            # direction が正の場合: curr <= end_angle + 微小マージン
+            # direction が負の場合: curr >= end_angle - 微小マージン
+            while (direction > 0 and curr <= end_angle + 1e-6) or \
+                  (direction < 0 and curr >= end_angle - 1e-6):
+                angles.append(round(curr, 4))
+                curr += step
+                
+        num_steps = len(angles)
+        logger.info(f"[AUTO] Generated {num_steps} angles for measurement.")
+
         # --- CSVヘッダーの準備 ---
         # 測定が始まる前に、まずヘッダー行を書き込みます。
         # 万が一測定が1点も行われずに終了しても、ファイル構造だけは作成されます。
