@@ -860,14 +860,11 @@ def _run_auto_measurement(
         # --- ループ終了後の後処理（TIFFスタック化） ---
         current_state = _get_auto_operation_snapshot()
         if current_state.get("status") != "cancelled":
-            # 6. 【マルチページTIFF化】バラバラの画像を1つのスタックに変換
-            # ImageJ 等の解析ソフトでは、数百枚のファイルをバラで開くよりも
-            # 1つの「マルチページTIFF（スタック）」として開くほうが圧倒的に扱いやすいため、変換を行います。
+            # 5. 【マルチページTIFF化】バラバラの画像を1つのスタックに統合
             _set_auto_operation_state(percent=100, message="Generating Multipage TIFF...")
             try:
                 import tifffile
-                # 先ほど「ゼロ埋め」して保存したおかげで、名前順にソートするだけで
-                # 角度順（＝正しい時間の流れ）で画像が並びます。
+                # ゼロ埋めされたファイル名により、名前順＝角度順での統合が保証されます。
                 image_files = sorted(glob.glob(os.path.join(images_dir, "*.tif")))
                 
                 if image_files:
@@ -883,7 +880,7 @@ def _run_auto_measurement(
                     # 【重要：クリーンアップ】
                     # TIFF変換が成功した場合、元の一時的なバラ画像（数百枚〜数GB）は不要になります。
                     # ディスク容量を節約し、解析者が混乱しないよう、一時フォルダごと削除します。
-                    shutil.rmtree(images_dir)
+                    shutil.rmtree(images_dir, ignore_errors=True)
                     logger.info("[AUTO] Temporary images directory removed.")
                     
                     if is_prescan:
@@ -958,6 +955,11 @@ def _run_auto_measurement(
 
             # 全ての工程が完了。状態を succeeded にして UI に通知します。
             _set_auto_operation_state(status="succeeded", message="Measurement complete")
+        else:
+            # キャンセルされた場合、中途半端な一時画像ファイルは削除して後処理をスキップします。
+            # CSVはフェイルセーフとして残します（どこで中止したかの記録として）。
+            logger.info("[AUTO] Measurement cancelled. Skipping TIFF generation and cleanup.")
+            shutil.rmtree(images_dir, ignore_errors=True)
 
     except Exception as e:
         # 予期せぬエラー（通信切断など）が起きた場合は、状態を Failed にして UI に通知します。
@@ -1788,6 +1790,14 @@ def measurement_auto_cancel():
             
         app_state.auto_operation["cancel_requested"] = True
         app_state.auto_operation["message"] = "Cancellation requested..."
+        
+        # 物理的にステージが動いている最中にキャンセルされた場合、即座に停止させます。
+        if stage.is_connected:
+            try:
+                # immediate=False（減速停止）で安全に止める
+                stage.stop(immediate=False)
+            except Exception as e:
+                logger.error(f"[AUTO API] Failed to send stop command during cancellation: {e}")
         
     logger.info("[AUTO API] Auto measurement cancellation requested by user")
     

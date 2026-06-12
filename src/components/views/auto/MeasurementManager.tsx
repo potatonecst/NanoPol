@@ -1,0 +1,561 @@
+import { useState, useEffect } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore } from '@/store/useAppStore';
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Field, FieldLabel, FieldError, FieldDescription } from "@/components/ui/field";
+import { Play, Scan, AlertCircle, RefreshCcw, ArrowLeft, StopCircle, Minus, Plus, Joystick, MoveRight, House, FolderOpen, Square } from 'lucide-react';
+import { autoApi } from '@/api/client';
+import { toast } from 'sonner';
+import { setupFormSchema, SetupFormValues } from '@/schemas/measurementSchema';
+import { useStageActions } from '@/hooks/useStageActions';
+import { Progress } from "@/components/ui/progress";
+import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
+import { Label } from '@/components/ui/label';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+} from "@/components/ui/popover";
+
+/**
+ * 測定管理 (Measurement Manager) コンポーネント
+ * 
+ * 自動測定ワークフローの最終フェーズを担当します。
+ * パラメータの入力、事前スキャン（アライメント）、および本番測定の実行を管理します。
+ * 
+ * 【主な機能】
+ * 1. 物理パラメータ（レーザーパワー、角度範囲）の入力・バリデーション。
+ * 2. Pre-Scan (事前スキャン): 測定前にROIの最適な中心位置を自動算出。
+ * 3. Step & Shoot 測定: 指定された角度リストに従って自動的に回転と撮影を繰り返す。
+ * 4. Manual Remote: 測定準備のためのクイックなステージ手動操作。
+ */
+export function MeasurementManager() {
+    // --- グローバル状態の取得 ---
+    const {
+        isMeasuring,        // 現在自動測定（本番）が走っているか
+        currentSession,     // 現在アクティブなセッション（サンプル）の情報
+        selectedCategory,   // 選択中の測定カテゴリ（Left-Frontなど）
+        setAutoPhase,       // フェーズ切り替え用アクション
+        currentAngle        // ステージの現在角度（ポーリングで更新される）
+    } = useAppStore(useShallow((state) => ({
+        isMeasuring: state.isMeasuring,
+        currentSession: state.currentSession,
+        selectedCategory: state.selectedCategory,
+        setAutoPhase: state.setAutoPhase,
+        currentAngle: state.currentAngle
+    })));
+
+    // --- ステージ操作ロジックの取得 (Custom Hook) ---
+    const {
+        moveRelative,   // 相対移動
+        moveAbsolute,   // 絶対移動
+        homeStage,      // 原点復帰
+        stopStage,      // 停止
+        isSystemBusy    // ステージが動作中かどうか
+    } = useStageActions();
+
+    // --- ローカル状態の管理 ---
+
+    // Pre-Scan（アライメント）のステータス
+    // "idle": 未実施, "running": 実行中, "success": 成功（アライメント完了）, "failed": 失敗
+    const [prescanStatus, setPrescanStatus] = useState<"idle" | "running" | "success" | "failed">("idle");
+    
+    // アライメント失敗時でも強制的に開始するためのフラグ
+    const [forceStartUnlocked, setForceStartUnlocked] = useState(false);
+
+    // Manual Remote (リモコン) パネル用の状態
+    const [targetAngle, setTargetAngle] = useState<string>(""); // 絶対移動の入力値
+    const [jogStep, setJogStep] = useState<number>(0.1);       // ジョグ操作の1クリックあたりの移動量
+
+    // 測定進捗管理用の状態
+    const [operationId, setOperationId] = useState<string | null>(null); // バックエンドでの非同期タスクID
+    const [progressPercent, setProgressPercent] = useState<number>(0);   // 進捗率 (0-100)
+    const [progressMessage, setProgressMessage] = useState<string>("");  // 現在の動作メッセージ
+
+    // --- フォーム管理 (React Hook Form + Zod) ---
+    const form = useForm<SetupFormValues>({
+        resolver: zodResolver(setupFormSchema) as any,
+        defaultValues: {
+            laserPower: 0,
+            fiberX: 0,
+            fiberY: 0,
+            startAngle: 0,
+            endAngle: 360,
+            stepAngle: 5,
+        },
+    });
+
+    // 戻るボタンの処理。測定やスキャンが走っている間は戻れないようにガードします。
+    const handleBack = () => {
+        if (isMeasuring || prescanStatus === "running") return;
+        setAutoPhase('select_category');
+    };
+
+    // ============================================================================
+    // 進行状況の監視 (Progress Polling)
+    // ============================================================================
+    // バックエンドで走っている自動測定（Pre-Scan または 本番）の進捗を定期的に確認します。
+    useEffect(() => {
+        if (!operationId) return;
+
+        const intervalId = setInterval(async () => {
+            try {
+                const res = await autoApi.getAutoMeasurementProgress(operationId);
+
+                setProgressPercent(res.percent);
+                setProgressMessage(res.message);
+
+                // 完了・失敗・キャンセルのいずれかの「最終状態」に達したら監視を終了
+                if (res.status === "succeeded" || res.status === "failed" || res.status === "cancelled") {
+                    clearInterval(intervalId);
+                    setOperationId(null);
+
+                    if (res.status === "succeeded") {
+                        toast.success("Operation completed successfully.");
+                        if (prescanStatus === "running") setPrescanStatus("success");
+                    } else if (res.status === "cancelled") {
+                        toast.info("Operation was cancelled.");
+                        if (prescanStatus === "running") setPrescanStatus("idle");
+                    } else {
+                        toast.error(`Operation failed: ${res.message}`);
+                        if (prescanStatus === "running") setPrescanStatus("failed");
+                    }
+                }
+            } catch (error) {
+                console.error("Progress poll failed", error);
+            }
+        }, 500); // 0.5秒ごとに確認
+
+        return () => clearInterval(intervalId);
+    }, [operationId, prescanStatus]);
+
+    // ============================================================================
+    // アクション・ハンドラ (実行ロジック)
+    // ============================================================================
+
+    /**
+     * Pre-Scan (事前スキャン) の実行。
+     * 本番測定の前に、荒い角度間隔でスキャンを行い、光学的な重心（アライメント）を決定します。
+     */
+    const handlePreScan = async (values: SetupFormValues) => {
+        if (!currentSession || !selectedCategory) return;
+
+        setPrescanStatus("running");
+        setForceStartUnlocked(false);
+        setProgressPercent(0);
+        setProgressMessage("Starting Pre-Scan...");
+
+        try {
+            // 保存用フォルダ（枝番）を生成
+            const branchRes = await autoApi.generateBranch(currentSession.folderPath, selectedCategory);
+            // バックエンドにPre-Scanタスクをリクエスト
+            const runRes = await autoApi.runAutoMeasurement({
+                start_angle: values.startAngle,
+                end_angle: values.endAngle,
+                step_angle: 15.0, // Pre-Scan は高速化のため15度固定で回す
+                save_directory: branchRes.folder_path,
+                is_prescan: true
+            });
+
+            setOperationId(runRes.operation_id); // 監視を開始
+            toast.success("Pre-Scan started.");
+        } catch (error: any) {
+            console.error("Pre-Scan start failed", error);
+            toast.error(error.message || "Failed to start Pre-Scan");
+            setPrescanStatus("idle");
+        }
+    };
+
+    /**
+     * 強制開始の有効化。
+     * アライメントが失敗（ノイズ過多など）した場合でも、ユーザーの判断で本番測定へ進めるようにします。
+     */
+    const handleForceUnlock = () => {
+        setForceStartUnlocked(true);
+        toast.info("Force Start unlocked. Proceed with caution.");
+    };
+
+    /**
+     * 本番測定 (START MEASUREMENT) の実行。
+     * ユーザーが入力したパラメータに基づき、精密な Step & Shoot 測定を開始します。
+     */
+    const handleStartMeasurement = async (values: SetupFormValues) => {
+        if (!currentSession || !selectedCategory) return;
+
+        setProgressPercent(0);
+        setProgressMessage("Starting Measurement...");
+
+        try {
+            const branchRes = await autoApi.generateBranch(currentSession.folderPath, selectedCategory);
+            const runRes = await autoApi.runAutoMeasurement({
+                start_angle: values.startAngle,
+                end_angle: values.endAngle,
+                step_angle: values.stepAngle,
+                save_directory: branchRes.folder_path,
+                is_prescan: false
+            });
+
+            setOperationId(runRes.operation_id);
+            toast.success("Measurement started.");
+        } catch (error: any) {
+            console.error("Measurement start failed", error);
+            toast.error(error.message || "Failed to start measurement");
+        }
+    };
+
+    /**
+     * 自動測定タスクの強制中断。
+     */
+    const handleAbort = async () => {
+        try {
+            await autoApi.cancelAutoMeasurement();
+            setProgressMessage("Cancelling...");
+            toast.success("Abort signal sent.");
+        } catch (error: any) {
+            toast.error("Failed to abort: " + error.message);
+        }
+    };
+
+    // UIパーツの無効化条件
+    const isFormDisabled = isMeasuring || prescanStatus === "running";
+    // 本番測定を開始できる条件: Pre-Scan成功、または強制解除済み
+    const canStartMeasurement = prescanStatus === "success" || forceStartUnlocked;
+
+    return (
+        <div className="flex flex-col h-full space-y-6">
+            {/* ヘッダー領域: ナビゲーションと現在のコンテキスト表示 */}
+            <div className="flex items-center justify-between border-b pb-4">
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleBack}
+                    disabled={isFormDisabled}
+                    className="text-muted-foreground"
+                >
+                    <ArrowLeft className="w-4 h-4 mr-2" />
+                    Back
+                </Button>
+                
+                <div className="text-right space-y-1">
+                    {/* 現在アクティブなサンプル（セッション）名 */}
+                    <div className="flex items-center gap-2 justify-end text-muted-foreground">
+                        <FolderOpen className="size-3 text-amber-500/80" />
+                        <span className="font-mono font-bold text-[10px] truncate max-w-[120px]">
+                            {currentSession?.sampleName}
+                        </span>
+                    </div>
+                    {/* 選択中の測定カテゴリ */}
+                    <div className="text-[10px] font-bold px-2 py-0.5 bg-secondary rounded-full inline-block uppercase tracking-wider">
+                        {selectedCategory?.replace('_', ' ')}
+                    </div>
+                </div>
+            </div>
+
+            {/* メインスクロールエリア: 設定フォーム */}
+            <div className="flex-1 overflow-y-auto pr-6 space-y-8 pb-10">
+                
+                {/* 1. メタデータセクション */}
+                <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+                            1. Metadata
+                        </h4>
+                    </div>
+                    <div className="space-y-4 p-4 border rounded-lg bg-card">
+                        {/* レーザーパワー: 必須項目 */}
+                        <Field>
+                            <div className="flex items-center justify-between mb-1.5">
+                                <FieldLabel className="mb-0">Laser Power (mW)</FieldLabel>
+                                <Badge variant="default" className="text-[8px] h-4 px-1.5 uppercase font-bold leading-none">Required</Badge>
+                            </div>
+                            <Input
+                                type="number"
+                                step="0.1"
+                                disabled={isFormDisabled}
+                                {...form.register("laserPower")}
+                            />
+                            <FieldError errors={[form.formState.errors.laserPower as any]} />
+                        </Field>
+
+                        <Separator className="opacity-50" />
+
+                        {/* ファイバー位置: 任意項目（備考として記録） */}
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-tight">
+                                    Fiber Position
+                                </span>
+                                <Badge variant="outline" className="text-[7px] h-3.5 px-1 uppercase font-medium text-muted-foreground border-muted-foreground/30">Optional</Badge>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <Field>
+                                    <FieldLabel className="text-[11px]">X-Axis</FieldLabel>
+                                    <Input
+                                        type="number"
+                                        placeholder="0"
+                                        className="h-8 text-xs"
+                                        disabled={isFormDisabled}
+                                        {...form.register("fiberX")}
+                                    />
+                                    <FieldError errors={[form.formState.errors.fiberX as any]} />
+                                </Field>
+                                <Field>
+                                    <FieldLabel className="text-[11px]">Y-Axis</FieldLabel>
+                                    <Input
+                                        type="number"
+                                        placeholder="0"
+                                        className="h-8 text-xs"
+                                        disabled={isFormDisabled}
+                                        {...form.register("fiberY")}
+                                    />
+                                    <FieldError errors={[form.formState.errors.fiberY as any]} />
+                                </Field>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* 2. 角度範囲セクション */}
+                <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+                            2. Angle Range
+                        </h4>
+                        <Badge variant="default" className="text-[8px] h-4 px-1.5 uppercase font-bold">Required</Badge>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 p-4 border rounded-lg bg-card">
+                        <Field>
+                            <FieldLabel>Start (°)</FieldLabel>
+                            <Input
+                                type="number"
+                                step="1"
+                                disabled={isFormDisabled}
+                                {...form.register("startAngle")}
+                            />
+                            <FieldError errors={[form.formState.errors.startAngle as any]} />
+                        </Field>
+
+                        <Field>
+                            <FieldLabel>End (°)</FieldLabel>
+                            <Input
+                                type="number"
+                                step="1"
+                                disabled={isFormDisabled}
+                                {...form.register("endAngle")}
+                            />
+                            <FieldError errors={[form.formState.errors.endAngle as any]} />
+                        </Field>
+
+                        <Field className="col-span-2">
+                            <FieldLabel>Step (°)</FieldLabel>
+                            <Input
+                                type="number"
+                                step="0.1"
+                                disabled={isFormDisabled}
+                                {...form.register("stepAngle")}
+                            />
+                            <FieldDescription>Minimum resolution is 0.0025°</FieldDescription>
+                            <FieldError errors={[form.formState.errors.stepAngle as any]} />
+                        </Field>
+                    </div>
+                </div>
+
+                {/* 3. アライメント（Pre-Scan）セクション */}
+                <div className="space-y-4">
+                    <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
+                        <span>3. Alignment</span>
+                        {/* スキャン完了時のステータスバッジ */}
+                        {prescanStatus === "success" && <span className="text-green-500 text-xs font-bold flex items-center"><Scan className="w-3 h-3 mr-1" /> Ready</span>}
+                        {prescanStatus === "failed" && <span className="text-destructive text-xs font-bold flex items-center"><AlertCircle className="w-3 h-3 mr-1" /> Failed</span>}
+                    </h4>
+
+                    <div className="p-4 border rounded-lg bg-card space-y-4">
+                        <p className="text-xs text-muted-foreground leading-relaxed">
+                            Roughly align the ROI(s) manually on the camera view, then run Pre-Scan to calculate the exact optical centroid.
+                        </p>
+
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            className="w-full"
+                            disabled={isFormDisabled}
+                            onClick={form.handleSubmit(handlePreScan)}
+                        >
+                            {prescanStatus === "running" ? (
+                                <RefreshCcw className="w-4 h-4 mr-2 animate-spin" />
+                            ) : (
+                                <Scan className="w-4 h-4 mr-2" />
+                            )}
+                            {prescanStatus === "running" ? "Scanning..." : "Run Pre-Scan"}
+                        </Button>
+
+                        {/* 失敗時のみ表示される救済措置（強制開始） */}
+                        {prescanStatus === "failed" && !forceStartUnlocked && (
+                            <div className="mt-4 p-3 bg-destructive/10 border border-destructive/20 rounded-md">
+                                <p className="text-xs text-destructive mb-2 font-medium">
+                                    Alignment failed. Check if the signal is saturated or too weak.
+                                </p>
+                                <Button
+                                    type="button"
+                                    variant="destructive"
+                                    size="sm"
+                                    className="w-full text-xs"
+                                    onClick={handleForceUnlock}
+                                >
+                                    Force Unlock (Manual Override)
+                                </Button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+
+            {/* 下部固定エリア: 本番実行ボタンとリモコン */}
+            <div className="pt-4 border-t mt-auto bg-background">
+                {!isMeasuring && prescanStatus !== "running" ? (
+                    <div className="flex gap-2">
+                        {/* 手動操作リモコン (Manual Remote) ポップオーバー */}
+                        <Popover>
+                            <TooltipProvider>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <PopoverTrigger asChild>
+                                            <Button 
+                                                variant="outline" 
+                                                size="icon" 
+                                                className="h-10 w-10 shrink-0 hover:border-primary/50"
+                                                disabled={isSystemBusy}
+                                            >
+                                                <Joystick className="h-5 w-5 text-muted-foreground" />
+                                            </Button>
+                                        </PopoverTrigger>
+                                    </TooltipTrigger>
+                                    <TooltipContent className="font-semibold">
+                                        Manual Remote
+                                    </TooltipContent>
+                                </Tooltip>
+                            </TooltipProvider>
+                            <PopoverContent side="top" align="start" className="w-64 p-4 mb-2 shadow-xl border-primary/20">
+                                <div className="space-y-4">
+                                    <div className="flex items-center justify-between">
+                                        <h5 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Manual Remote</h5>
+                                        <Badge variant="secondary" className="font-mono text-[9px]">{currentAngle.toFixed(3)}°</Badge>
+                                    </div>
+
+                                    {/* 絶対移動セクション */}
+                                    <div className="space-y-1.5">
+                                        <Label className="text-[9px] uppercase text-muted-foreground">Absolute Move</Label>
+                                        <div className="flex gap-1.5">
+                                            <Input
+                                                className="h-8 text-xs font-mono"
+                                                placeholder="0.00"
+                                                value={targetAngle}
+                                                onChange={(e) => setTargetAngle(e.target.value)}
+                                                onKeyDown={(e) => e.key === 'Enter' && moveAbsolute(parseFloat(targetAngle))}
+                                            />
+                                            <Button
+                                                size="icon"
+                                                className="h-8 w-8 shrink-0"
+                                                disabled={isSystemBusy || !targetAngle}
+                                                onClick={() => moveAbsolute(parseFloat(targetAngle))}
+                                            >
+                                                <MoveRight className="h-3.5 w-3.5" />
+                                            </Button>
+                                        </div>
+                                    </div>
+
+                                    <Separator />
+
+                                    {/* ジョグ操作セクション */}
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <Label className="text-[9px] uppercase text-muted-foreground">Jog Step</Label>
+                                            {/* ステップ量の選択肢 (0.1, 1, 5) */}
+                                            <div className="flex bg-muted rounded-md p-0.5">
+                                                {[0.1, 1, 5].map((s) => (
+                                                    <button
+                                                        key={s}
+                                                        onClick={() => setJogStep(s)}
+                                                        className={`px-2 py-0.5 text-[9px] font-bold rounded-sm transition-all ${jogStep === s
+                                                                ? 'bg-background text-primary shadow-sm'
+                                                                : 'text-muted-foreground hover:text-foreground'
+                                                            }`}
+                                                    >
+                                                        {s}°
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                        {/* ジョグボタン群: [マイナス] [Home] [プラス] */}
+                                        <div className="flex gap-2">
+                                            <Button variant="outline" size="sm" className="h-8 flex-1" onClick={() => moveRelative(-jogStep)} disabled={isSystemBusy}>
+                                                <Minus className="h-3.5 w-3.5" />
+                                            </Button>
+                                            <Button variant="outline" size="sm" className="h-8 flex-1" onClick={() => homeStage()} disabled={isSystemBusy}>
+                                                <House className="h-3.5 w-3.5" />
+                                            </Button>
+                                            <Button variant="outline" size="sm" className="h-8 flex-1" onClick={() => moveRelative(jogStep)} disabled={isSystemBusy}>
+                                                <Plus className="h-3.5 w-3.5" />
+                                            </Button>
+                                        </div>
+                                    </div>
+
+                                    <Separator />
+
+                                    {/* 非常用・クイック停止ボタン */}
+                                    <Button 
+                                        variant="destructive" 
+                                        size="sm" 
+                                        className="w-full h-8 font-bold shadow-inner" 
+                                        onClick={() => stopStage(false)}
+                                    >
+                                        <Square className="h-3 w-3 fill-current mr-2" /> STOP STAGE
+                                    </Button>
+                                </div>
+                            </PopoverContent>
+                        </Popover>
+
+                        {/* 本番測定開始ボタン */}
+                        <Button
+                            type="button"
+                            className="flex-1 font-bold shadow-lg h-10"
+                            disabled={!canStartMeasurement}
+                            onClick={form.handleSubmit(handleStartMeasurement)}
+                        >
+                            <Play className="w-4 h-4 mr-2" />
+                            START MEASUREMENT
+                        </Button>
+                    </div>
+                ) : (
+                    /* 動作中のプログレス表示と中止ボタン */
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <div className="flex justify-between text-xs font-medium">
+                                <span className="text-muted-foreground truncate pr-4">{progressMessage}</span>
+                                <span>{progressPercent}%</span>
+                            </div>
+                            <Progress value={progressPercent} className="h-2" />
+                        </div>
+                        <Button
+                            type="button"
+                            variant="destructive"
+                            className="w-full font-bold shadow-inner"
+                            onClick={handleAbort}
+                        >
+                            <StopCircle className="w-4 h-4 mr-2" />
+                            ABORT
+                        </Button>
+                    </div>
+                )}
+            </div>
+
+        </div>
+    );
+}
+

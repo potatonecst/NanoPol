@@ -13,11 +13,26 @@ export const setupFormSchema = z.object({
 
     fiberX: z.coerce
         .number()
-        .int("整数で入力してください"), // 小数点以下を許容しない
+        .int("整数で入力してください")
+        .optional()
+        .or(z.literal("")),
 
     fiberY: z.coerce
         .number()
-        .int("整数で入力してください"),
+        .int("整数で入力してください")
+        .optional()
+        .or(z.literal("")),
+
+    startAngle: z.coerce
+        .number(),
+
+    endAngle: z.coerce
+        .number(),
+
+    stepAngle: z.coerce
+        .number()
+        .min(0.0025, "最小分解能(0.0025)以上を指定してください")
+        .max(360, "最大360度以下を指定してください"),
 });
 
 // スキーマから型を自動生成

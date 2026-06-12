@@ -47,6 +47,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         isCameraConnected,
         cameraGainRange,
         rois, addROI, updateROI, removeROI,
+        isMeasuring,
     } = useAppStore(useShallow((state) => ({
         cameraResolution: state.cameraResolution,
         currentAngle: state.currentAngle,
@@ -65,6 +66,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         addROI: state.addROI,
         updateROI: state.updateROI,
         removeROI: state.removeROI,
+        isMeasuring: state.isMeasuring,
     })));
 
     // カメラ表示領域のサイズ計測用Ref
@@ -186,6 +188,8 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
 
         // Ctrl または Meta (Cmd) キーを押しながらクリックした場合は ROI を追加
         if (e.ctrlKey || e.metaKey) {
+            if (isMeasuring) return; // 測定中はROI追加を完全にロック
+
             const pos = screenToImage(e.clientX, e.clientY);
             if (pos) {
                 // 個別の色割り当てはストア側で行われるため、ここでは指定しない
@@ -553,6 +557,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                             style={{ cursor: isAltPressed ? TRASH_CURSOR_RED : 'pointer' }}
                                             onMouseDown={(e) => {
                                                 e.stopPropagation(); // パン操作および背景の選択解除を阻止
+                                                if (isMeasuring) return; // 測定中はROI操作を完全にロック
                                                 if (e.altKey) {
                                                     removeROI(roi.id);
                                                 } else {
@@ -597,6 +602,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                                 className="cursor-nwse-resize"
                                                 onMouseDown={(e) => {
                                                     e.stopPropagation();
+                                                    if (isMeasuring) return; // 測定中はROI操作を完全にロック
                                                     setResizingRoiId(roi.id);
                                                 }}
                                             />
@@ -683,7 +689,8 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                             <thead>
                                                 <tr className="text-zinc-500 border-b border-white/5 sticky top-0 bg-zinc-900/90 backdrop-blur-sm z-10">
                                                     <th className="px-3 py-1 font-medium">ID</th>
-                                                    <th className="px-2 py-1 font-medium">Pos(X,Y)</th>
+                                                    <th className="px-2 py-1 font-medium text-right">Pos(X,Y)</th>
+                                                    <th className="px-2 py-1 font-medium text-right">Size</th>
                                                     <th className="px-2 py-1 font-medium text-right">Sum</th>
                                                     <th className="px-2 py-1 font-medium text-right">Max</th>
                                                     <th className="px-3 py-1 text-center"></th>
@@ -695,8 +702,8 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                                         onMouseEnter={() => setActiveRoiId(roi.id)}
                                                     >
                                                         <td className="px-3 py-1.5 font-bold" style={{ color: roi.color }}>#{roi.index}</td>
-                                                        <td className="px-2 py-1.5">{Math.round(roi.x)},{Math.round(roi.y)}</td>
-
+                                                        <td className="px-2 py-1.5 text-right">{Math.round(roi.x)},{Math.round(roi.y)}</td>
+                                                        <td className="px-2 py-1.5 text-right">{roi.size}px</td>
                                                         <td className="px-2 py-1.5 text-right text-zinc-500">--</td>
                                                         <td className="px-2 py-1.5 text-right text-zinc-500">--</td>
                                                         <td className="px-3 py-1.5 text-center">

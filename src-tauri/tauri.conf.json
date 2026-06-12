@@ -13,7 +13,7 @@
     "windows": [
       {
         "title": "NanoPol",
-        "width": 800,
+        "width": 1024,
         "height": 850,
         "minWidth": 425,
         "minHeight": 500

@@ -4,6 +4,7 @@ import { useAppStore } from "@/store/useAppStore";
 import { stageApi, systemApi } from "@/api/client";
 import { manualControlSchema, angleInputSchema, sweepParamsSchema } from "@/schemas/manualControlSchema";
 import { z } from "zod";
+import { useStageActions } from "@/hooks/useStageActions";
 
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -26,11 +27,6 @@ import { CameraPanel } from "../shared/CameraPanel";
  *
  * ユーザーがステージの直接操作（ステップ移動、絶対・相対移動、原点復帰）や、
  * 単純なスイープ測定（指定範囲の連続駆動と自動録画）を行うための画面です。
- *
- * 【主な機能】
- * - Step / Absolute: 任意の角度への移動。
- * - Sweep: StartからEndへの等速移動。助走区間の自動計算や動画の自動録画タイマー機能を含む。
- * - Polling: ステージの動作中はバックエンドを監視し、UIをロックして二重操作を防ぐ。
  */
 export function ManualView() {
     const {
@@ -50,14 +46,14 @@ export function ManualView() {
         stageSettings: state.stageSettings,
     })));
 
-    /**
-     * 停止シグナル管理用フラグ (Ref)
-     * 
-     * 【useStateではなくuseRefを使う理由】
-     * 非同期処理（ポーリングのループ中など）から参照する際、useStateだと古い値（クロージャ）を参照してしまうことがありますが、
-     * `useRef.current` はメモリ上の同じ場所を直接見に行くため、常に最新の値を参照でき、割り込み停止フラグに最適です。
-     */
-    const stopSignal = useRef(false);
+    // 共通のステージ操作ロジックをフックから取得
+    const {
+        moveRelative,
+        moveAbsolute,
+        homeStage,
+        stopStage,
+        waitForIdle,
+    } = useStageActions();
 
     //Step Move用
     const [moveStep, setMoveStep] = useState("5.0"); //Step Moveのステップ量
@@ -71,9 +67,6 @@ export function ManualView() {
     const [sweepSpeed, setSweepSpeed] = useState("10"); //[deg/s]
     const [isSweeping, setIsSweeping] = useState(false);
     const [autoRecord, setAutoRecord] = useState(false); // 自動録画のON/OFF
-    // Sweep の progress API から受け取った状態を、そのまま UI に表示するためのキャッシュ。
-    // operationId / phase / percent / message / remainingMs をまとめて持たせておくことで、
-    // 進捗バー、残り時間、状態文言を同じ source of truth から描画できます。
     const [sweepProgress, setSweepProgress] = useState<{
         operationId: string | null;
         phase: string;
@@ -82,8 +75,6 @@ export function ManualView() {
         remainingMs: number;
     } | null>(null);
 
-    // 予約タイマーや progress polling の interval は、停止・終了・破棄時に必ず止める必要があります。
-    // そのため React state ではなく ref に保持して、どのタイミングでも即座に clear できるようにしています。
     const sweepProgressTimer = useRef<ReturnType<typeof setInterval> | null>(null);
     const sweepOperationId = useRef<string | null>(null);
 
@@ -94,85 +85,12 @@ export function ManualView() {
     const sweepEndVal = angleInputSchema.safeParse(sweepEnd);
     const sweepSpeedVal = manualControlSchema.shape.sweepSpeed.safeParse(sweepSpeed);
 
-    // スイープ全体の相関バリデーション（0.2秒制限など）を実行
-    // スイープに関係ない項目（targetAngleなど）を除いた専用スキーマでチェック
     const sweepFullVal = sweepParamsSchema.safeParse({
         sweepStart,
         sweepEnd,
         sweepSpeed,
     });
 
-    // Note: Detailed trace logs were removed to avoid flooding the log store.
-    // Keep high-level `systemApi.postLogs` for important events only.
-
-    /**
-     * ステージの動作完了を監視（ポーリング）する非同期関数。
-     *
-     * バックエンドの `/stage/position` APIを定期的に呼び出し、`is_busy` フラグが false になるまで待機します。
-     * JavaScriptのシングルスレッド環境でUIをフリーズさせないために `Promise` と `setInterval` を使用しています。
-     * 
-     * （JavaScriptはシングルスレッドなので、while(true)でループすると画面がフリーズしてしまいます。そのため、setIntervalを使って「0.5秒ごとにバックエンドに問い合わせる」処理をPromiseで包みます。）
-     * 
-     * タイムアウト処理: 装置トラブル等で永遠にBusyの場合に備え、最大待機時間を設けます。
-     * 
-     * エラーリトライ: 一瞬の通信エラーで即座に失敗扱いにならないよう、連続エラーを数回許容します。
-     * 
-     * @param timeoutMs - タイムアウトまでの最大待機時間（ミリ秒）。Sweep測定などの長時間の動作も考慮し、デフォルトは300秒(5分)。
-     * @returns 動作完了時（is_busyがfalse）に resolve される Promise。通信エラーの連続やタイムアウト時は reject されます。
-     */
-    const waitForIdle = async (timeoutMs = 300000) => { // デフォルト5分(300000ms)
-        const startTime = Date.now();
-        let errorCount = 0;
-        const MAX_ERRORS = 5; // 連続5回（約2.5秒）のエラーまでは許容する
-
-        // start waiting for idle
-
-        return new Promise<void>((resolve, reject) => {
-            const checkInterval = setInterval(async () => {
-                // 1. タイムアウトチェック
-                // 指定時間（timeoutMs）を経過しても終わらない場合は、強制的にエラーとして終了させます。
-                if (Date.now() - startTime > timeoutMs) {
-                    clearInterval(checkInterval);
-                    reject(new Error("Timeout: Stage operation took too long."));
-                    return;
-                }
-
-                try {
-                    // バックエンドに今の状況（角度とBusy状態）を尋ねる
-                    const res = await stageApi.getPosition();
-
-                    // polling; update handled below
-
-                    // 正常に取得できたら、エラーカウントをリセットします
-                    errorCount = 0;
-
-                    setCurrentAngle(res.current_angle);
-
-                    // is_busyがfalseになったら移動完了とみなす
-                    if (!res.is_busy) {
-                        clearInterval(checkInterval); //タイマーを止めて待機完了にする
-                        // resolved
-                        resolve(); // Promiseを解決（await waitForIdle() がここで終わる）
-                    }
-                } catch (e) {
-                    // 通信エラー等が発生した場合
-                    errorCount++;
-                    console.warn(`Polling error (${errorCount}/${MAX_ERRORS}):`, e);
-
-                    // 許容回数を超えて連続でエラーが出た場合のみ、本当のエラーとして処理します。
-                    // これにより、一時的なネットワークの瞬断などで処理が止まるのを防ぎます。
-                    if (errorCount >= MAX_ERRORS) {
-                        clearInterval(checkInterval); //エラーが起きたら止める
-                        reject(new Error("Connection lost with stage controller."));
-                    }
-                }
-            }, 500) // 500ms = 0.5秒ごとに実行
-        })
-    }
-
-    // backend の sweep/progress ポーリングを止める共通関数。
-    // 不要な interval が残ると、画面遷移後も API を叩き続けてしまうため、
-    // sweep の終了処理・失敗処理・アンマウント処理で必ず通します。
     const clearSweepProgressPolling = () => {
         if (sweepProgressTimer.current) {
             clearInterval(sweepProgressTimer.current);
@@ -180,9 +98,6 @@ export function ManualView() {
         }
     };
 
-    // sweep の正常終了・キャンセル・失敗で共通に通る後始末。
-    // ここで UI 状態、録画、タイマー、進捗表示をまとめて片付けることで、
-    // 個別の分岐で同じ片付け処理を重複させないようにしています。
     const finishSweepSession = async (message: string, level: "success" | "warning" | "error" = "success") => {
         clearSweepProgressPolling();
         sweepOperationId.current = null;
@@ -203,16 +118,12 @@ export function ManualView() {
     };
 
     useEffect(() => {
-        // コンポーネントが破棄される瞬間に、残っている interval / timeout を止める。
-        // これをしないと、unmount 後も state 更新が走って React 警告の原因になります。
         return () => {
             clearSweepProgressPolling();
         };
     }, []);
 
     // 接続状態の同期
-    // ステージが接続された時、または再接続された時に、現在の角度を取得しに行きます。
-    // もしバックエンドがまだ動いていたら（Busy）、終わるまでロックします。
     useEffect(() => {
         const syncStatus = async () => {
             if (!isStageConnected) return;
@@ -221,13 +132,9 @@ export function ManualView() {
                 const res = await stageApi.getPosition();
                 setCurrentAngle(res.current_angle);
 
-                //もしバックエンドがbusyなら、UIをロック
                 if (res.is_busy) {
                     setIsSystemBusy(true);
-
-                    //アイドルになるまで監視（復帰処理）
                     await waitForIdle();
-
                     setIsSystemBusy(false);
                     toast.success("Operation Finished (Recovered)");
                     systemApi.postLogs("INFO", "Operation Finished (Recovered)").catch((e) => console.debug("※ログ送信も失敗しました:", e));
@@ -237,89 +144,23 @@ export function ManualView() {
             }
         };
         syncStatus();
-    }, [isStageConnected]) //接続状態が変わったときもチェック
-
-    /**
-     * 各種移動操作の共通ラッパー関数。
-     *
-     * 移動コマンドの実行、UIのロック（Busy状態）、動作完了の待機(waitForIdle)、
-     * および成功・失敗・中断時のユーザー通知（トースト）処理を一元管理します。
-     *
-     * @param actionName - ログやトーストに表示するアクション名（例: "Step Move", "Homing"）
-     * @param moveFn - 実際にバックエンドのAPIを呼び出して移動を開始させる非同期関数
-     */
-    const performMove = async (actionName: string, moveFn: () => Promise<void>) => {
-        if (isSystemBusy) return; // 既に動いている場合は二重実行防止
-        // perform move start
-        setIsSystemBusy(true); // UI全体をロック（ボタンを押せなくする）
-        stopSignal.current = false; // 停止シグナルをリセット
-
-        try {
-            // executing moveFn
-            await moveFn(); // 実際の移動コマンドを実行
-            // waiting for idle
-            await waitForIdle(); // 移動が終わるまでここで待機（ポーリング開始）
-
-            // idle confirmed
-
-            if (stopSignal.current) {
-                toast.warning(`${actionName} Stopped`);
-                systemApi.postLogs("WARNING", `${actionName} Stopped by user`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
-            } else {
-                toast.success(`${actionName} Complete`);
-                systemApi.postLogs("INFO", `${actionName} Complete`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
-            }
-        } catch (e) {
-            console.error(e);
-            toast.error(`${actionName} Failed`);
-            systemApi.postLogs("ERROR", `${actionName} Failed: ${e}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
-        } finally {
-                // finally unlock
-            setIsSystemBusy(false); // 処理が終わったら（成功でも失敗でも）ロック解除
-        }
-    }
+    }, [isStageConnected])
 
     /**
      * 相対移動（Jog操作）
-     * @param direction - +1 ならプラス方向、-1 ならマイナス方向に移動します。
      */
     const rotateStage = (direction: 1 | -1) => {
-        performMove("Step Move", async () => {
-            const target = Number(moveStep) * direction;
-
-            // rotateStage request
-
-            await stageApi.moveRelative(target);
-            // rotateStage response
-        })
+        const target = Number(moveStep) * direction;
+        moveRelative(target);
     }
 
     /**
-     * 原点復帰（Homing）: 機械的な0点（センサー位置）を探しに行きます。
-     */
-    const goOrigin = () => {
-        performMove("Homing", async () => {
-            toast.info("Homing...");
-            // homing request
-            await stageApi.home();
-            // homing response
-            //toast.success("Home position reached");
-        })
-    }
-
-    /**
-     * 絶対移動: 入力された特定の角度（Target）へ直接移動します。
+     * 絶対移動
      */
     const handleMoveTo = async () => {
         const val = parseFloat(targetAngle);
         if (isNaN(val)) return;
-
-        performMove("Absolute Move", async () => {
-            toast.info(`Moving to ${val}°...`);
-            // absolute move request
-            await stageApi.moveAbsolute(val);
-            // absolute move response
-        })
+        moveAbsolute(val);
     }
 
     /**
@@ -467,44 +308,6 @@ export function ManualView() {
         }
     }
 
-    /**
-     * 減速停止（Stop）
-     * モーターのパルス出力を徐々に落とし、安全に停止させます。実行中のシーケンスや録画予約もキャンセルします。
-     */
-    const handleStop = async () => {
-        try {
-            stopSignal.current = true; // 停止ボタンが押されたことを記録（waitForIdle後の処理をキャンセルするため）
-
-            await stageApi.stop(false); // immediate = false (減速停止)
-            toast.info("Stopping...");
-            systemApi.postLogs("INFO", "Manual deceleration stop executed").catch((e) => console.debug("※ログ送信も失敗しました:", e));
-        } catch (e) {
-            console.error(e);
-            toast.error("Stop Command Failed");
-            systemApi.postLogs("ERROR", `Stop Command Failed: ${e}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
-        }
-    }
-
-    /**
-     * 非常停止（Emergency Stop）
-     * ハードウェアレベルで即座にモーターの動作をカットします。急停止によりパルスがズレるため、再Homingが必要です。
-     */
-    const handleEmergencyStop = async () => {
-        try {
-            stopSignal.current = true;
-            await stageApi.stop(true); // immediate = true (即停止)
-            toast.info("EMERGENCY STOP EXECUTED");
-            systemApi.postLogs("WARNING", "EMERGENCY STOP EXECUTED").catch((e) => console.debug("※ログ送信も失敗しました:", e));
-            setTimeout(() => {
-                toast.warning("Please re-home the stage.");
-                systemApi.postLogs("INFO", "Prompted user to re-home after emergency stop").catch((e) => console.debug("※ログ送信も失敗しました:", e));
-            }, 1000) //原点復帰を促すtoastを1000 ms後に
-        } catch (e) {
-            console.error(e);
-            systemApi.postLogs("ERROR", `Emergency Stop Command Failed: ${e}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
-        }
-    }
-
     return (
         // 全体レイアウト: 画面いっぱいに広がり、モバイルでは縦並び、デスクトップでは横並びになるフレックスコンテナ
         <div className="flex h-full w-full flex-col md:flex-row overflow-hidden">
@@ -569,7 +372,7 @@ export function ManualView() {
                                                 variant="outline"
                                                 size="icon-lg"
                                                 className="size-12 rounded-full font-semibold flex-col gap-0"
-                                                onClick={goOrigin}
+                                                onClick={homeStage}
                                                 disabled={!isStageConnected || isSystemBusy}
                                                 aria-label="Return to Origin (Mechanical Origin)"
                                             >
@@ -800,7 +603,7 @@ export function ManualView() {
                             <Button
                                 variant="destructive"
                                 className="col-span-3 h-12 text-lg font-bold shadow-md active:scale-95 transition-all"
-                                onClick={handleStop}
+                                onClick={() => stopStage(false)}
                                 disabled={!isStageConnected}
                             >
                                 <Square className="fill-current mr-2" /> STOP
@@ -811,7 +614,7 @@ export function ManualView() {
                                 <Button
                                     variant="outline"
                                     className="col-span-1 h-12 border-amber-300 bg-amber-300 text-red-600 hover:border-destructive hover:bg-destructive hover:text-white font-bold"
-                                    onClick={handleEmergencyStop}
+                                    onClick={() => stopStage(true)}
                                     disabled={!isStageConnected}
                                 >
                                     <TriangleAlert className="size-6" />

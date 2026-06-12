@@ -359,8 +359,7 @@ export const systemApi = {
         end_angle: number,
         step_angle: number,
         save_directory: string,
-        is_prescan?: boolean,
-        attempt_number?: number
+        is_prescan?: boolean
     }) =>
         request<{
             status: string,
@@ -397,5 +396,5 @@ export const systemApi = {
             message: string
         }>("/measurement/auto/cancel", {
             method: "POST"
-        }),
-    };
+        })
+};

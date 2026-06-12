@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/resizable";
 import { SessionManager } from './auto/SessionManager';
 import { CategorySelector } from './auto/CategorySelector';
+import { MeasurementManager } from './auto/MeasurementManager';
 
 /**
  * 自動測定画面 (Auto View) コンポーネント
@@ -26,17 +27,16 @@ export function AutoView() {
             {/* 
                 左側: 操作パネル領域 (ManualView と同一の md:w-80)
             */}
-            <div className="w-full md:w-80 border-r bg-card flex flex-col h-full z-10 overflow-y-auto p-8">
-                <div className="pb-5">
-                    {/* 他のViewと統一するため text-2xl に修正 */}
+            <div className="w-full md:w-80 border-r bg-card flex flex-col h-full z-10 overflow-hidden">
+                <div className="p-8 pb-5 shrink-0">
                     <h2 className="text-2xl font-bold tracking-tight">Auto Measurement</h2>
                     <p className="text-sm text-muted-foreground mt-2">Guided measurement workflow.</p>
                 </div>
 
                 {/* フェーズごとのコンテンツ表示 */}
-                <div className="flex-1">
+                <div className="flex-1 overflow-hidden pb-8">
                     {autoPhase === 'select_session' && (
-                        <div className="space-y-5 animate-in fade-in slide-in-from-left-4 duration-500">
+                        <div className="space-y-5 h-full overflow-y-auto pl-8 pr-6 animate-in fade-in slide-in-from-left-4 duration-500">
                             <div>
                                 <h3 className="text-lg font-semibold italic">1. Session Management</h3>
                                 <p className="text-xs text-muted-foreground text-pretty leading-relaxed">
@@ -48,7 +48,7 @@ export function AutoView() {
                     )}
 
                     {autoPhase === 'select_category' && (
-                        <div className="space-y-6 animate-in fade-in slide-in-from-left-4 duration-500">
+                        <div className="space-y-6 h-full overflow-y-auto pl-8 pr-6 animate-in fade-in slide-in-from-left-4 duration-500">
                             <div>
                                 <h3 className="text-lg font-semibold italic">2. Category Selection</h3>
                                 <p className="text-xs text-muted-foreground text-pretty leading-relaxed">
@@ -60,17 +60,8 @@ export function AutoView() {
                     )}
 
                     {autoPhase === 'measuring' && (
-                        <div className="space-y-6 animate-in fade-in slide-in-from-left-4 duration-500">
-                            <div>
-                                <h3 className="text-lg font-semibold italic">3. Measurement Run</h3>
-                                <p className="text-xs text-muted-foreground text-pretty leading-relaxed">
-                                    Execute the automated sequence including alignment and data acquisition.
-                                </p>
-                            </div>
-                            {/* TODO: MeasurementManager コンポーネント */}
-                            <div className="p-8 border-2 border-dashed rounded-xl bg-secondary/10 text-center text-xs text-muted-foreground">
-                                Execution Controls
-                            </div>
+                        <div className="h-full pl-8 pr-6 animate-in fade-in slide-in-from-left-4 duration-500">
+                            <MeasurementManager />
                         </div>
                     )}
                 </div>

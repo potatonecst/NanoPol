@@ -4,7 +4,7 @@ import {
     ArrowLeft, 
     ChevronRight, 
     History,
-    Beaker
+    FolderOpen
 } from 'lucide-react';
 import { format } from 'date-fns';
 
@@ -92,17 +92,6 @@ export function CategorySelector() {
             <div className="space-y-6">
                 {/* Section: Current Session Header */}
                 <div className="flex items-center justify-between">
-                    <div className="space-y-1">
-                        <Label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
-                            Active Session
-                        </Label>
-                        <div className="flex items-center gap-2">
-                            <Beaker className="size-4 text-amber-500" />
-                            <span className="font-mono font-bold text-sm truncate max-w-[160px]">
-                                {currentSession.sampleName}
-                            </span>
-                        </div>
-                    </div>
                     <Button 
                         variant="ghost" 
                         size="sm" 
@@ -112,6 +101,17 @@ export function CategorySelector() {
                         <ArrowLeft className="size-3 mr-1" />
                         Exit
                     </Button>
+                    <div className="text-right">
+                        <Label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest block mb-0.5">
+                            Active Session
+                        </Label>
+                        <div className="flex items-center gap-2 justify-end">
+                            <FolderOpen className="size-3.5 text-amber-500" />
+                            <span className="font-mono font-bold text-xs truncate max-w-[140px]">
+                                {currentSession.sampleName}
+                            </span>
+                        </div>
+                    </div>
                 </div>
 
                 <Separator />
