@@ -53,6 +53,7 @@ export function ManualView() {
         homeStage,
         stopStage,
         waitForIdle,
+        stopSignal,
     } = useStageActions();
 
     //Step Move用
