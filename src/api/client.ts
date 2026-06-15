@@ -231,6 +231,24 @@ export const cameraApi = {
             body: JSON.stringify({ filepath })
         }),
 
+    /**
+     * カメラのROI（解析対象領域）リストをバックエンドに同期します。
+     * 
+     * 【重要】フロントエンドの Zustand ストアで ROI が変更されるたびに自動で呼ばれます。
+     * FastAPI 側は `ROISetRequest(BaseModel)` で受け取るため、
+     * `body` には必ず `{ rois: [...] }` というオブジェクト形式で包んで送信する必要があります。
+     * 単なる配列（`[...]`）を送ると 422 Unprocessable Entity エラーになります。
+     */
+    setRois: (rois: Array<{ index: number, x: number, y: number, size: number }>) =>
+        request<{ status: string, count: number }>("/camera/rois", {
+            method: "POST",
+            body: JSON.stringify({ rois })
+        }),
+
+    // 最新フレームのROI統計情報（Sum, Max, Centroid）をバックエンドから取得します
+    getRoiStats: () =>
+        request<Record<string, { sum: number, max: number, cx: number, cy: number }>>("/camera/roi_stats"),
+
     // マルチページTIFFへの超高速直書き（録画）を開始します
     startRecording: () =>
         request<{ status: string, filepath: string }>("/camera/record/start", { method: "POST" }),
@@ -359,7 +377,8 @@ export const systemApi = {
         end_angle: number,
         step_angle: number,
         save_directory: string,
-        is_prescan?: boolean
+        is_prescan?: boolean,
+        metadata?: any
     }) =>
         request<{
             status: string,

@@ -86,15 +86,18 @@
 ### 5.4 roi_settings.json (Detailed Metadata)
 
 各測定の枝番フォルダ（例: `1_Left_Front_001/`）内に保存される詳細な証拠データ。
-**Pre-Scan の試行履歴（失敗・成功）** と、最終的に本番測定で**固定（ロック）された ROI の座標**を記録する。このフォルダだけをコピーすれば解析に必要な情報が全て揃う（ポータビリティ）。
+**Pre-Scan の試行履歴（失敗・成功時の環境スナップショット）** と、最終的に本番測定で**固定（ロック）された ROI の座標**を記録する。このフォルダだけをコピーすれば解析に必要な情報が全て揃う（ポータビリティ）。
 
 ```json
 {
   "measurement_id": "1_Left_Front_001",
-  "step_category": "1_Left_Front",
-  "environment": {
-    "laser_power_mw": 10.5,
-    "fiber_pos": { "x": 100, "y": 200 },
+  "is_prescan": false,
+  "final_environment": {
+    "metadata": {
+      "laser_power_mw": 10.5,
+      "fiber_pos_x": 100,
+      "fiber_pos_y": 200
+    },
     "camera": {
       "exposure_time_ms": 100.0,
       "gain": 1.0,
@@ -104,23 +107,34 @@
   "prescan_history": [
     {
       "attempt": 1,
-      "timestamp_start": "2026-06-01T10:00:00Z",
-      "timestamp_end": "2026-06-01T10:01:30Z",
       "status": "failed",
+      "environment": {
+        "metadata": { "laser_power_mw": 10.5, "fiber_pos_x": null, "fiber_pos_y": null },
+        "camera": { "exposure_time_ms": 500.0, "gain": 5.0, "input_bpp": 8 }
+      },
       "reason": "Contrast check failed (Flat noise)" // 飽和やノイズでアライメント失敗
     },
     {
       "attempt": 2,
-      "timestamp_start": "2026-06-01T10:03:00Z",
-      "timestamp_end": "2026-06-01T10:04:10Z",
-      "status": "success"
+      "status": "success",
+      "environment": {
+        "metadata": { "laser_power_mw": 10.5, "fiber_pos_x": 100, "fiber_pos_y": 200 },
+        "camera": { "exposure_time_ms": 100.0, "gain": 1.0, "input_bpp": 8 }
+      },
+      "message": "Centroid calculated successfully"
     }
   ],
   "rois": [
     {
       "index": 1,
       "initial": { "x": 500, "y": 400, "size": 11 }, // ユーザーが手動で置いた初期位置
-      "final_aligned": { "x": 502, "y": 399, "size": 11 } // 重み付き平均で確定し、本番でロックされた位置
+      "final_aligned": { 
+        "x": 502,            // 整数（画像切り出し用）
+        "y": 399,            // 整数（画像切り出し用）
+        "size": 11,
+        "optical_centroid_x": 502.345, // 小数（真のサブピクセル重心座標、科学データ用）
+        "optical_centroid_y": 398.812
+      } 
     }
   ]
 }

@@ -46,9 +46,11 @@ export function useStageActions() {
      * バックエンドの API (/stage/position) を定期的に叩き、
      * ステージの `is_busy` フラグが false になるまで待機します。
      * 
-     * @param timeoutMs - タイムアウトまでの最大待機時間（デフォルト5分）
+     * @param timeoutMs - タイムアウトまでの最大待機時間（デフォルト5分）。この時間を超えても動作が終わらない場合はエラーとなります。
+     * @returns {Promise<void>} ステージの動作が完了した際に resolve される Promise。
+     * @throws {Error} タイムアウトに達した場合、またはバックエンドとの通信エラーが連続して閾値を超えた場合に reject されます。
      */
-    const waitForIdle = async (timeoutMs = 300000) => {
+    const waitForIdle = async (timeoutMs = 300000): Promise<void> => {
         const startTime = Date.now();
         let errorCount = 0;
         const MAX_ERRORS = 5; // 連続5回（約2.5秒）のエラーまでは許容する

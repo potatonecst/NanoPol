@@ -127,14 +127,13 @@ Autoモードに入った最初のフェーズ。サンプルの新規作成ま�
   * **レイアウト:** 
       * 左側: パラメータ入力および実行ボタン。
       * 右側: `ResizablePanelGroup` を使用し、上段に `CameraPanel`、下段に `GraphPanel` を配置。
-  * **Input (Mandatory):**
-      * `Laser Power`: `[ ] mW` (空欄・必須)。
-      * `Fiber Pos`: `X:[ ] Y:[ ]` (メモ入力・必須)。
-  * **Control Options:**
-      * **Auto-start after Pre-Scan** (Toggle): ON の場合、アライメント成功後に本番測定へ自動遷移する（リスク警告あり）。
+  * **Input:**
+      * `Laser Power`: `[ ] mW` (**必須**)。未入力状態から開始し、値の入力を強制する。
+      * `Fiber Pos`: `X:[ ] Y:[ ]` (**任意**)。未入力時は null または undefined として扱う。
+      * `Angle Range`: `Start`, `End`, `Step` (**必須**)。
   * **Action Buttons:**
-      * **Mini Jog**: `<` `>` アイコンボタン。ステージを微小角度（相対移動）させてアライメントの最終調整を行う。
-      * `[Pre-Scan]` (Searchアイコン): **必須**。ROIオートセンタリングを実行。実行中、最大輝度をリアルタイム表示。
+      * **Manual Remote (Joystick)**: 画面を切り替えずに絶対移動やジョグ操作（0.1°, 1°, 5°）を行えるポップオーバー。緊急停止（STOP STAGE）も備える。
+      * `[Run Pre-Scan]` (Scanアイコン): ROIオートセンタリングを実行。
       * `[START MEASUREMENT]` (Playアイコン): 本番開始。
   * **Status & Feedback:**
       * **Countdown**: 自動開始設定時、Pre-Scan 完了後に「Starting in 3...」とカウントダウンを表示。

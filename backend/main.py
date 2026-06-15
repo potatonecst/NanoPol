@@ -97,7 +97,8 @@ class AutoMeasurementState:
         self.MAX_BUFFER_POINTS = 10000
 
         # マルチスレッド（APIスレッドとキャプチャスレッド）からの同時アクセスを防ぐロック
-        self._lock = threading.Lock()
+        # 内部メソッド同士で呼び出す場合（例: start_session -> reset）のデッドロックを防ぐため、RLockを使用します。
+        self._lock = threading.RLock()
 
     def reset(self):
         """
@@ -672,7 +673,8 @@ def _run_auto_measurement(
     end_angle: float,
     step_angle: float,
     save_directory: str,
-    is_prescan: bool = False
+    is_prescan: bool = False,
+    metadata: dict = None
 ):
     """
     Step & Shoot 方式による精密な自動測定シーケンスをバックグラウンドで実行します。
@@ -684,6 +686,9 @@ def _run_auto_measurement(
     フロントエンドからの他の通信（進捗ポーリングなど）を一切ブロックしません。
     """
     try:
+        # Pre-Scan開始前（ユーザーが手動で配置したまま）の初期ROIをコピーして保持
+        initial_rois = [dict(r) for r in camera.rois]
+
         # 初期状態のセット
         _set_auto_operation_state(
             operation_id=operation_id,
@@ -959,11 +964,14 @@ def _run_auto_measurement(
                             
                             # 更新するROIオブジェクトの作成
                             updated_r = dict(r)
-                            updated_r["x"] = round(weighted_cx, 3)
-                            updated_r["y"] = round(weighted_cy, 3)
+                            updated_r["x"] = int(round(weighted_cx))
+                            updated_r["y"] = int(round(weighted_cy))
+                            # 科学データとして、丸め誤差を含まない真のサブピクセル重心座標も別名で保存しておきます
+                            updated_r["optical_centroid_x"] = round(weighted_cx, 4)
+                            updated_r["optical_centroid_y"] = round(weighted_cy, 4)
                             updated_rois.append(updated_r)
                             
-                            logger.info(f"[AUTO] ROI {roi_idx} aligned: ({r.get('x')}, {r.get('y')}) -> ({updated_r['x']}, {updated_r['y']})")
+                            logger.info(f"[AUTO] ROI {roi_idx} aligned: ({r.get('x')}, {r.get('y')}) -> ({updated_r['x']}, {updated_r['y']}) (True Center: {weighted_cx:.3f}, {weighted_cy:.3f})")
                             
                         # 計算された全てのROIの新しい最適座標で、カメラ設定を更新（ROIをロック）します。
                         # この座標が続く本番測定で固定使用されます。
@@ -975,6 +983,76 @@ def _run_auto_measurement(
                 # 変換に失敗した場合は、最悪の事態（データ紛失）を避けるため
                 # 元のバラバラの画像（images_dir）は削除せずに残し、ログにエラーを記録します。
                 logger.error(f"[AUTO] Failed to generate Multipage TIFF: {e}")
+
+            # === メタデータ (roi_settings.json) の保存 ===
+            # 【背景と役割】
+            # 仕様書 5.4 準拠: 実験の再現性を担保するため、測定時の各種パラメータを保存します。
+            # 「Left_Front_001」などの枝番フォルダ直下に保存し、Pre-Scan と本番測定で
+            # この1つのファイルを共有（更新・追記）する形でデータを引き継ぎます。
+            try:
+                roi_settings_path = os.path.join(save_directory, "roi_settings.json")
+                roi_settings_data = {}
+
+                # 既にファイルが存在する場合は読み込む（Pre-Scan -> 本番測定 の流れでデータを引き継ぐため）
+                if os.path.exists(roi_settings_path):
+                    with open(roi_settings_path, "r", encoding="utf-8") as f:
+                        roi_settings_data = json.load(f)
+
+                # 基本構造の初期化
+                if "measurement_id" not in roi_settings_data:
+                    roi_settings_data["measurement_id"] = os.path.basename(os.path.normpath(save_directory))
+                
+                # その時点の環境メタデータを取得（フロントエンドから送られてきた値 + 現在のカメラ設定）
+                current_environment = {
+                    "metadata": metadata or {},
+                    "camera": {
+                        "exposure_time_ms": camera.get_exposure(),
+                        "gain": camera.get_gain(),
+                        "input_bpp": getattr(camera, 'input_bpp', 8)
+                    }
+                }
+
+                # Pre-Scan履歴の初期化
+                if "prescan_history" not in roi_settings_data:
+                    roi_settings_data["prescan_history"] = []
+
+                if is_prescan:
+                    # 【重要】Pre-Scanの場合は設定を最上位で上書きせず、履歴(history)の1要素としてスナップショットを残します。
+                    # これにより、「1回目はゲイン10で失敗し、2回目はゲイン50で成功した」という試行錯誤の歴史が完全に記録されます。
+                    roi_settings_data["prescan_history"].append({
+                        "attempt": attempt_number,
+                        "status": "success",
+                        "environment": current_environment,
+                        "message": "Centroid calculated successfully"
+                    })
+                else:
+                    # 本番測定時は、最終的に使用された確定設定として最上位に記録します
+                    roi_settings_data["final_environment"] = current_environment
+
+                # ROIは、ユーザーが最初に置いた手動の座標(initial)と、計算後の最終座標(final_aligned)の両方を記録します。
+                # これにより、オートセンタリングによって「どれくらい座標が自動補正されたか」を後から検証できるようになります。
+                if "rois" not in roi_settings_data or is_prescan:
+                    formatted_rois = []
+                    # camera.rois はこの時点でオートセンタリングを経た最終的な座標（サブピクセル重心を含む）になっています
+                    for i_roi, f_roi in zip(initial_rois, camera.rois):
+                        formatted_rois.append({
+                            "index": i_roi.get("index"),
+                            "initial": {"x": i_roi.get("x"), "y": i_roi.get("y"), "size": i_roi.get("size")},
+                            "final_aligned": {
+                                "x": f_roi.get("x"), 
+                                "y": f_roi.get("y"), 
+                                "size": f_roi.get("size"),
+                                "optical_centroid_x": f_roi.get("optical_centroid_x"),
+                                "optical_centroid_y": f_roi.get("optical_centroid_y")
+                            }
+                        })
+                    roi_settings_data["rois"] = formatted_rois
+
+                with open(roi_settings_path, "w", encoding="utf-8") as f:
+                    json.dump(roi_settings_data, f, indent=2, ensure_ascii=False)
+                logger.info(f"[AUTO] Saved ROI settings to {roi_settings_path}")
+            except Exception as e:
+                logger.error(f"[AUTO] Failed to save roi_settings.json: {e}")
 
             # 全ての工程が完了。状態を succeeded にして UI に通知します。
             _set_auto_operation_state(status="succeeded", message="Measurement complete")
@@ -989,6 +1067,31 @@ def _run_auto_measurement(
         logger.exception("[AUTO] Error during auto measurement")
         _set_auto_operation_state(status="failed", message=str(e))
     finally:
+        # --- 測定履歴 (settings.json) の更新 ---
+        # 【背景と役割】
+        # 本番測定の終了時（成功・失敗・キャンセル問わず）、親フォルダ（Sample_1など）にある
+        # `settings.json` の `measurements` 配列に、今回の結果を追記します。
+        # フロントエンドはこれを見て「このカテゴリの測定は完了したか」を判定し、チェックマークを出します。
+        # ※以前、ここで `datetime.datetime.now` と書いてしまい参照エラーで静かに落ちるバグがありました。
+        if not is_prescan:
+            final_state = _get_auto_operation_snapshot()
+            measurement_id = os.path.basename(os.path.normpath(save_directory))
+            step_category = "_".join(measurement_id.split("_")[:-1]) # "1_Left_Front_001" -> "1_Left_Front"
+            
+            history_entry = {
+                "id": measurement_id,
+                "step_category": step_category,
+                "status": "completed" if final_state.get("status") == "succeeded" else "aborted",
+                "timestamp_end": datetime.now(timezone.utc).isoformat()
+            }
+            
+            parent_dir = os.path.dirname(os.path.normpath(save_directory))
+            try:
+                data_saver.append_measurement_history(parent_dir, history_entry)
+                logger.info(f"[AUTO] Appended history to settings.json in {parent_dir}")
+            except Exception as e:
+                logger.error(f"[AUTO] Failed to append history to settings.json: {e}")
+
         # 正常・異常・キャンセルに関わらず、最後に必ずロックを解除し、システムの測定中フラグを落とします。
         with stage_command_lock:
             app_state.is_measuring = False
@@ -1235,6 +1338,7 @@ class AutoMeasurementRunRequest(BaseModel):
     step_angle: float
     save_directory: str
     is_prescan: bool = False
+    metadata: dict = None
 
 class UpdateConfigRequest(BaseModel):
     pulses_per_degree: int # 1度回転させるために必要なモーターのパルス数（分解能）
@@ -1245,6 +1349,9 @@ class CameraConfigRequest(BaseModel):
 
 class CameraConnectRequest(BaseModel):
     camera_id: int = 0
+
+class ROISetRequest(BaseModel):
+    rois: list
 
 class SystemSettingsRequest(BaseModel):
     settings: dict # config.json の内容を含む、任意のキー・バリュー設定データ
@@ -1779,7 +1886,7 @@ def measurement_auto_run(req: AutoMeasurementRunRequest):
 
     worker = threading.Thread(
         target=_run_auto_measurement,
-        args=(operation_id, req.start_angle, req.end_angle, req.step_angle, req.save_directory, req.is_prescan),
+        args=(operation_id, req.start_angle, req.end_angle, req.step_angle, req.save_directory, req.is_prescan, req.metadata),
         daemon=True,
     )
     worker.start()
@@ -1951,11 +2058,11 @@ def config_camera(req: CameraConfigRequest):
     return {"status": "success"}
 
 @app.post("/camera/rois")
-async def set_camera_rois(rois: list):
+async def set_camera_rois(req: ROISetRequest):
     """解析対象の ROI リストを更新します"""
     try:
-        camera.set_rois(rois)
-        return {"status": "success", "count": len(rois)}
+        camera.set_rois(req.rois)
+        return {"status": "success", "count": len(req.rois)}
     except Exception as e:
         logger.exception("Failed to set ROIs")
         raise HTTPException(status_code=500, detail=str(e))

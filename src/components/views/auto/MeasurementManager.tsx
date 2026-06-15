@@ -39,12 +39,14 @@ export function MeasurementManager() {
     const {
         isMeasuring,        // 現在自動測定（本番）が走っているか
         currentSession,     // 現在アクティブなセッション（サンプル）の情報
+        setCurrentSession,  // セッション情報を更新する関数
         selectedCategory,   // 選択中の測定カテゴリ（Left-Frontなど）
         setAutoPhase,       // フェーズ切り替え用アクション
         currentAngle        // ステージの現在角度（ポーリングで更新される）
     } = useAppStore(useShallow((state) => ({
         isMeasuring: state.isMeasuring,
         currentSession: state.currentSession,
+        setCurrentSession: state.setCurrentSession,
         selectedCategory: state.selectedCategory,
         setAutoPhase: state.setAutoPhase,
         currentAngle: state.currentAngle
@@ -77,13 +79,21 @@ export function MeasurementManager() {
     const [progressPercent, setProgressPercent] = useState<number>(0);   // 進捗率 (0-100)
     const [progressMessage, setProgressMessage] = useState<string>("");  // 現在の動作メッセージ
 
-    // --- フォーム管理 (React Hook Form + Zod) ---
+    // 現在の測定（Pre-Scanから本番まで）で共通して使用するデータ保存先フォルダ
+    const [currentBranchPath, setCurrentBranchPath] = useState<string | null>(null);
+
+    // カテゴリが変更されたら保存先パスをリセットする
+    useEffect(() => {
+        setCurrentBranchPath(null);
+    }, [selectedCategory]);
+
+    // React Hook Form の初期化（Zodスキーマ連携）
     const form = useForm<SetupFormValues>({
         resolver: zodResolver(setupFormSchema) as any,
         defaultValues: {
-            laserPower: 0,
-            fiberX: 0,
-            fiberY: 0,
+            laserPower: "" as any,
+            fiberX: "" as any,
+            fiberY: "" as any,
             startAngle: 0,
             endAngle: 360,
             stepAngle: 5,
@@ -116,8 +126,25 @@ export function MeasurementManager() {
                     setOperationId(null);
 
                     if (res.status === "succeeded") {
-                        toast.success("Operation completed successfully.");
-                        if (prescanStatus === "running") setPrescanStatus("success");
+                        if (prescanStatus === "running") {
+                            toast.success("Pre-Scan completed successfully.");
+                            setPrescanStatus("success");
+                        } else {
+                            toast.success("Measurement complete. Returning to category selection.");
+                            // 測定完了後は、履歴をリフレッシュしてからカテゴリ選択画面へ戻る
+                            if (currentSession?.folderPath) {
+                                try {
+                                    const settings = await autoApi.getSessionSettings(currentSession.folderPath);
+                                    setCurrentSession({
+                                        ...currentSession,
+                                        settings: settings
+                                    });
+                                } catch (e) {
+                                    console.error("Failed to refresh session history:", e);
+                                }
+                            }
+                            setAutoPhase('select_category');
+                        }
                     } else if (res.status === "cancelled") {
                         toast.info("Operation was cancelled.");
                         if (prescanStatus === "running") setPrescanStatus("idle");
@@ -140,7 +167,13 @@ export function MeasurementManager() {
 
     /**
      * Pre-Scan (事前スキャン) の実行。
-     * 本番測定の前に、荒い角度間隔でスキャンを行い、光学的な重心（アライメント）を決定します。
+     * 
+     * 【解説】
+     * 本番測定の前に、荒い角度間隔（例: 15度）でスキャンを行い、光の強度が最も強い位置（ピーク）と
+     * 最も弱い位置をサンプリングします。このデータを用いて、背景ノイズを除去した上で「重み付き平均」を計算し、
+     * ROI（関心領域）の中心座標をサブピクセル精度で補正（オートセンタリング）します。
+     * 
+     * @param {SetupFormValues} values - ユーザーがフォームに入力した測定条件（レーザーパワー等）
      */
     const handlePreScan = async (values: SetupFormValues) => {
         if (!currentSession || !selectedCategory) return;
@@ -151,15 +184,26 @@ export function MeasurementManager() {
         setProgressMessage("Starting Pre-Scan...");
 
         try {
-            // 保存用フォルダ（枝番）を生成
-            const branchRes = await autoApi.generateBranch(currentSession.folderPath, selectedCategory);
+            // Pre-Scanですでにフォルダが作成されていればそれを使い、なければ新規作成する
+            let targetPath = currentBranchPath;
+            if (!targetPath) {
+                const branchRes = await autoApi.generateBranch(currentSession.folderPath, selectedCategory);
+                targetPath = branchRes.folder_path;
+                setCurrentBranchPath(targetPath);
+            }
+
             // バックエンドにPre-Scanタスクをリクエスト
             const runRes = await autoApi.runAutoMeasurement({
                 start_angle: values.startAngle,
                 end_angle: values.endAngle,
                 step_angle: 15.0, // Pre-Scan は高速化のため15度固定で回す
-                save_directory: branchRes.folder_path,
-                is_prescan: true
+                save_directory: targetPath,
+                is_prescan: true,
+                metadata: {
+                    laser_power_mw: values.laserPower,
+                    fiber_pos_x: values.fiberX ?? null,
+                    fiber_pos_y: values.fiberY ?? null
+                }
             });
 
             setOperationId(runRes.operation_id); // 監視を開始
@@ -173,7 +217,11 @@ export function MeasurementManager() {
 
     /**
      * 強制開始の有効化。
-     * アライメントが失敗（ノイズ過多など）した場合でも、ユーザーの判断で本番測定へ進めるようにします。
+     * 
+     * 【解説】
+     * アライメント（Pre-Scan）が失敗した場合、通常は測定に進めません。
+     * これは「光が弱すぎてノイズなのか粒子なのか分からない」といった安全装置ですが、
+     * ユーザーが目視で「これで良い」と判断した場合に、この制限を強制解除するためのハンドラです。
      */
     const handleForceUnlock = () => {
         setForceStartUnlocked(true);
@@ -182,7 +230,13 @@ export function MeasurementManager() {
 
     /**
      * 本番測定 (START MEASUREMENT) の実行。
-     * ユーザーが入力したパラメータに基づき、精密な Step & Shoot 測定を開始します。
+     * 
+     * 【解説】
+     * ユーザーが指定した開始角度から終了角度まで、細かいステップ角度でステージを回転させ、
+     * 停止後に振動が収まるのを待ってから（0.2秒）、カメラの画像を撮影します。
+     * 取得した画像からROIの輝度（Sum, Max）を計算し、逐次CSVに保存していきます。
+     * 
+     * @param {SetupFormValues} values - ユーザーがフォームに入力した測定条件
      */
     const handleStartMeasurement = async (values: SetupFormValues) => {
         if (!currentSession || !selectedCategory) return;
@@ -191,13 +245,25 @@ export function MeasurementManager() {
         setProgressMessage("Starting Measurement...");
 
         try {
-            const branchRes = await autoApi.generateBranch(currentSession.folderPath, selectedCategory);
+            // Pre-Scanですでにフォルダが作成されていればそれを使い、なければ新規作成する
+            let targetPath = currentBranchPath;
+            if (!targetPath) {
+                const branchRes = await autoApi.generateBranch(currentSession.folderPath, selectedCategory);
+                targetPath = branchRes.folder_path;
+                setCurrentBranchPath(targetPath);
+            }
+
             const runRes = await autoApi.runAutoMeasurement({
                 start_angle: values.startAngle,
                 end_angle: values.endAngle,
                 step_angle: values.stepAngle,
-                save_directory: branchRes.folder_path,
-                is_prescan: false
+                save_directory: targetPath,
+                is_prescan: false,
+                metadata: {
+                    laser_power_mw: values.laserPower,
+                    fiber_pos_x: values.fiberX ?? null,
+                    fiber_pos_y: values.fiberY ?? null
+                }
             });
 
             setOperationId(runRes.operation_id);

@@ -193,7 +193,7 @@ class CameraController:
             self.height = 1024
             self.sensor_type = "monochrome"
             self.bayer_pattern = None
-            self.input_bpp = 16
+            self.input_bpp = 8
             logger.info(f"{self.log_tag} Connected to Virtual Camera (ID: {camera_id})")
             self.is_connected = True
             # Mockでも exposure range をキャッシュしておく

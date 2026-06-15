@@ -57,7 +57,7 @@ export const DEFAULT_GAIN_MAX = 13.0;
  * ROI (Region of Interest) 関連の定数
  */
 export const MAX_ROIS = 20;
-export const MIN_ROI_SIZE = 3;
+export const MIN_ROI_SIZE = 1;
 
 /**
  * ROIに順番に割り当てるカラーパレット（高視認性 20色）

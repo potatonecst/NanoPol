@@ -1,6 +1,29 @@
 import { create } from 'zustand';
 import { AppMode, StageSettings, AutoMeasurementPhase, MeasurementSession, ROIData } from '@/types';
 import { MAX_ROIS, ROI_COLORS } from '@/constants/constants';
+import { cameraApi } from '@/api/client';
+
+// バックエンドへ現在のROIリストを同期するヘルパー
+/**
+ * 【背景と役割】
+ * フロントエンド（画面）で四角い枠（ROI）を配置したり移動させたりした際、
+ * その座標はフロントエンドのメモリ上にしか存在しません。
+ * そのまま自動測定（Pre-Scan等）を開始すると、バックエンドは「どこを解析すれば良いか」
+ * 分からず、ノイズだと判定して失敗してしまいます。
+ * そのため、フロントエンドでROIが変更されるたびに、この関数を使って最新の座標とサイズを
+ * バックエンドの `/camera/rois` API へ送信（同期）するようにしています。
+ */
+const syncRoisToBackend = (rois: ROIData[]) => {
+    const payload = rois.map(r => ({
+        index: r.index,
+        x: r.x,
+        y: r.y,
+        size: r.size
+    }));
+    cameraApi.setRois(payload).catch(err => {
+        console.error("Failed to sync ROIs to backend:", err);
+    });
+};
 
 //インターフェース: ストアの中身（データと関数）の設計図
 interface AppState {
@@ -195,37 +218,48 @@ export const useAppStore = create<AppState>((set) => ({
         };
 
         // UIで見やすいようにインデックス順でソートして保持
+        const updatedRois = [...state.rois, newROI].sort((a, b) => a.index - b.index);
+        
+        // バックエンドへ同期
+        syncRoisToBackend(updatedRois);
+
         return {
-            rois: [...state.rois, newROI].sort((a, b) => a.index - b.index)
+            rois: updatedRois
         };
     }),
     updateROI: (id, updates) => set((state) => {
         const { width, height } = state.cameraResolution;
         
-        return {
-            rois: state.rois.map((r) => {
-                if (r.id !== id) return r;
+        const updatedRois = state.rois.map((r) => {
+            if (r.id !== id) return r;
 
-                // 更新後の値を計算（無ければ現在の値）
-                const newSize = updates.size ?? r.size;
-                const halfSize = newSize / 2;
+            // 更新後の値を計算（無ければ現在の値）
+            const newSize = updates.size ?? r.size;
+            const halfSize = newSize / 2;
 
-                // 座標またはサイズが更新される場合、常に枠内にクランプ
-                let newX = updates.x ?? r.x;
-                let newY = updates.y ?? r.y;
+            // 座標またはサイズが更新される場合、常に枠内にクランプ
+            let newX = updates.x ?? r.x;
+            let newY = updates.y ?? r.y;
 
-                // クランプ処理
-                newX = Math.max(halfSize, Math.min(width - halfSize, newX));
-                newY = Math.max(halfSize, Math.min(height - halfSize, newY));
+            // クランプ処理
+            newX = Math.max(halfSize, Math.min(width - halfSize, newX));
+            newY = Math.max(halfSize, Math.min(height - halfSize, newY));
 
-                return { ...r, ...updates, x: newX, y: newY, size: newSize };
-            })
-        };
+            return { ...r, ...updates, x: newX, y: newY, size: newSize };
+        });
+
+        syncRoisToBackend(updatedRois);
+        return { rois: updatedRois };
     }),
-    removeROI: (id) => set((state) => ({
-        rois: state.rois.filter((r) => r.id !== id)
-    })),
-    clearROIs: () => set({ rois: [] }),
+    removeROI: (id) => set((state) => {
+        const updatedRois = state.rois.filter((r) => r.id !== id);
+        syncRoisToBackend(updatedRois);
+        return { rois: updatedRois };
+    }),
+    clearROIs: () => set((state) => {
+        syncRoisToBackend([]);
+        return { rois: [] };
+    }),
 
     // --- 自動測定 (Auto Mode) 専用の状態 ---
     autoPhase: 'select_session',

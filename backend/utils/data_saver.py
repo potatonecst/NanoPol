@@ -196,19 +196,22 @@ def generate_measurement_branch(sample_dir: str, step_category: str) -> tuple[st
     """
     やり直し（非破壊Redo）のための「新しい枝番」を持つ測定IDとフォルダパスを生成します。
 
-    解説:
+    【解説】
         「Left_Front」という条件で測定して、もし飽和していた場合、
         ユーザーは条件（露光など）を変えてもう一度測定したいはずです。
         その際、前のデータを消さずに `Left_Front_001`, `Left_Front_002` と
-        自動で分けることで、実験の全履歴を残します。
+        自動で分けることで、実験の全履歴（失敗も含めたトレーサビリティ）を残します。
 
-    引数:
+    Args:
         sample_dir (str): サンプルのベースフォルダ (例: D:\\Data\\...\\Sample_1)
         step_category (str): 測定のカテゴリ (例: "Left_Front")
 
-    戻り値:
+    Returns:
         tuple[str, str]: (発行された枝番付きID, そのID用の新しいフォルダのフルパス)
                          例: ("1_Left_Front_002", "D:\\...\\Sample_1\\1_Left_Front_002")
+                         
+    Raises:
+        OSError: フォルダの作成権限がない場合などにスローされます。
     """
     # 枝番を見つけるロジック
     counter = 1
@@ -228,23 +231,30 @@ def generate_measurement_branch(sample_dir: str, step_category: str) -> tuple[st
             
         counter += 1
 
-def append_measurement_history(sample_dir: str, history_entry: dict):
+def append_measurement_history(sample_dir: str, history_entry: dict) -> None:
     """
-    1回の測定が終了（または中断）した際に、その結果を settings.json の履歴に追記します。
+    1回の測定が終了（または中断）した際に、その結果を `settings.json` の履歴に追記します。
     
-    引数:
-        sample_dir (str): サンプルのフォルダ
-        history_entry (dict): 追記したい1回分の結果データ
+    【解説】
+        1. 既存の `settings.json` をメモリ上に読み込む。
+        2. `measurements` 配列の末尾に、引数の `history_entry` を append する。
+        3. ファイルを上書き保存する。
+        
+        ※ 将来的に巨大なファイルになる場合はシーク等を用いた「追記（append）モード」での操作を検討しますが、
+        自動測定の履歴（数件〜数十件）程度であれば、この「読み込んで書き戻す」方式が
+        JSONの構造的な整合性を保つ上で最も安全です。
+
+    Args:
+        sample_dir (str): サンプルのフォルダパス
+        history_entry (dict): 追記したい1回分の結果データ辞書
             例: {"id": "1_Left_Front_001", "step_category": "1_Left_Front", "status": "completed", ...}
 
-    ロジックの解説:
-        1. ファイルを読み込む
-        2. メモリ上のリストに append する
-        3. ファイルを上書き保存する
+    Returns:
+        None
         
-        将来的に巨大なファイルになる場合は「追記（append）モード」でのファイル操作を検討しますが、
-        自動測定の履歴（数件〜数十件）程度であれば、この「読み込んで書き戻す」方式が
-        JSONの整合性を保つ上で最も安全です。
+    Raises:
+        FileNotFoundError: `settings.json` が存在しない場合にスローされます。
+        json.JSONDecodeError: ファイルが破損している場合にスローされます。
     """
     settings_path = os.path.join(sample_dir, "settings.json")
     

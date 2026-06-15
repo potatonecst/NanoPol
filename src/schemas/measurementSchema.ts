@@ -3,40 +3,60 @@ import { z } from "zod";
 // バリデーションルールの定義
 // フォームに入力されるデータの「形」と「制約」をここで定義します。
 export const setupFormSchema = z.object({
-    // z.coerce.number():
-    // HTMLの<input type="number">は、実は文字列として値を返すことがあります。
-    // coerce（強制変換）を使うことで、"100" という文字列が来ても自動的に数値の 100 に変換してから検証します。
-    laserPower: z.coerce
-        .number()
-        .min(0, "0以上の値を入力してください")
-        .max(1000, "値が大きすぎます"), // 上限も設定可能
+    laserPower: z.any().transform((val, ctx) => {
+        // 空文字や未入力の場合はエラー（必須項目）
+        if (val === "" || val === undefined || val === null) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: "必須項目です",
+            });
+            return z.NEVER;
+        }
+        const num = Number(val);
+        if (isNaN(num)) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: "数値を入力してください",
+            });
+            return z.NEVER;
+        }
+        if (num < 0) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: "0以上の値を入力してください",
+            });
+            return z.NEVER;
+        }
+        return num;
+    }),
 
-    fiberX: z.coerce
-        .number()
-        .int("整数で入力してください")
-        .optional()
-        .or(z.literal("")),
+    fiberX: z.any().transform((val, ctx) => {
+        // 未入力は許容し、undefined を返す（0とは区別する）
+        if (val === "" || val === undefined || val === null) return undefined;
+        const num = Number(val);
+        if (isNaN(num) || !Number.isInteger(num)) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: "整数で入力してください" });
+            return z.NEVER;
+        }
+        return num;
+    }).optional(),
 
-    fiberY: z.coerce
-        .number()
-        .int("整数で入力してください")
-        .optional()
-        .or(z.literal("")),
+    fiberY: z.any().transform((val, ctx) => {
+        if (val === "" || val === undefined || val === null) return undefined;
+        const num = Number(val);
+        if (isNaN(num) || !Number.isInteger(num)) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: "整数で入力してください" });
+            return z.NEVER;
+        }
+        return num;
+    }).optional(),
 
-    startAngle: z.coerce
-        .number(),
-
-    endAngle: z.coerce
-        .number(),
-
-    stepAngle: z.coerce
-        .number()
+    startAngle: z.coerce.number(),
+    endAngle: z.coerce.number(),
+    stepAngle: z.coerce.number()
         .min(0.0025, "最小分解能(0.0025)以上を指定してください")
         .max(360, "最大360度以下を指定してください"),
 });
 
 // スキーマから型を自動生成
-// TypeScriptの型定義（type SetupFormValues = { laserPower: number; ... }）を
-// 上記のスキーマから自動的に抽出します。
-// これにより、バリデーションルールと型定義が常に一致し、二重管理の手間がなくなります。
 export type SetupFormValues = z.infer<typeof setupFormSchema>;

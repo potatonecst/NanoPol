@@ -12,11 +12,11 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/
 
 import { CameraOff, House, ZoomIn, ZoomOut, Trash2, Minus, Plus } from "lucide-react";
 import { Badge } from "../ui/badge";
-import { 
-    DEFAULT_EXPOSURE_MIN_MS, 
-    DEFAULT_EXPOSURE_MAX_MS, 
-    DEFAULT_EXPOSURE_STEP_MS, 
-    DEFAULT_GAIN_MIN, 
+import {
+    DEFAULT_EXPOSURE_MIN_MS,
+    DEFAULT_EXPOSURE_MAX_MS,
+    DEFAULT_EXPOSURE_STEP_MS,
+    DEFAULT_GAIN_MIN,
     DEFAULT_GAIN_MAX,
     MIN_ROI_SIZE
 } from "@/constants/constants";
@@ -34,6 +34,43 @@ const TRASH_CURSOR_NEUTRAL = `url("data:image/svg+xml;utf8,<svg xmlns='http://ww
  * 赤色のゴミ箱カーソル（削除対象の上で使用） - 少し小さめ(18x18)に設定
  */
 const TRASH_CURSOR_RED = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='rgb(239, 68, 68)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2M10 11v6M14 11v6'/></svg>") 9 9, auto`;
+
+// --- ズーム関連のミニコンポーネント（再レンダリングによるちらつき防止のため外部に定義） ---
+const ZoomLevelBadge = ({ label, zoomLevel }: { label: string, zoomLevel: number }) => (
+    <TooltipProvider>
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <Badge variant="outline" className="bg-black/50 text-white border-zinc-700 font-mono">
+                    {(zoomLevel * 100).toFixed(2)}%
+                </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+                {label}
+            </TooltipContent>
+        </Tooltip>
+    </TooltipProvider>
+);
+
+const ZoomButton = ({
+    label,
+    children,
+    align = "center"
+}: {
+    label: string,
+    children: React.ReactNode,
+    align?: "center" | "start" | "end"
+}) => (
+    <TooltipProvider>
+        <Tooltip>
+            <TooltipTrigger asChild>
+                {children}
+            </TooltipTrigger>
+            <TooltipContent align={align} className="font-semibold">
+                {label}
+            </TooltipContent>
+        </Tooltip>
+    </TooltipProvider>
+);
 
 export function CameraPanel({ showAngle = false }: CameraPanelProps) {
     const {
@@ -88,6 +125,40 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
     // UIパネルの表示・非表示（畳めるようにする）
     const [isInfoExpanded, setIsInfoExpanded] = useState(true);
     const [isControlsExpanded, setIsControlsExpanded] = useState(true);
+
+    // バックエンドから取得した最新の ROI 統計情報（Sum, Max, Centroid 等）
+    const [roiStats, setRoiStats] = useState<Record<string, { sum: number, max: number, cx: number, cy: number }>>({});
+
+    /**
+     * ROI 統計情報の定期取得（ポーリング）
+     * 
+     * 【背景と注意点】
+     * ROIが存在する場合、0.2秒(200ms)間隔で `getRoiStats` APIを叩き、最新の輝度(Sum, Max)を取得して
+     * `roiStats` ステートを更新します。これにより、テーブルの数値がリアルタイムにパラパラと動きます。
+     * 
+     * ※Reactのアンチパターンへの対策※
+     * この高頻度のステート更新（再レンダリング）が走るため、この CameraPanel 関数の *内部* で
+     * 別のコンポーネント（例: `<ZoomButton>` 等）を定義してしまうと、200msごとにそのボタンが
+     * 破壊・再生成され、Tooltipが高速にちらつくバグが発生します。
+     * したがって、小さな部品であってもコンポーネントの定義は必ずこの関数の *外側*（ファイル上部）に
+     * 配置しなければなりません。
+     */
+    useEffect(() => {
+        if (!isCameraConnected || rois.length === 0) return;
+
+        // 0.2秒(200ms)間隔で最新の解析結果を取得し、テーブルに反映させる
+        const intervalId = setInterval(async () => {
+            try {
+                const stats = await cameraApi.getRoiStats();
+                setRoiStats(stats);
+            } catch (err) {
+                // エラー時はコンソールに出力するが、一時的な通信エラーの可能性もあるためUIは落とさない
+                console.error("Failed to fetch ROI stats:", err);
+            }
+        }, 200);
+
+        return () => clearInterval(intervalId);
+    }, [isCameraConnected, rois.length]);
 
     // キー押下状態を監視（カーソル形状・モード変更用）
     useEffect(() => {
@@ -345,42 +416,6 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         return () => clearTimeout(timer);
     }, [exposureTime, gain, isCameraConnected]);
 
-    const ZoomLevelBadge = ({ label }: { label: string }) => (
-        <TooltipProvider>
-            <Tooltip>
-                <TooltipTrigger asChild>
-                    <Badge variant="outline" className="bg-black/50 text-white border-zinc-700 font-mono">
-                        {(zoomLevel * 100).toFixed(2)}%
-                    </Badge>
-                </TooltipTrigger>
-                <TooltipContent>
-                    {label}
-                </TooltipContent>
-            </Tooltip>
-        </TooltipProvider>
-    )
-
-    const ZoomButton = ({
-        label,
-        children,
-        align = "center"
-    }: {
-        label: string,
-        children: React.ReactNode,
-        align?: "center" | "start" | "end"
-    }) => (
-        <TooltipProvider>
-            <Tooltip>
-                <TooltipTrigger asChild>
-                    {children}
-                </TooltipTrigger>
-                <TooltipContent align={align} className="font-semibold">
-                    {label}
-                </TooltipContent>
-            </Tooltip>
-        </TooltipProvider>
-    )
-
     // キー入力状態に基づき、背景のカーソルを決定
     const containerCursor = useMemo(() => {
         if (isAltPressed) return TRASH_CURSOR_NEUTRAL;
@@ -619,7 +654,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                         pointer-events-autoを指定し、親のドラッグイベントをキャンセルしてボタン操作を可能にします。
                     */}
                     <div className="absolute bottom-4 left-4 flex flex-col gap-2 pointer-events-auto z-20">
-                        <ZoomLevelBadge label="Zoom Level" />
+                        <ZoomLevelBadge label="Zoom Level" zoomLevel={zoomLevel} />
 
                         <div className="flex items-center gap-2">
                             <div className="flex bg-black/50 border border-zinc-700 rounded-md overflow-hidden">
@@ -697,25 +732,31 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                                 </tr>
                                             </thead>
                                             <tbody className="text-zinc-300 font-mono">
-                                                {rois.map((roi) => (
-                                                    <tr key={roi.id} className={`border-b border-white/5 hover:bg-white/5 transition-colors ${activeRoiId === roi.id ? 'bg-white/10' : ''}`}
-                                                        onMouseEnter={() => setActiveRoiId(roi.id)}
-                                                    >
-                                                        <td className="px-3 py-1.5 font-bold" style={{ color: roi.color }}>#{roi.index}</td>
-                                                        <td className="px-2 py-1.5 text-right">{Math.round(roi.x)},{Math.round(roi.y)}</td>
-                                                        <td className="px-2 py-1.5 text-right">{roi.size}px</td>
-                                                        <td className="px-2 py-1.5 text-right text-zinc-500">--</td>
-                                                        <td className="px-2 py-1.5 text-right text-zinc-500">--</td>
-                                                        <td className="px-3 py-1.5 text-center">
-                                                            <button 
-                                                                onClick={(e) => { e.stopPropagation(); removeROI(roi.id); }}
-                                                                className="p-1 hover:text-red-500 transition-colors"
-                                                            >
-                                                                <Trash2 className="size-3" />
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                ))}
+                                                {rois.map((roi) => {
+                                                    const stats = roiStats[roi.index.toString()];
+                                                    const sumStr = stats?.sum !== undefined ? stats.sum.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '--';
+                                                    const maxStr = stats?.max !== undefined ? stats.max.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '--';
+
+                                                    return (
+                                                        <tr key={roi.id} className={`border-b border-white/5 hover:bg-white/5 transition-colors ${activeRoiId === roi.id ? 'bg-white/10' : ''}`}
+                                                            onMouseEnter={() => setActiveRoiId(roi.id)}
+                                                        >
+                                                            <td className="px-3 py-1.5 font-bold" style={{ color: roi.color }}>#{roi.index}</td>
+                                                            <td className="px-2 py-1.5 text-right">{Math.round(roi.x)},{Math.round(roi.y)}</td>
+                                                            <td className="px-2 py-1.5 text-right">{roi.size}px</td>
+                                                            <td className="px-2 py-1.5 text-right text-zinc-400 font-medium">{sumStr}</td>
+                                                            <td className="px-2 py-1.5 text-right text-amber-500/90 font-medium">{maxStr}</td>
+                                                            <td className="px-3 py-1.5 text-center">
+                                                                <button 
+                                                                    onClick={(e) => { e.stopPropagation(); removeROI(roi.id); }}
+                                                                    className="p-1 hover:text-red-500 transition-colors"
+                                                                >
+                                                                    <Trash2 className="size-3" />
+                                                                </button>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
                                             </tbody>
                                         </table>
                                     </div>
