@@ -350,12 +350,12 @@ export function MeasurementManager() {
             setProgressMessage("Cancelling operation...");
             toast.info("Cancellation signal sent.");
         } catch (error: any) {
-            toast.error("Failed to cancel: " + error.message);
+            toast.error("Failed to cancel: " + (error.message || "Unknown error"));
         }
     };
-    ...
-                            onClick={handleCancel}
 
+    // --- 表示制御用の計算変数 ---
+    // UIパーツの無効化条件: 測定中、またはPre-Scan実行中
     const isFormDisabled = isMeasuring || prescanStatus === "running";
     // 本番測定を開始できる条件: Pre-Scan成功、または強制解除済み
     const canStartMeasurement = prescanStatus === "success" || forceStartUnlocked;
@@ -680,7 +680,7 @@ export function MeasurementManager() {
                             type="button"
                             variant="destructive"
                             className="w-full font-bold shadow-inner"
-                            onClick={handleAbort}
+                            onClick={handleCancel}
                         >
                             <XCircle className="w-4 h-4 mr-2" />
                             CANCEL MEASUREMENT
