@@ -344,7 +344,7 @@ export function MeasurementManager() {
     /**
      * 自動測定タスクの強制中断。
      */
-    const handleAbort = async () => {
+    const handleCancel = async () => {
         try {
             await autoApi.cancelAutoMeasurement();
             setProgressMessage("Cancelling operation...");
@@ -353,8 +353,9 @@ export function MeasurementManager() {
             toast.error("Failed to cancel: " + error.message);
         }
     };
+    ...
+                            onClick={handleCancel}
 
-    // UIパーツの無効化条件
     const isFormDisabled = isMeasuring || prescanStatus === "running";
     // 本番測定を開始できる条件: Pre-Scan成功、または強制解除済み
     const canStartMeasurement = prescanStatus === "success" || forceStartUnlocked;

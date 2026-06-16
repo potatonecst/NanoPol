@@ -45,7 +45,7 @@
 *   **完了状態の判定 (UI表示)**:
     *   各カテゴリーの選択ボタンに、測定完了を示すステータスアイコンを表示する。
     *   そのカテゴリーの履歴の中に、`status: "completed"` となっているものが **1つでも含まれていれば完了** となす。
-    *   履歴が `status: "aborted"` (飽和やユーザー中断による失敗) しかない場合は、完了状態とはみなさず再試行を促す。
+    *   履歴が `status: "cancelled"` (ユーザー中断による失敗) しかない場合は、完了状態とはみなさず再試行を促す。
 *   **タイムスタンプの記録**:
     *   `settings.json` には、Measurement Manager が本番測定（Step & Shoot）を開始・終了した時刻を `timestamp_start` および `timestamp_end` として記録する。
 *   **動作**: 次の測定の準備（Measurement Execution フェーズ）が整ったら、保存先ディレクトリを確定させ、設定値（ROI、角度リスト等）を添えて `Measurement Manager` に1回分の測定を委譲する。

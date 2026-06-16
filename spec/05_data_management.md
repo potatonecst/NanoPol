@@ -60,7 +60,7 @@
     {
       "id": "1_Left_Front_001",           // フォルダ名・CSV名と一致
       "step_category": "1_Left_Front",
-      "status": "aborted",                // 失敗・中断時は aborted または failed
+      "status": "cancelled",              // 失敗・中断時は cancelled または failed
       "timestamp_start": "2026-06-01T10:05:00Z", // 本番測定（Step&Shoot）を開始した時刻
       "timestamp_end": "2026-06-01T10:06:15Z"
     },
