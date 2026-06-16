@@ -874,12 +874,13 @@ def _run_auto_measurement(
         logger.exception("[AUTO] Fatal error during measurement")
         _set_auto_operation_state(status="failed", message=str(e))
     finally:
-        # 最終状態の取得
+        # 最終状態の取得。succeeded はユーザー表示用の completed にマッピングします。
         final_state = _get_auto_operation_snapshot()
-        final_status = final_state.get("status", "failed")
+        raw_status = final_state.get("status", "failed")
+        final_status = "completed" if raw_status == "succeeded" else raw_status
         final_message = final_state.get("message", "")
 
-        # measurement_details.json の更新
+        # measurement_details.json (旧 roi_settings.json) の更新
         try:
             if os.path.exists(save_directory):
                 details_path = os.path.join(save_directory, "measurement_details.json")
@@ -887,22 +888,47 @@ def _run_auto_measurement(
                 if os.path.exists(details_path):
                     with open(details_path, "r", encoding="utf-8") as f:
                         details_data = json.load(f)
+                
+                # --- [重要] 試行履歴 (prescan_history) の記録 ---
+                # リネーム時に失われていた試行ごとの履歴を復元します。
+                # Pre-Scan の場合は、 attempt ごとのスナップショットを残します。
+                if "prescan_history" not in details_data:
+                    details_data["prescan_history"] = []
+                
+                # その時点の環境メタデータを取得
+                current_env = {
+                    "metadata": metadata or {},
+                    "camera": {
+                        "exposure_time_ms": camera.get_exposure(),
+                        "gain": camera.get_gain(),
+                        "input_bpp": getattr(camera, 'input_bpp', 8)
+                    }
+                }
+
+                if is_prescan:
+                    # attempt_number は try ブロック内で計算されているはずですが、
+                    # 万が一未定義の場合は履歴の長さから推測します。
+                    actual_attempt = attempt_number if 'attempt_number' in locals() else len(details_data["prescan_history"]) + 1
+                    details_data["prescan_history"].append({
+                        "attempt": actual_attempt,
+                        "status": final_status,
+                        "message": final_message,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "environment": current_env
+                    })
+                else:
+                    # 本番測定時は、最終的に使用された確定設定として環境情報を記録します
+                    details_data["final_environment"] = current_env
+
                 # ROI情報の記録（初期の手動指定座標と、Pre-Scan後の最終確定座標）
                 details_rois = []
-                # camera.rois はこの時点で（Pre-Scan後であれば）オートセンタリング済みの座標になっています。
-                # initial_rois には関数開始時の「手動で置いたまま」の座標が入っています。
-                # これらを index ごとにマージして記録します。
                 current_rois_map = {r.get("index"): r for r in camera.rois}
                 for i_roi in initial_rois:
                     r_idx = i_roi.get("index")
-                    f_roi = current_rois_map.get(r_idx, i_roi) # 万が一見つからなければ初期値を代用
+                    f_roi = current_rois_map.get(r_idx, i_roi)
                     details_rois.append({
                         "index": r_idx,
-                        "initial": {
-                            "x": i_roi.get("x"), 
-                            "y": i_roi.get("y"), 
-                            "size": i_roi.get("size")
-                        },
+                        "initial": {"x": i_roi.get("x"), "y": i_roi.get("y"), "size": i_roi.get("size")},
                         "final_aligned": {
                             "x": f_roi.get("x"), 
                             "y": f_roi.get("y"), 
@@ -920,14 +946,14 @@ def _run_auto_measurement(
                     "timestamp_end": datetime.now(timezone.utc).isoformat(),
                     "rois": details_rois
                 })
-                if not is_prescan:
-                    details_data["final_environment"] = {"metadata": metadata or {}, "camera": {"exposure_time_ms": camera.get_exposure(), "gain": camera.get_gain()}}
+                
                 with open(details_path, "w", encoding="utf-8") as f:
                     json.dump(details_data, f, indent=2, ensure_ascii=False)
+                logger.info(f"[AUTO] Updated measurement details at {details_path}")
         except Exception as e:
             logger.error(f"[AUTO] Failed to save details: {e}")
 
-        # settings.json の更新
+        # settings.json の更新（本番測定のみ）
         if not is_prescan:
             try:
                 m_id = os.path.basename(os.path.normpath(save_directory))
@@ -940,6 +966,7 @@ def _run_auto_measurement(
                     "timestamp_end": datetime.now(timezone.utc).isoformat()
                 }
                 data_saver.append_measurement_history(os.path.dirname(os.path.normpath(save_directory)), history_entry)
+                logger.info(f"[AUTO] Appended history to settings.json with status={final_status}")
             except Exception as e:
                 logger.error(f"[AUTO] Failed to append history: {e}")
 

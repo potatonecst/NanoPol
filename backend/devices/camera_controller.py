@@ -1456,8 +1456,9 @@ class CameraController:
             # ====================================================================
             # 【JPEG 圧縮・配信】
             # ====================================================================
-            # OpenCV の imencode() で JPEG に圧縮(品質70で十分)
-            ret, buffer = cv2.imencode('.jpg', display_frame)
+            # OpenCV の imencode() で JPEG に圧縮
+            # 品質を 98 に設定し、プレビューでも画素の輪郭を可能な限り鮮明に保ちます。
+            ret, buffer = cv2.imencode('.jpg', display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
             if not ret:
                 continue
                 

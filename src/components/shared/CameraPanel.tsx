@@ -268,7 +268,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                     index: 0, // ストア側で自動割り当てされるが、型定義上の要求を満たすために一時的に指定
                     x: Math.round(pos.x),
                     y: Math.round(pos.y),
-                    size: 11, // 初期サイズ 11x11
+                    size: 5, // 初期サイズ 5x5
                 });
             }
             return;

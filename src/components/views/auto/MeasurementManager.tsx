@@ -53,6 +53,7 @@ export function MeasurementManager() {
     const {
         isMeasuring,        // 現在自動測定（本番）が走っているか
         setIsMeasuring,     // 測定状態を更新する関数
+        setIsPrescan,       // Pre-Scan状態を更新する関数
         currentSession,     // 現在アクティブなセッション（サンプル）の情報
         setCurrentSession,  // セッション情報を更新する関数
         selectedCategory,   // 選択中の測定カテゴリ（Left-Frontなど）
@@ -63,6 +64,7 @@ export function MeasurementManager() {
     } = useAppStore(useShallow((state) => ({
         isMeasuring: state.isMeasuring,
         setIsMeasuring: state.setIsMeasuring,
+        setIsPrescan: state.setIsPrescan,
         currentSession: state.currentSession,
         setCurrentSession: state.setCurrentSession,
         selectedCategory: state.selectedCategory,
@@ -154,6 +156,7 @@ export function MeasurementManager() {
                     clearInterval(intervalId);
                     setOperationId(null);
                     setIsMeasuring(false); // 監視終了時にロックを解除
+                    setIsPrescan(false);   // フェーズ情報をリセット
 
                     if (res.status === "succeeded") {
                         if (prescanStatus === "running") {
@@ -236,6 +239,7 @@ export function MeasurementManager() {
         if (!currentSession || !selectedCategory) return;
 
         setIsMeasuring(true); // ナビゲーションをロック
+        setIsPrescan(true);   // Pre-Scan中であることを明示（グラフの自動切り替え用）
         setPrescanStatus("running");
         setForceStartUnlocked(false);
         setProgressPercent(0);
@@ -295,7 +299,7 @@ export function MeasurementManager() {
      * 
      * 【解説】
      * ユーザーが指定した開始角度から終了角度まで、細かいステップ角度でステージを回転させ、
-     * 停止後に振動が収まるのを待ってから（0.2秒）、カメラの画像を撮影します。
+     * 停止後に振動が収まるのを待ってから（0.3秒）、カメラの画像を撮影します。
      * 取得した画像からROIの輝度（Sum, Max）を計算し、逐次CSVに保存していきます。
      * 
      * @param {SetupFormValues} values - ユーザーがフォームに入力した測定条件
@@ -304,6 +308,7 @@ export function MeasurementManager() {
         if (!currentSession || !selectedCategory) return;
 
         setIsMeasuring(true); // ナビゲーションをロック
+        setIsPrescan(false);  // 本番測定であることを明示（グラフの自動切り替え用）
         setProgressPercent(0);
         setProgressMessage("Starting Measurement...");
 

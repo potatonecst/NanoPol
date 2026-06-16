@@ -75,7 +75,9 @@ interface AppState {
 
     isStageBusy: boolean; // ステージが物理的に回転中か
     isMeasuring: boolean; // 自動測定シーケンス（Pre-Scan または 本番）が実行中か
+    isPrescan: boolean;   // 現在実行中の測定が Pre-Scan かどうか
     setIsMeasuring: (measuring: boolean) => void;
+    setIsPrescan: (isPrescan: boolean) => void;
 
     //カメラ設定
     exposureTime: number; //カメラの露出時間
@@ -160,7 +162,9 @@ export const useAppStore = create<AppState>((set) => ({
 
     isStageBusy: false, //初期値
     isMeasuring: false, //初期値
+    isPrescan: false,   //初期値
     setIsMeasuring: (measuring) => set({ isMeasuring: measuring }),
+    setIsPrescan: (val) => set({ isPrescan: val }),
 
     exposureTime: 0.06675, //初期値
     setExposureTime: (time) => set({ exposureTime: time }), //set関数
@@ -198,7 +202,7 @@ export const useAppStore = create<AppState>((set) => ({
 
         const { width, height } = state.cameraResolution;
         // 型安全のため、sizeを確実に数値として取得
-        const size = typeof roi.size === 'number' ? roi.size : 11;
+        const size = typeof roi.size === 'number' ? roi.size : 5;
         
         // 中心座標が画像枠内に収まるようにクランプ
         const halfSize = size / 2;

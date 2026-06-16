@@ -53,9 +53,9 @@ class ROIProcessor:
                 roi_idx = roi.get("index", 0)
                 center_x = roi.get("x", 0.0)
                 center_y = roi.get("y", 0.0)
-                size = roi.get("size", 11)
+                size = roi.get("size", 5)
                 
-                # 半径の計算。size が 11 なら half は 5 となり、中心から前後 5 ピクセルずつを対象にします。
+                # 半径の計算。size が 5 なら half は 2 となり、中心から前後 2 ピクセルずつを対象にします。
                 half = size // 2
                 
                 # --- 切り出し範囲の決定（スライス範囲） ---

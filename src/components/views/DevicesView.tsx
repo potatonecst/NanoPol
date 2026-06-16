@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store/useAppStore";
 import { stageApi, cameraApi, systemApi } from "@/api/client";
@@ -59,6 +59,7 @@ export function DevicesView() {
         setCameraExposureRange,
         isRecording,
         resetAllConnections,
+        isBackendConnected,
         // useShallow: パフォーマンス最適化フック。
         // ストア全体のデータが変わっても、ここで指定したプロパティ（stagePortなど）に変化がなければ
         // このコンポーネントは再レンダリングされません。
@@ -78,6 +79,7 @@ export function DevicesView() {
             resetAllConnections: state.resetAllConnections,
             setCameraGainRange: state.setCameraGainRange,
             setCameraExposureRange: state.setCameraExposureRange,
+            isBackendConnected: state.isBackendConnected,
         }))
     );
 
@@ -121,21 +123,19 @@ export function DevicesView() {
     }
 
     /**
-     * 【初期化エフェクト】
-     * 画面マウント時に1回だけ、ポートとカメラの一覧を自動取得します。
+     * 【初期化・再接続エフェクト】
+     * バックエンドとの接続が確立されたタイミング（isBackendConnected が true になった時）に、
+     * ポートとカメラの一覧を自動取得します。
      * 
-     * 【useRef(initialized) によるガード】
-     * React 18のStrict Mode（開発モード）特有の「二重マウント（useEffectの2回実行）」によって
-     * APIリクエストが2回連続で飛んでしまうのを防ぐためのフラグです。
+     * 起動直後の「フライング取得（バックエンド未準備によるエラー）」を防ぎ、
+     * かつバックエンド再起動時にも自動的にリストを最新化します。
      */
-    const initialized = useRef(false);
     useEffect(() => {
-        if (!initialized.current) {
-            initialized.current = true;
+        if (isBackendConnected) {
             fetchPorts();
             fetchCameras();
         }
-    }, []);
+    }, [isBackendConnected]);
 
     /**
      * ステージコントローラーの「Connect / Disconnect」ボタンハンドラ
@@ -350,7 +350,7 @@ export function DevicesView() {
                             <div className="space-y-2">
                                 <Label className="text-sm font-medium">COM Port</Label>
                                 <div className="flex gap-2 items-center">
-                                    <Select value={stagePort} onValueChange={setStagePort} disabled={isStageConnected}>
+                                    <Select value={stagePort} onValueChange={setStagePort} disabled={isStageConnected || !isBackendConnected}>
                                         <SelectTrigger className="w-full">
                                             <SelectValue placeholder="Select COM Port" />
                                         </SelectTrigger>
@@ -370,7 +370,7 @@ export function DevicesView() {
                                     {/* リフレッシュボタン（Tooltip付き） */}
                                     <RefreshButton
                                         label="Refresh Ports"
-                                        disabled={isStageConnected}
+                                        disabled={isStageConnected || !isBackendConnected}
                                         onClick={fetchPorts}
                                     />
                                 </div>
@@ -381,7 +381,7 @@ export function DevicesView() {
                             <Button
                                 variant={isStageConnected ? "destructive" : "default"}
                                 onClick={handleStageConnect}
-                                disabled={isStageLoading || (isStageConnected && isRecording)}
+                                disabled={isStageLoading || (isStageConnected && isRecording) || !isBackendConnected}
                             >
                                 {isStageLoading ? "Connecting..." : (isStageConnected ? "Disconnect" : "Connect")}
                             </Button>
@@ -409,7 +409,7 @@ export function DevicesView() {
                             <div className="space-y-2">
                                 <Label className="text-sm font-medium">Camera ID</Label>
                                 <div className="flex gap-2 items-center">
-                                    <Select value={cameraId} onValueChange={setCameraId} disabled={isCameraConnected}>
+                                    <Select value={cameraId} onValueChange={setCameraId} disabled={isCameraConnected || !isBackendConnected}>
                                         <SelectTrigger className="w-full">
                                             <SelectValue placeholder="Select Camera" />
                                         </SelectTrigger>
@@ -427,7 +427,7 @@ export function DevicesView() {
                                     </Select>
 
                                     {/* リフレッシュボタン（Tooltip付き） */}
-                                    <RefreshButton label="Refresh List" disabled={isCameraConnected} onClick={fetchCameras} />
+                                    <RefreshButton label="Refresh List" disabled={isCameraConnected || !isBackendConnected} onClick={fetchCameras} />
                                 </div>
                             </div>
                         </CardContent>
@@ -436,7 +436,7 @@ export function DevicesView() {
                             <Button
                                 variant={isCameraConnected ? "destructive" : "default"}
                                 onClick={handleCameraConnect}
-                                disabled={isCameraLoading || (isCameraConnected && isRecording)}
+                                disabled={isCameraLoading || (isCameraConnected && isRecording) || !isBackendConnected}
                             >
                                 {isCameraLoading ? "Connecting..." : (isCameraConnected ? "Disconnect" : "Connect")}
                             </Button>

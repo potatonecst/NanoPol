@@ -23,15 +23,11 @@ import { Activity, LineChart as LineChartIcon } from 'lucide-react';
  */
 export function GraphPanel() {
     // --- ストアからデータを取得 ---
-    const { plotData, rois, isMeasuring, isPrescanRunning } = useAppStore(useShallow((state) => ({
+    const { plotData, rois, isMeasuring, isPrescan } = useAppStore(useShallow((state) => ({
         plotData: state.plotData,
         rois: state.rois,
         isMeasuring: state.isMeasuring,
-        // MeasurementManager のローカル状態ではないため、
-        // ストアにある情報やフェーズから推論する必要がありますが、
-        // 今回はシンプルに表示モードの切り替えをユーザーに委ねるか、
-        // あるいは autoPhase を見て判断します。
-        isPrescanRunning: state.autoPhase === 'measuring' && !state.isMeasuring
+        isPrescan: state.isPrescan
     })));
 
     // グラフの表示モード
@@ -40,12 +36,12 @@ export function GraphPanel() {
 
     // Pre-Scan が始まったら自動的に 'max' モードに切り替える
     useEffect(() => {
-        if (isPrescanRunning) {
+        if (isPrescan) {
             setMode('max');
         } else if (isMeasuring) {
             setMode('sum');
         }
-    }, [isPrescanRunning, isMeasuring]);
+    }, [isPrescan, isMeasuring]);
 
     // --- データの変換 (recharts 用) ---
     /**
