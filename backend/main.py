@@ -152,6 +152,7 @@ class AutoMeasurementState:
                     "angle": angle,           # 撮影時の角度
                     "sum": stats.get("sum", 0),# 輝度合計（メインの測定値）
                     "max": stats.get("max", 0),# 最大輝度（飽和チェック用）
+                    "center_val": stats.get("center_val", 0), # 中心ピクセルの輝度
                     "cx": stats.get("cx", 0),  # 重心X（Pre-Scan時）
                     "cy": stats.get("cy", 0),  # 重心Y（Pre-Scan時）
                     "timestamp": timestamp,    # 記録時刻
@@ -678,13 +679,11 @@ def _run_auto_measurement(
 ):
     """
     Step & Shoot 方式による精密な自動測定シーケンスをバックグラウンドで実行します。
-    本番測定（Measurement）とアライメント（Pre-Scan）の両方で共有される物理制御エンジンです。
-
-    【設計思想】
-    この関数は FastAPI のメインスレッドとは別のバックグラウンドスレッドで実行されます。
-    これにより、測定中に数十秒〜数分間ステージの移動を「待機 (sleep)」していても、
-    フロントエンドからの他の通信（進捗ポーリングなど）を一切ブロックしません。
     """
+    # finally ブロックで安全に参照できるよう、変数を関数の冒頭で定義・初期化します
+    start_time_iso = datetime.now(timezone.utc).isoformat()
+    initial_rois = []
+    
     try:
         # Pre-Scan開始前（ユーザーが手動で配置したまま）の初期ROIをコピーして保持
         initial_rois = [dict(r) for r in camera.rois]
@@ -705,53 +704,31 @@ def _run_auto_measurement(
 
         # --- 保存先パスの動的決定（モードによる分岐） ---
         if is_prescan:
-            # 【Pre-Scanモード (アライメント)】
-            # ユーザーが指定した保存先（save_directory）の直下に "prescan" というサブフォルダを作り、
-            # アライメントの試行結果を隔離して保存します。これにより本番データと混ざるのを防ぎます。
             prescan_dir = os.path.join(save_directory, "prescan")
             os.makedirs(prescan_dir, exist_ok=True)
-            
-            # --- 自動採番ロジック ---
-            # フロントエンド（UI）から attempt_number を受け取らず、ここでファイルシステムを直接確認して決定します。
-            # 理由: フロントエンドに採番を任せると、非同期通信のズレや複数タブを開いていた場合に
-            # 同じ番号（例: attempt_1）が重複して発行され、過去の貴重なアライメントデータが
-            # 上書きされて消えてしまうリスク（競合状態）があるためです。
             attempt_number = 1
             while os.path.exists(os.path.join(prescan_dir, f"attempt_{attempt_number}.csv")):
                 attempt_number += 1
-                
             csv_filename = f"attempt_{attempt_number}.csv"
             csv_path = os.path.join(prescan_dir, csv_filename)
             images_dir = os.path.join(prescan_dir, f"attempt_{attempt_number}_images")
             multipaged_path = os.path.join(prescan_dir, f"attempt_{attempt_number}.tif")
         else:
-            # 【本番測定モード】
-            # 例: save_directory が ".../1_Left_Front_001" の場合 -> "1_Left_Front_001.csv"
             csv_filename = os.path.basename(os.path.normpath(save_directory)) + ".csv"
             csv_path = os.path.join(save_directory, csv_filename)
             images_dir = os.path.join(save_directory, "images")
             multipaged_path = os.path.join(save_directory, "images.tif")
 
-        # 画像保存用の一時ディレクトリを作成
         os.makedirs(images_dir, exist_ok=True)
 
-        # 測定の方向（正の回転か、負の回転か）を判定します。
-
         # --- 測定角度リストの生成 ---
-        # 開始角度から終了角度まで、指定したステップで分割したリストを作成します。
-        # numpy.arange は浮動小数点誤差が出やすいため、手動で安全に計算します。
         if start_angle == end_angle:
             angles = [start_angle]
         else:
-            # 割り切れない場合を考慮し、丸め誤差を防ぐため小数を丸めます
             direction = 1 if end_angle > start_angle else -1
             step = abs(step_angle) * direction
-            
             angles = []
             curr = start_angle
-            
-            # direction が正の場合: curr <= end_angle + 微小マージン
-            # direction が負の場合: curr >= end_angle - 微小マージン
             while (direction > 0 and curr <= end_angle + 1e-6) or \
                   (direction < 0 and curr >= end_angle - 1e-6):
                 angles.append(round(curr, 4))
@@ -761,28 +738,27 @@ def _run_auto_measurement(
         logger.info(f"[AUTO] Generated {num_steps} angles for measurement.")
 
         # --- CSVヘッダーの準備 ---
-        # 測定が始まる前に、まずヘッダー行を書き込みます。
-        # 万が一測定が1点も行われずに終了しても、ファイル構造だけは作成されます。
+        # 測定データの完全なトレーサビリティを確保するため、以下の項目を出力します。
+        # 1. Angle: ステージの現在角度。
+        # 2. Timestamp: 計測時の正確な時刻。
+        # 3. Filepath: 対応する画像へのパス。解析時に画像と数値を紐付けるための命綱です。
+        # 4. ROIごとの統計量 (Sum, Max, Center, CX, CY, Drift)。
         try:
             with open(csv_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                # 基本項目: 角度、タイムスタンプ、個別画像へのパス
                 headers = ["Angle", "Timestamp", "Filepath"]
-                
-                # ROI項目の追加: 現在設定されているROIのインデックスに応じて動的にヘッダーを生成します。
-                # 例: ROIのindexが 1, 2 の場合 -> ["roi_1_Sum", "roi_1_Max", "roi_2_Sum", ...]
-                current_rois = camera.rois # CameraController から現在のROIリストを取得
-                
-                # インデックスの順（数値順）にソートしてヘッダーを生成します。
-                # これにより、UI上の表示順とCSVの列の順序が常に一致します。
+                current_rois = camera.rois 
                 sorted_rois = sorted(current_rois, key=lambda r: r.get("index", 0))
                 for r in sorted_rois:
                     roi_idx = r.get("index", 0)
-                    headers.extend([f"roi_{roi_idx}_Sum", f"roi_{roi_idx}_Max"])
-                    # アライメント（Pre-Scan）の時は、重心がどう動いたかを後から検証できるよう、
-                    # CSVにも重心座標(cx, cy)の列を追加します。
-                    if is_prescan:
-                        headers.extend([f"roi_{roi_idx}_CX", f"roi_{roi_idx}_CY"])
+                    headers.extend([
+                        f"roi_{roi_idx}_Sum",     # 全散乱強度
+                        f"roi_{roi_idx}_Max",     # 飽和チェック用（最大輝度）
+                        f"roi_{roi_idx}_Center",  # ROI中心（定点）の輝度
+                        f"roi_{roi_idx}_CX",      # 輝度重心X
+                        f"roi_{roi_idx}_CY",      # 輝度重心Y
+                        f"roi_{roi_idx}_Drift"    # 基準点からの重心移動距離 [px]
+                    ])
                 writer.writerow(headers)
             logger.info(f"[AUTO] CSV initialized at {csv_path}")
         except Exception as e:
@@ -790,34 +766,16 @@ def _run_auto_measurement(
 
         # --- Step & Shoot メインループ ---
         for i, target_deg in enumerate(angles):
-            # 1. ループ開始時のキャンセル要求チェック
-            # ユーザーがUI上で「停止」ボタンを押した場合、このフラグが True になります。
-            # 重い処理の前にチェックを入れることで、速やかにループを抜けて安全に中止できます。
             if _get_auto_operation_snapshot().get("cancel_requested"):
                 _set_auto_operation_state(status="cancelled", message="Measurement cancelled by user")
-                logger.info(f"[AUTO] Auto measurement {operation_id} cancelled.")
                 break
 
-            # 進捗パーセンテージの更新（UIのプログレスバー表示に使用されます）
             percent = int((i / num_steps) * 100)
-            _set_auto_operation_state(
-                percent=percent,
-                message=f"Moving to {target_deg:.2f}°",
-                current_angle=app_state.current_angle
-            )
+            _set_auto_operation_state(percent=percent, message=f"Moving to {target_deg:.2f}°", current_angle=app_state.current_angle)
 
-            # 2. 移動 (Step)
-            # 算出された絶対角度へステージを動かします。
-            # `allow_overflow=True` を指定することで、360度を越える連続回転（例：720度まで測定など）
-            # もコントローラ側で適切に処理されるようになります。
             stage.move_absolute(target_deg, allow_overflow=True)
-
-            # 3. 停止待ち (Wait)
-            # ステージが移動を開始するまでごく僅かな猶予(0.1s)を与え、その後 busy フラグが落ちるまで待ちます。
             time.sleep(0.1)
             while app_state.is_busy:
-                # 移動中もキャンセル要求を監視し、中止できるようにします。
-                # （※ stage.stop() を呼ぶ処理は、キャンセル API 側で既に行われています）
                 if _get_auto_operation_snapshot().get("cancel_requested"):
                     break
                 time.sleep(0.05)
@@ -826,273 +784,169 @@ def _run_auto_measurement(
                 _set_auto_operation_state(status="cancelled", message="Measurement cancelled by user")
                 break
 
-            # ステージが電気的に停止した直後、物理的な「慣性振動」が残っている可能性があります。
-            # この微小な揺れが収まり、散乱像がブレないようにするための重要な物理的タメ時間(0.2s)です。
             time.sleep(0.2)
-
-            # 4. 撮影と解析 (Shoot)
             _set_auto_operation_state(message=f"Taking snapshot at {target_deg:.2f}°")
             
-            # --- 【ファイル名の決定：ゼロ埋めパディング】 ---
-            # 本装置の最小分解能(0.0025度)に対応するため、小数部を4桁で固定表示にします。
-            # 例: 45.5度 -> "angle_0045.5000.tif" (整数部4桁、小数部4桁)
-            # こうすることで、後でフォルダ内のファイルを名前順で取得した際、
-            # 数値的な大きさに関わらず「角度順」に完璧にソートされた状態で解析できます。
             filename = f"angle_{target_deg:09.4f}.tif"
-            
-            # カメラに「今の瞬間を撮って解析し、特定のフォルダに保存せよ」と命じます。
-            # 引数として images_dir と filename を渡すことで、一時保存フォルダにバラバラに格納されます。
-            snapshot_result = camera.take_snapshot(
-                filename_override=filename, 
-                save_dir_override=images_dir,
-                force_centroid=is_prescan
-            )
+            snapshot_result = camera.take_snapshot(filename_override=filename, save_dir_override=images_dir, force_centroid=is_prescan)
             
             if snapshot_result and snapshot_result.get("roi_stats"):
                 stats = snapshot_result["roi_stats"]
-                
-                # --- 【最重要】CSVへの逐次追記 (Incremental Save) ---
-                # 測定が1点終わるたびに、即座にディスクへ書き込みます。
-                # これにより、測定中にPCがクラッシュしても、直前までのデータが確実に保存されます。
+                rois_map = {r.get("index"): r for r in camera.rois}
                 try:
                     with open(csv_path, "a", newline="", encoding="utf-8") as f:
                         writer = csv.writer(f)
                         row = [snapshot_result["angle"], snapshot_result["timestamp"], snapshot_result.get("filepath", "")]
-                        
-                        # 各 ROI のデータを横に並べます
-                        # 【重要】stats.keys() は "1", "2", "10" のような文字列のリストです。
-                        # そのまま sorted() すると "1" -> "10" -> "2" というアルファベット順になってしまい、
-                        # CSVの列（ヘッダーは数値順）と中身がズレるという致命的なバグが起きます。
-                        # 必ず int() で数値に変換してからソートすることで、順番を完全に一致させます。
-                        for r_idx in sorted(stats.keys(), key=lambda x: int(x)):
-                            r_data = stats[r_idx]
-                            row.extend([r_data.get("sum", 0), r_data.get("max", 0)])
-                            # Pre-Scanモード時は、ヘッダーの定義に合わせて重心座標も追記します。
-                            if is_prescan:
-                                row.extend([r_data.get("cx", 0), r_data.get("cy", 0)])
+                        for r_idx_str in sorted(stats.keys(), key=lambda x: int(x)):
+                            r_idx = int(r_idx_str)
+                            r_data = stats[r_idx_str]
+                            drift = 0.0
+                            roi_def = rois_map.get(r_idx)
+                            if roi_def:
+                                base_x = roi_def.get("x", 0.0)
+                                base_y = roi_def.get("y", 0.0)
+                                drift = ((r_data.get("cx",0) - base_x)**2 + (r_data.get("cy",0) - base_y)**2)**0.5
+                            row.extend([r_data.get("sum",0), r_data.get("max",0), r_data.get("center_val",0), r_data.get("cx",0), r_data.get("cy",0), round(drift, 4)])
                         writer.writerow(row)
                 except Exception as e:
                     logger.error(f"[AUTO] Failed to append to CSV: {e}")
 
-                # メモリバッファ（グラフ表示用）にも追記します。
-                app_state.auto_measurement.add_point(
-                    angle=target_deg,
-                    roi_stats=stats,
-                    filepath=snapshot_result.get("filepath")
-                )
+                app_state.auto_measurement.add_point(angle=target_deg, roi_stats=stats, filepath=snapshot_result.get("filepath"))
             else:
-                # 稀にカメラ通信エラー等で撮影に失敗した場合は、エラーで止めてしまうと
-                # それまでのデータが無駄になるため、警告を残して次の角度へ続行します。
                 logger.warning(f"[AUTO] Snapshot failed at {target_deg:.2f}°")
 
-        # --- ループ終了後の後処理（TIFFスタック化） ---
+        # --- ループ終了後の後処理 ---
         current_state = _get_auto_operation_snapshot()
         if current_state.get("status") != "cancelled":
-            # 5. 【マルチページTIFF化】バラバラの画像を1つのスタックに統合
             _set_auto_operation_state(percent=100, message="Generating Multipage TIFF...")
             try:
                 import tifffile
-                # ゼロ埋めされたファイル名により、名前順＝角度順での統合が保証されます。
                 image_files = sorted(glob.glob(os.path.join(images_dir, "*.tif")))
-                
                 if image_files:
-                    # 1つの大きなファイルとして書き込みを開始します。
                     with tifffile.TiffWriter(multipaged_path, append=False) as tif:
                         for img_file in image_files:
-                            # 1枚ずつ画像を読み込み、マルチページTIFFの「次のページ」として追加します。
                             img = tifffile.imread(img_file)
                             if img is not None:
                                 tif.write(img)
-                    logger.info(f"[AUTO] Multipage TIFF successfully generated at {multipaged_path}")
-                    
-                    # 【重要：クリーンアップ】
-                    # TIFF変換が成功した場合、元の一時的なバラ画像（数百枚〜数GB）は不要になります。
-                    # ディスク容量を節約し、解析者が混乱しないよう、一時フォルダごと削除します。
                     shutil.rmtree(images_dir, ignore_errors=True)
-                    logger.info("[AUTO] Temporary images directory removed.")
                     
                     if is_prescan:
-                        # ========================================================================
-                        # 【オートセンタリング計算】スキャン結果から「最適なROI中心」を割り出す
-                        # ========================================================================
                         _set_auto_operation_state(message="Calculating optimal ROI (Centroid)...")
                         plot_data = app_state.auto_measurement.get_plot_data()
-                        
-                        # ROI設定の更新リスト（再計算された新しい座標を格納します）
                         updated_rois = []
-                        current_rois = camera.rois
-                        
-                        # 画面上に設定されている全てのROIに対して、個別に最適中心を計算します
-                        for i, r in enumerate(current_rois):
+                        for i, r in enumerate(camera.rois):
                             roi_idx = r.get("index", i)
                             key = f"roi_{roi_idx}"
                             if key not in plot_data or len(plot_data[key]) == 0:
                                 updated_rois.append(r)
                                 continue
-                                
                             pts = plot_data[key]
-                            min_val = min(p["sum"] for p in pts)
                             max_sum = max(p["sum"] for p in pts)
-                            
-                            # --- コントラストチェック (シグナル有無の判定) ---
-                            # 最も明るい角度と暗い角度の差が全体の10%未満の場合、
-                            # それはナノ粒子の偏光特性（サインカーブ）ではなく、ただの背景ノイズの揺らぎとみなします。
-                            # ノイズの重心を追うと何もない空間へ歩き出してしまうため、アライメント失敗として破棄します。
+                            min_val = min(p["sum"] for p in pts)
                             if max_sum == 0 or (max_sum - min_val) / max_sum < 0.1:
-                                logger.warning(f"[AUTO] ROI {roi_idx} contrast too low. Alignment failed.")
                                 updated_rois.append(r)
                                 continue
-                                
-                            # --- ダイナミック足切り (暗所の除外) ---
-                            # 偏光特性において、光が消える角度（消光位の谷）ではS/N比が極端に悪化し、
-                            # 計算された重心(cx, cy)がデタラメな位置に飛びやすくなります。
-                            # そのため、ピーク輝度(Max Sum)の20%を下回る「暗い画像」は計算から完全に除外します。
                             threshold = max_sum * 0.2
                             valid_pts = [p for p in pts if p["sum"] > threshold]
-                            
-                            if len(valid_pts) == 0:
+                            if not valid_pts:
                                 updated_rois.append(r)
                                 continue
-                                
-                            # --- 重み付き平均の計算 (Weighted Average) ---
-                            # 生き残った「明るく信頼性の高い画像」の重心座標を、単純平均するのではなく
-                            # 「より明るかった画像の座標ほど強く信用する」ように Sum 輝度を重みとして掛け合わせます。
-                            # これにより、光のピーク位置での重心に最も強く引っ張られる、極めて正確な中心座標が求まります。
                             total_weight = sum(p["sum"] for p in valid_pts)
                             weighted_cx = sum(p["cx"] * p["sum"] for p in valid_pts) / total_weight
                             weighted_cy = sum(p["cy"] * p["sum"] for p in valid_pts) / total_weight
-                            
-                            # 更新するROIオブジェクトの作成
                             updated_r = dict(r)
-                            updated_r["x"] = int(round(weighted_cx))
-                            updated_r["y"] = int(round(weighted_cy))
-                            # 科学データとして、丸め誤差を含まない真のサブピクセル重心座標も別名で保存しておきます
-                            updated_r["optical_centroid_x"] = round(weighted_cx, 4)
-                            updated_r["optical_centroid_y"] = round(weighted_cy, 4)
+                            updated_r.update({"x": int(round(weighted_cx)), "y": int(round(weighted_cy)), "optical_centroid_x": round(weighted_cx, 4), "optical_centroid_y": round(weighted_cy, 4)})
                             updated_rois.append(updated_r)
-                            
-                            logger.info(f"[AUTO] ROI {roi_idx} aligned: ({r.get('x')}, {r.get('y')}) -> ({updated_r['x']}, {updated_r['y']}) (True Center: {weighted_cx:.3f}, {weighted_cy:.3f})")
-                            
-                        # 計算された全てのROIの新しい最適座標で、カメラ設定を更新（ROIをロック）します。
-                        # この座標が続く本番測定で固定使用されます。
                         camera.set_rois(updated_rois)
-                        
-            except ImportError:
-                logger.error("[AUTO] tifffile library not found. Skipping multipage TIFF generation.")
+                _set_auto_operation_state(status="succeeded", message="Measurement complete")
             except Exception as e:
-                # 変換に失敗した場合は、最悪の事態（データ紛失）を避けるため
-                # 元のバラバラの画像（images_dir）は削除せずに残し、ログにエラーを記録します。
-                logger.error(f"[AUTO] Failed to generate Multipage TIFF: {e}")
-
-            # === メタデータ (roi_settings.json) の保存 ===
-            # 【背景と役割】
-            # 仕様書 5.4 準拠: 実験の再現性を担保するため、測定時の各種パラメータを保存します。
-            # 「Left_Front_001」などの枝番フォルダ直下に保存し、Pre-Scan と本番測定で
-            # この1つのファイルを共有（更新・追記）する形でデータを引き継ぎます。
-            try:
-                roi_settings_path = os.path.join(save_directory, "roi_settings.json")
-                roi_settings_data = {}
-
-                # 既にファイルが存在する場合は読み込む（Pre-Scan -> 本番測定 の流れでデータを引き継ぐため）
-                if os.path.exists(roi_settings_path):
-                    with open(roi_settings_path, "r", encoding="utf-8") as f:
-                        roi_settings_data = json.load(f)
-
-                # 基本構造の初期化
-                if "measurement_id" not in roi_settings_data:
-                    roi_settings_data["measurement_id"] = os.path.basename(os.path.normpath(save_directory))
-                
-                # その時点の環境メタデータを取得（フロントエンドから送られてきた値 + 現在のカメラ設定）
-                current_environment = {
-                    "metadata": metadata or {},
-                    "camera": {
-                        "exposure_time_ms": camera.get_exposure(),
-                        "gain": camera.get_gain(),
-                        "input_bpp": getattr(camera, 'input_bpp', 8)
-                    }
-                }
-
-                # Pre-Scan履歴の初期化
-                if "prescan_history" not in roi_settings_data:
-                    roi_settings_data["prescan_history"] = []
-
-                if is_prescan:
-                    # 【重要】Pre-Scanの場合は設定を最上位で上書きせず、履歴(history)の1要素としてスナップショットを残します。
-                    # これにより、「1回目はゲイン10で失敗し、2回目はゲイン50で成功した」という試行錯誤の歴史が完全に記録されます。
-                    roi_settings_data["prescan_history"].append({
-                        "attempt": attempt_number,
-                        "status": "success",
-                        "environment": current_environment,
-                        "message": "Centroid calculated successfully"
-                    })
-                else:
-                    # 本番測定時は、最終的に使用された確定設定として最上位に記録します
-                    roi_settings_data["final_environment"] = current_environment
-
-                # ROIは、ユーザーが最初に置いた手動の座標(initial)と、計算後の最終座標(final_aligned)の両方を記録します。
-                # これにより、オートセンタリングによって「どれくらい座標が自動補正されたか」を後から検証できるようになります。
-                if "rois" not in roi_settings_data or is_prescan:
-                    formatted_rois = []
-                    # camera.rois はこの時点でオートセンタリングを経た最終的な座標（サブピクセル重心を含む）になっています
-                    for i_roi, f_roi in zip(initial_rois, camera.rois):
-                        formatted_rois.append({
-                            "index": i_roi.get("index"),
-                            "initial": {"x": i_roi.get("x"), "y": i_roi.get("y"), "size": i_roi.get("size")},
-                            "final_aligned": {
-                                "x": f_roi.get("x"), 
-                                "y": f_roi.get("y"), 
-                                "size": f_roi.get("size"),
-                                "optical_centroid_x": f_roi.get("optical_centroid_x"),
-                                "optical_centroid_y": f_roi.get("optical_centroid_y")
-                            }
-                        })
-                    roi_settings_data["rois"] = formatted_rois
-
-                with open(roi_settings_path, "w", encoding="utf-8") as f:
-                    json.dump(roi_settings_data, f, indent=2, ensure_ascii=False)
-                logger.info(f"[AUTO] Saved ROI settings to {roi_settings_path}")
-            except Exception as e:
-                logger.error(f"[AUTO] Failed to save roi_settings.json: {e}")
-
-            # 全ての工程が完了。状態を succeeded にして UI に通知します。
-            _set_auto_operation_state(status="succeeded", message="Measurement complete")
+                logger.error(f"[AUTO] Post-processing failed: {e}")
+                _set_auto_operation_state(status="failed", message=str(e))
         else:
-            # キャンセルされた場合、中途半端な一時画像ファイルは削除して後処理をスキップします。
-            # CSVはフェイルセーフとして残します（どこで中止したかの記録として）。
-            logger.info("[AUTO] Measurement cancelled. Skipping TIFF generation and cleanup.")
-            shutil.rmtree(images_dir, ignore_errors=True)
+            logger.info("[AUTO] Measurement cancelled. Temporary images kept.")
 
     except Exception as e:
-        # 予期せぬエラー（通信切断など）が起きた場合は、状態を Failed にして UI に通知します。
-        logger.exception("[AUTO] Error during auto measurement")
+        logger.exception("[AUTO] Fatal error during measurement")
         _set_auto_operation_state(status="failed", message=str(e))
     finally:
-        # --- 測定履歴 (settings.json) の更新 ---
-        # 【背景と役割】
-        # 本番測定の終了時（成功・失敗・キャンセル問わず）、親フォルダ（Sample_1など）にある
-        # `settings.json` の `measurements` 配列に、今回の結果を追記します。
-        # フロントエンドはこれを見て「このカテゴリの測定は完了したか」を判定し、チェックマークを出します。
-        # ※以前、ここで `datetime.datetime.now` と書いてしまい参照エラーで静かに落ちるバグがありました。
-        if not is_prescan:
-            final_state = _get_auto_operation_snapshot()
-            measurement_id = os.path.basename(os.path.normpath(save_directory))
-            step_category = "_".join(measurement_id.split("_")[:-1]) # "1_Left_Front_001" -> "1_Left_Front"
-            
-            history_entry = {
-                "id": measurement_id,
-                "step_category": step_category,
-                "status": "completed" if final_state.get("status") == "succeeded" else "aborted",
-                "timestamp_end": datetime.now(timezone.utc).isoformat()
-            }
-            
-            parent_dir = os.path.dirname(os.path.normpath(save_directory))
-            try:
-                data_saver.append_measurement_history(parent_dir, history_entry)
-                logger.info(f"[AUTO] Appended history to settings.json in {parent_dir}")
-            except Exception as e:
-                logger.error(f"[AUTO] Failed to append history to settings.json: {e}")
+        # 最終状態の取得
+        final_state = _get_auto_operation_snapshot()
+        final_status = final_state.get("status", "failed")
+        final_message = final_state.get("message", "")
 
-        # 正常・異常・キャンセルに関わらず、最後に必ずロックを解除し、システムの測定中フラグを落とします。
+        # measurement_details.json の更新
+        try:
+            if os.path.exists(save_directory):
+                details_path = os.path.join(save_directory, "measurement_details.json")
+                details_data = {}
+                if os.path.exists(details_path):
+                    with open(details_path, "r", encoding="utf-8") as f:
+                        details_data = json.load(f)
+                # ROI情報の記録（初期の手動指定座標と、Pre-Scan後の最終確定座標）
+                details_rois = []
+                # camera.rois はこの時点で（Pre-Scan後であれば）オートセンタリング済みの座標になっています。
+                # initial_rois には関数開始時の「手動で置いたまま」の座標が入っています。
+                # これらを index ごとにマージして記録します。
+                current_rois_map = {r.get("index"): r for r in camera.rois}
+                for i_roi in initial_rois:
+                    r_idx = i_roi.get("index")
+                    f_roi = current_rois_map.get(r_idx, i_roi) # 万が一見つからなければ初期値を代用
+                    details_rois.append({
+                        "index": r_idx,
+                        "initial": {
+                            "x": i_roi.get("x"), 
+                            "y": i_roi.get("y"), 
+                            "size": i_roi.get("size")
+                        },
+                        "final_aligned": {
+                            "x": f_roi.get("x"), 
+                            "y": f_roi.get("y"), 
+                            "size": f_roi.get("size"),
+                            "optical_centroid_x": f_roi.get("optical_centroid_x"),
+                            "optical_centroid_y": f_roi.get("optical_centroid_y")
+                        }
+                    })
+                
+                details_data.update({
+                    "measurement_id": os.path.basename(os.path.normpath(save_directory)),
+                    "status": final_status,
+                    "message": final_message,
+                    "timestamp_start": start_time_iso,
+                    "timestamp_end": datetime.now(timezone.utc).isoformat(),
+                    "rois": details_rois
+                })
+                if not is_prescan:
+                    details_data["final_environment"] = {"metadata": metadata or {}, "camera": {"exposure_time_ms": camera.get_exposure(), "gain": camera.get_gain()}}
+                with open(details_path, "w", encoding="utf-8") as f:
+                    json.dump(details_data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[AUTO] Failed to save details: {e}")
+
+        # settings.json の更新
+        if not is_prescan:
+            try:
+                m_id = os.path.basename(os.path.normpath(save_directory))
+                history_entry = {
+                    "id": m_id,
+                    "step_category": "_".join(m_id.split("_")[:-1]),
+                    "status": final_status,
+                    "message": final_message,
+                    "timestamp_start": start_time_iso,
+                    "timestamp_end": datetime.now(timezone.utc).isoformat()
+                }
+                data_saver.append_measurement_history(os.path.dirname(os.path.normpath(save_directory)), history_entry)
+            except Exception as e:
+                logger.error(f"[AUTO] Failed to append history: {e}")
+
+        # --- 自動原点復帰 (Auto Homing) ---
+        # 次の測定へのスループット向上と、物理的な脱調リセット・ケーブルねじれ防止のため、
+        # シーケンス終了時にハードウェア原点復帰を実行します。
+        try:
+            logger.info("[AUTO] Returning stage to hardware origin (Home)...")
+            stage.home()
+        except Exception as e:
+            logger.error(f"[AUTO] Failed to return to origin: {e}")
+
         with stage_command_lock:
             app_state.is_measuring = False
 

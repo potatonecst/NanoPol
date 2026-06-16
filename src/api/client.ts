@@ -1,4 +1,4 @@
-import { LogEntry } from "../types";
+import { LogEntry, PlotData } from "../types";
 
 // ==========================================
 // API クライアント設定
@@ -371,6 +371,13 @@ export const systemApi = {
 
     /**
      * 精密自動測定（Step & Shoot）または Pre-Scan を開始します。
+     * 
+     * @param params 測定条件のパラメータ
+     *   - start_angle, end_angle, step_angle: 測定範囲と刻み角
+     *   - save_directory: データ保存先の絶対パス
+     *   - is_prescan: True の場合、本番前のアライメント用スキャンとして動作
+     *   - metadata: レーザー強度等の付随情報
+     * @returns 実行結果のステータスと、進捗追跡用の operation_id
      */
     runAutoMeasurement: (params: {
         start_angle: number,
@@ -389,7 +396,10 @@ export const systemApi = {
         }),
 
     /**
-     * 自動測定の進捗状況を取得します。
+     * 非同期で実行されている自動測定の最新の進捗状況を取得します。
+     * 
+     * @param operationId 対象の操作ID。省略した場合は最新の操作。
+     * @returns 進捗率 (percent)、現在の動作状況 (message)、現在の角度など
      */
     getAutoMeasurementProgress: (operationId?: string) => {
         const url = operationId 
@@ -407,7 +417,8 @@ export const systemApi = {
     },
 
     /**
-     * 実行中の自動測定をキャンセルします。
+     * 現在実行中の自動測定シーケンスを安全に中断します。
+     * バックエンド側でループが中止され、ステージが停止します。
      */
     cancelAutoMeasurement: () =>
         request<{
@@ -415,5 +426,25 @@ export const systemApi = {
             message: string
         }>("/measurement/auto/cancel", {
             method: "POST"
-        })
+        }),
+
+    /**
+     * 自動測定中のグラフ表示用データ（角度ごとの輝度・重心など）を取得します。
+     * 
+     * @param roiIndex 特定のROIのデータのみ取得する場合に指定 (1-based)。省略時は全ROI。
+     * @returns ROIごとの時系列データポイントの配列
+     */
+    getPlotData: (roiIndex?: number) => {
+        const url = roiIndex !== undefined 
+            ? `/measurement/plot_data?roi_index=${roiIndex}`
+            : "/measurement/plot_data";
+        return request<PlotData>(url);
+    },
+
+    /**
+     * バックエンドのメモリ上に蓄積されている測定データをリセットします。
+     * 新しい測定カテゴリを開始する際などに呼び出します。
+     */
+    resetPlotData: () =>
+        request<{ status: string }>("/measurement/reset", { method: "POST" })
 };

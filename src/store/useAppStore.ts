@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { AppMode, StageSettings, AutoMeasurementPhase, MeasurementSession, ROIData } from '@/types';
+import { AppMode, StageSettings, AutoMeasurementPhase, MeasurementSession, ROIData, PlotData } from '@/types';
 import { MAX_ROIS, ROI_COLORS } from '@/constants/constants';
 import { cameraApi } from '@/api/client';
 
@@ -74,7 +74,8 @@ interface AppState {
     setIsSystemBusy: (busy: boolean) => void; //システムがbusyかどうかを設定する関数
 
     isStageBusy: boolean; // ステージが物理的に回転中か
-    isMeasuring: boolean; // 自動測定シーケンス中か
+    isMeasuring: boolean; // 自動測定シーケンス（Pre-Scan または 本番）が実行中か
+    setIsMeasuring: (measuring: boolean) => void;
 
     //カメラ設定
     exposureTime: number; //カメラの露出時間
@@ -104,6 +105,11 @@ interface AppState {
     
     selectedCategory: string | null; // 現在選択中の測定カテゴリ (例: "Left_Front")
     setSelectedCategory: (category: string | null) => void;
+
+    // --- グラフデータ (Real-time Plot) ---
+    plotData: PlotData; // キーは "roi_1", "roi_2" など
+    setPlotData: (data: PlotData) => void;
+    clearPlotData: () => void;
 
     // 自動測定に関わる状態のみを初期化
     resetAutoMeasurement: () => void;
@@ -154,6 +160,7 @@ export const useAppStore = create<AppState>((set) => ({
 
     isStageBusy: false, //初期値
     isMeasuring: false, //初期値
+    setIsMeasuring: (measuring) => set({ isMeasuring: measuring }),
 
     exposureTime: 0.06675, //初期値
     setExposureTime: (time) => set({ exposureTime: time }), //set関数
@@ -256,7 +263,7 @@ export const useAppStore = create<AppState>((set) => ({
         syncRoisToBackend(updatedRois);
         return { rois: updatedRois };
     }),
-    clearROIs: () => set((state) => {
+    clearROIs: () => set(() => {
         syncRoisToBackend([]);
         return { rois: [] };
     }),
@@ -271,12 +278,18 @@ export const useAppStore = create<AppState>((set) => ({
     selectedCategory: null,
     setSelectedCategory: (category) => set({ selectedCategory: category }),
 
+    // --- グラフデータ ---
+    plotData: {},
+    setPlotData: (data) => set({ plotData: data }),
+    clearPlotData: () => set({ plotData: {} }),
+
     resetAutoMeasurement: () => set({
         autoPhase: 'select_session',
         currentSession: null,
         selectedCategory: null,
         isMeasuring: false,
         rois: [], // ROIもリセット
+        plotData: {}, // グラフデータもリセット
     }),
 
     //アプリ側の状態を強制的に「未接続・初期状態」に戻す

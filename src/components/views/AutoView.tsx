@@ -9,6 +9,7 @@ import {
 import { SessionManager } from './auto/SessionManager';
 import { CategorySelector } from './auto/CategorySelector';
 import { MeasurementManager } from './auto/MeasurementManager';
+import { GraphPanel } from '../shared/GraphPanel';
 
 /**
  * 自動測定画面 (Auto View) コンポーネント
@@ -90,22 +91,7 @@ export function AutoView() {
                     {/* 下段: グラフ表示パネル */}
                     {/* minSize を少し増やして、ヘッダーが埋もれないように調整 */}
                     <ResizablePanel defaultSize={35} minSize={32}>
-                        <div className="h-full w-full bg-background flex flex-col border-t overflow-hidden">
-                            {/* グラフのタイトルヘッダー */}
-                            <div className="shrink-0 px-4 py-2 border-b bg-muted/30 flex justify-between items-center">
-                                <span className="text-[10px] font-bold uppercase text-muted-foreground tracking-widest">
-                                    Scattering Intensity Profile
-                                </span>
-                            </div>
-
-                            {/* グラフ描画エリア */}
-                            <div className="flex-1 flex items-center justify-center bg-card">
-                                {/* TODO: GraphPanel (recharts) の実装 */}
-                                <div className="text-muted-foreground/30 text-[10px] font-medium uppercase tracking-[0.3em]">
-                                    Graph Area
-                                </div>
-                            </div>
-                        </div>
+                        <GraphPanel />
                     </ResizablePanel>
                 </ResizablePanelGroup>
             </div>

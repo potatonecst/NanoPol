@@ -71,3 +71,23 @@ export interface MeasurementSession {
         measurements: AutoMeasurementHistoryEntry[]; // 過去の測定履歴
     };
 }
+
+/**
+ * グラフ描画用の1点分のデータ型
+ * バックエンドの AutoMeasurementState.data_buffer 内の各要素に対応します。
+ */
+export interface PlotDataPoint {
+    angle: number;      // ステージの角度 [deg]
+    sum: number;        // ROI内の全ピクセル輝度の合計（散乱強度）
+    max: number;        // ROI内の最大輝度（飽和確認用。8bitなら255、16bitなら65535が上限）
+    center_val: number; // ROIの幾何学的中心（固定位置）における生のピクセル値
+    cx: number;         // 輝度重心のX座標 [pixel]（アライメントの安定性評価用）
+    cy: number;         // 輝度重心のY座標 [pixel]
+    timestamp: number;  // データ取得時の Unix タイムスタンプ [s]
+}
+
+/**
+ * 全ての ROI のグラフデータを保持する型
+ * キーは "roi_1", "roi_2" などのインデックス付き文字列です。
+ */
+export type PlotData = Record<string, PlotDataPoint[]>;

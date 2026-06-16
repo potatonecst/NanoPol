@@ -22,7 +22,7 @@
                     │
                     ├── 📂 1_Left_Front_001 /   # 1回目の試行（カテゴリ + 枝番ID）
                     │    ├── 📄 1_Left_Front_001.csv  # 光強度の測定データ (Angle, Timestamp, ROI_Sum/Max)
-                    │    ├── 📄 roi_settings.json     # ★この測定時の詳細メタデータとPre-Scan履歴
+                    │    ├── 📄 measurement_details.json # ★この測定時の詳細メタデータとPre-Scan履歴
                     │    │
                     │    ├── 📂 prescan /             # Pre-Scan時の証拠保全データ
                     │    │    ├── attempt_1.tif       # 失敗したPre-Scanの画像（飽和などの証拠）
@@ -83,7 +83,7 @@
 }
 ```
 
-### 5.4 roi_settings.json (Detailed Metadata)
+### 5.4 measurement_details.json (Detailed Metadata)
 
 各測定の枝番フォルダ（例: `1_Left_Front_001/`）内に保存される詳細な証拠データ。
 **Pre-Scan の試行履歴（失敗・成功時の環境スナップショット）** と、最終的に本番測定で**固定（ロック）された ROI の座標**を記録する。このフォルダだけをコピーすれば解析に必要な情報が全て揃う（ポータビリティ）。

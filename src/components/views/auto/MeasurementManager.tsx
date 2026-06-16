@@ -6,7 +6,21 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field, FieldLabel, FieldError, FieldDescription } from "@/components/ui/field";
-import { Play, Scan, AlertCircle, RefreshCcw, ArrowLeft, StopCircle, Minus, Plus, Joystick, MoveRight, House, FolderOpen, Square } from 'lucide-react';
+import { 
+    Play, 
+    Scan, 
+    AlertCircle, 
+    RefreshCcw, 
+    ArrowLeft, 
+    XCircle, 
+    Minus, 
+    Plus, 
+    Joystick, 
+    MoveRight, 
+    House, 
+    FolderOpen, 
+    Square
+} from 'lucide-react';
 import { autoApi } from '@/api/client';
 import { toast } from 'sonner';
 import { setupFormSchema, SetupFormValues } from '@/schemas/measurementSchema';
@@ -38,18 +52,24 @@ export function MeasurementManager() {
     // --- グローバル状態の取得 ---
     const {
         isMeasuring,        // 現在自動測定（本番）が走っているか
+        setIsMeasuring,     // 測定状態を更新する関数
         currentSession,     // 現在アクティブなセッション（サンプル）の情報
         setCurrentSession,  // セッション情報を更新する関数
         selectedCategory,   // 選択中の測定カテゴリ（Left-Frontなど）
         setAutoPhase,       // フェーズ切り替え用アクション
-        currentAngle        // ステージの現在角度（ポーリングで更新される）
+        currentAngle,       // ステージの現在角度（ポーリングで更新される）
+        setPlotData,        // グラフデータを更新するアクション
+        clearPlotData       // グラフデータをクリアするアクション
     } = useAppStore(useShallow((state) => ({
         isMeasuring: state.isMeasuring,
+        setIsMeasuring: state.setIsMeasuring,
         currentSession: state.currentSession,
         setCurrentSession: state.setCurrentSession,
         selectedCategory: state.selectedCategory,
         setAutoPhase: state.setAutoPhase,
-        currentAngle: state.currentAngle
+        currentAngle: state.currentAngle,
+        setPlotData: state.setPlotData,
+        clearPlotData: state.clearPlotData
     })));
 
     // --- ステージ操作ロジックの取得 (Custom Hook) ---
@@ -109,7 +129,16 @@ export function MeasurementManager() {
     // ============================================================================
     // 進行状況の監視 (Progress Polling)
     // ============================================================================
-    // バックエンドで走っている自動測定（Pre-Scan または 本番）の進捗を定期的に確認します。
+    /**
+     * バックエンドで実行されている非同期タスク（Pre-Scan または 本番測定）の進捗を監視します。
+     * 
+     * 【技術的解説】
+     * 測定はバックグラウンドスレッドで実行されるため、フロントエンドは「今どこまで進んだか」を
+     * 定期的に問い合わせる（ポーリング）必要があります。
+     * この useEffect は operationId が発行された瞬間に起動し、0.5秒間隔で最新の進捗を取得します。
+     * 完了・失敗・キャンセルなどの「最終状態」を検知した時点で、監視（setInterval）を停止し、
+     * UI のロック解除やトースト通知を行います。
+     */
     useEffect(() => {
         if (!operationId) return;
 
@@ -124,6 +153,7 @@ export function MeasurementManager() {
                 if (res.status === "succeeded" || res.status === "failed" || res.status === "cancelled") {
                     clearInterval(intervalId);
                     setOperationId(null);
+                    setIsMeasuring(false); // 監視終了時にロックを解除
 
                     if (res.status === "succeeded") {
                         if (prescanStatus === "running") {
@@ -162,6 +192,33 @@ export function MeasurementManager() {
     }, [operationId, prescanStatus]);
 
     // ============================================================================
+    // グラフデータの定期取得 (Plot Data Polling)
+    // ============================================================================
+    /**
+     * 測定中にバックエンドのメモリバッファからグラフ用データを取得します。
+     * 
+     * 【技術的解説】
+     * 「進捗（%）」の監視とは別に、グラフ描画用の生の数値データ（角度ごとの輝度等）を取得します。
+     * 測定が走っている間（isMeasuring または prescanRunning）のみ動作し、
+     * ストアの plotData を更新することで、隣接する GraphPanel コンポーネントがリアルタイムに再描画されます。
+     */
+    useEffect(() => {
+        // 測定中（本番またはPre-Scan）のみポーリングを行う
+        if (!isMeasuring && prescanStatus !== "running") return;
+
+        const intervalId = setInterval(async () => {
+            try {
+                const data = await autoApi.getPlotData();
+                setPlotData(data);
+            } catch (error) {
+                console.error("Failed to fetch plot data:", error);
+            }
+        }, 500);
+
+        return () => clearInterval(intervalId);
+    }, [isMeasuring, prescanStatus, setPlotData]);
+
+    // ============================================================================
     // アクション・ハンドラ (実行ロジック)
     // ============================================================================
 
@@ -178,12 +235,17 @@ export function MeasurementManager() {
     const handlePreScan = async (values: SetupFormValues) => {
         if (!currentSession || !selectedCategory) return;
 
+        setIsMeasuring(true); // ナビゲーションをロック
         setPrescanStatus("running");
         setForceStartUnlocked(false);
         setProgressPercent(0);
         setProgressMessage("Starting Pre-Scan...");
 
         try {
+            // 前回のグラフデータをクリア
+            await autoApi.resetPlotData();
+            clearPlotData();
+
             // Pre-Scanですでにフォルダが作成されていればそれを使い、なければ新規作成する
             let targetPath = currentBranchPath;
             if (!targetPath) {
@@ -241,10 +303,15 @@ export function MeasurementManager() {
     const handleStartMeasurement = async (values: SetupFormValues) => {
         if (!currentSession || !selectedCategory) return;
 
+        setIsMeasuring(true); // ナビゲーションをロック
         setProgressPercent(0);
         setProgressMessage("Starting Measurement...");
 
         try {
+            // 前回のグラフデータをクリア
+            await autoApi.resetPlotData();
+            clearPlotData();
+
             // Pre-Scanですでにフォルダが作成されていればそれを使い、なければ新規作成する
             let targetPath = currentBranchPath;
             if (!targetPath) {
@@ -280,10 +347,10 @@ export function MeasurementManager() {
     const handleAbort = async () => {
         try {
             await autoApi.cancelAutoMeasurement();
-            setProgressMessage("Cancelling...");
-            toast.success("Abort signal sent.");
+            setProgressMessage("Cancelling operation...");
+            toast.info("Cancellation signal sent.");
         } catch (error: any) {
-            toast.error("Failed to abort: " + error.message);
+            toast.error("Failed to cancel: " + error.message);
         }
     };
 
@@ -483,7 +550,7 @@ export function MeasurementManager() {
             </div>
 
             {/* 下部固定エリア: 本番実行ボタンとリモコン */}
-            <div className="pt-4 border-t mt-auto bg-background">
+            <div className="pt-4 border-t mt-auto bg-card">
                 {!isMeasuring && prescanStatus !== "running" ? (
                     <div className="flex gap-2">
                         {/* 手動操作リモコン (Manual Remote) ポップオーバー */}
@@ -614,8 +681,8 @@ export function MeasurementManager() {
                             className="w-full font-bold shadow-inner"
                             onClick={handleAbort}
                         >
-                            <StopCircle className="w-4 h-4 mr-2" />
-                            ABORT
+                            <XCircle className="w-4 h-4 mr-2" />
+                            CANCEL MEASUREMENT
                         </Button>
                     </div>
                 )}

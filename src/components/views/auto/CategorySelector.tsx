@@ -127,8 +127,8 @@ export function CategorySelector() {
                             return (
                                 <Card 
                                     key={cat.id}
-                                    className={`relative p-3 cursor-pointer transition-all hover:ring-2 hover:ring-amber-500/50 group overflow-hidden ${
-                                        completed ? 'bg-secondary/5' : 'bg-background'
+                                    className={`relative p-3 cursor-pointer transition-all hover:ring-2 hover:ring-amber-500/50 group overflow-hidden bg-card ${
+                                        completed ? 'border-green-500/30' : ''
                                     }`}
                                     onClick={() => handleSelectCategory(cat.id)}
                                 >
@@ -148,13 +148,6 @@ export function CategorySelector() {
                                         </div>
                                         <ChevronRight className="size-4 text-muted-foreground/30 group-hover:translate-x-0.5 group-hover:text-amber-500 transition-all" />
                                     </div>
-                                    
-                                    {/* 進捗を示す背景アクセント */}
-                                    {completed && (
-                                        <div className="absolute top-0 right-0 p-1 opacity-10">
-                                            <CheckCircle2 className="size-12 -mr-4 -mt-4" />
-                                        </div>
-                                    )}
                                 </Card>
                             );
                         })}
@@ -196,18 +189,31 @@ export function CategorySelector() {
                                                         {entry.id}
                                                     </div>
                                                     <div className="text-[9px] text-muted-foreground mt-0.5">
-                                                        {entry.timestamp_start 
-                                                            ? format(new Date(entry.timestamp_start), 'HH:mm:ss')
-                                                            : '---'}
+                                                        {(() => {
+                                                            /**
+                                                             * 測定時刻の表示ロジック:
+                                                             * 1. 基本的には「いつ実験を開始したか (timestamp_start)」を表示します。
+                                                             * 2. 旧データや予期せぬ欠落がある場合は「終了時刻」で代用します。
+                                                             * 3. どちらも無い場合は "---" と表示し、エラーで落ちるのを防ぎます。
+                                                             */
+                                                            const ts = entry.timestamp_start || entry.timestamp_end;
+                                                            if (!ts) return '---';
+                                                            try {
+                                                                // ISO 8601 文字列をパースして HH:mm:ss 形式に整形
+                                                                return format(new Date(ts), 'HH:mm:ss');
+                                                            } catch (e) {
+                                                                return '---';
+                                                            }
+                                                        })()}
                                                     </div>
                                                 </TableCell>
-                                                <TableCell className="py-2 px-3 text-right align-top">
+                                                <TableCell className="py-2 px-3 text-right align-middle">
                                                     <Badge 
                                                         variant="outline" 
                                                         className={`text-[8px] h-4 px-1.5 font-bold uppercase ${
                                                             entry.status === 'completed' 
                                                                 ? 'border-green-500/50 text-green-600 bg-green-500/5' 
-                                                                : entry.status === 'aborted'
+                                                                : entry.status === 'cancelled'
                                                                 ? 'border-amber-500/50 text-amber-600 bg-amber-500/5'
                                                                 : 'border-destructive/50 text-destructive bg-destructive/5'
                                                         }`}

@@ -37,6 +37,7 @@ class ROIProcessor:
                 各ROIの結果に含まれる項目:
                 - "sum": 領域内のピクセル輝度の総和。光の強さに相当。
                 - "max": 領域内の最高輝度。飽和（サチュレーション）の確認に使用。
+                - "center_val": 領域の中心ピクセル（定点）における輝度値。
                 - "cx", "cy": 輝度で重み付けされた重心座標（絶対座標）。
         """
         # 画像が空、または解析対象がない場合は即座に空の辞書を返して終了
@@ -83,6 +84,17 @@ class ROIProcessor:
                 roi_sum = float(np.sum(patch))
                 roi_max = float(np.max(patch))
                 
+                # --- 中心ピクセル輝度の取得 ---
+                # ROI の幾何学的中心（ユーザーが指定した固定位置）に位置する 1 ピクセルの生の値を取得します。
+                # 重心（動く点）ではなく、固定された定点における輝度を観測することで、
+                # アライメントの安定性や局所的な信号強度を評価する指標となります。
+                cx_int = int(round(center_x))
+                cy_int = int(round(center_y))
+                if 0 <= cx_int < width and 0 <= cy_int < height:
+                    roi_center_val = float(image[cy_int, cx_int])
+                else:
+                    roi_center_val = 0.0
+                
                 # --- 重心（Centroid）の計算（要求された場合のみ） ---
                 # 物理的には「光の重心」を求めます。アライメント（光軸合わせ）の微調整に不可欠です。
                 if include_centroid and roi_sum > 0:
@@ -108,6 +120,7 @@ class ROIProcessor:
                 results[str(roi_idx)] = {
                     "sum": roi_sum,
                     "max": roi_max,
+                    "center_val": roi_center_val,
                     "cx": round(abs_cx, 3), # 小数点第3位までで丸めて、データの軽量化と読みやすさを両立
                     "cy": round(abs_cy, 3)
                 }
