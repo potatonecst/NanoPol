@@ -774,7 +774,9 @@ def _run_auto_measurement(
             _set_auto_operation_state(percent=percent, message=f"Moving to {target_deg:.2f}°", current_angle=app_state.current_angle)
 
             stage.move_absolute(target_deg, allow_overflow=True)
-            time.sleep(0.1)
+            # ステージが実際に動き出し、Busy フラグが True になるまでの猶予を
+            # 0.1s から 0.15s へわずかに延長し、監視タスクとの同期をより確実にします。
+            time.sleep(0.15)
             while app_state.is_busy:
                 if _get_auto_operation_snapshot().get("cancel_requested"):
                     break
@@ -784,7 +786,10 @@ def _run_auto_measurement(
                 _set_auto_operation_state(status="cancelled", message="Measurement cancelled by user")
                 break
 
-            time.sleep(0.2)
+            # ステージが電気的に停止した直後、物理的な「慣性振動」が残っている可能性があります。
+            # この微小な揺れが完全に収まり、かつコントローラ内部の完了処理が確実に終わるのを待つため、
+            # 待機時間を 0.2s から 0.3s に延長します。これにより実機での NG エラーを徹底的に防ぎます。
+            time.sleep(0.3)
             _set_auto_operation_state(message=f"Taking snapshot at {target_deg:.2f}°")
             
             filename = f"angle_{target_deg:09.4f}.tif"

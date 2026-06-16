@@ -49,6 +49,11 @@ class StageController:
         self.last_baudrate = None
         self._io_lock = threading.Lock()
         
+        # --- [優先制御フラグ] ---
+        # 監視タスク(Q:)と移動コマンド(A:, G:)の競合を防ぐためのフラグ。
+        # 移動コマンド送信時に True になり、その間監視タスクは通信を控えて譲ります。
+        self.is_priority_locked = False
+
         #ステージ仕様 (OSMS-60YAW)
         #分解能: Full=0.005deg/pulse, Half=0.0025deg/pulse 
         #GSC-01のデフォルトはHalfステップ駆動 
@@ -243,22 +248,28 @@ class StageController:
     def home(self):
         """H:1 コマンド（機械原点復帰）を送信します。"""
         logger.info(f"{self.log_tag} Homing...")
-        
+
         if self.is_mock_env:
             time.sleep(2)
             self._mock_pulse = 0
             logger.info(f"{self.log_tag} Homed")
             return True
-        
-        resp = self._send_command("H:1")
 
-        if resp == "OK":
-            logger.info(f"{self.log_tag} Homed")
-            return True
-        else:
-            logger.error(f"{self.log_tag} Homing Error. Resp: {resp}")
+        self.is_priority_locked = True
+        try:
+            resp = "NG"
+            for attempt in range(3):
+                resp = self._send_command("H:1")
+                if resp == "OK":
+                    logger.info(f"{self.log_tag} Homed")
+                    return True
+                logger.warning(f"{self.log_tag} Homing (H:1) returned NG (attempt {attempt+1}/3). Waiting...")
+                time.sleep(0.2)
+
+            logger.error(f"{self.log_tag} Homing Error after retries. Resp: {resp}")
             raise StageCommandError(f"Homing failed: {resp}")
-    
+        finally:
+            self.is_priority_locked = False
     def move_absolute(self, target_angle: float, allow_overflow: bool = False):
         """絶対角度[deg]を指定してステージを移動させます（移動量設定後、駆動開始）。
 
@@ -325,23 +336,40 @@ class StageController:
             threading.Thread(target=_mock_abs_move, daemon=True).start()
             return True
         
-        # 1. 移動量設定コマンド送信: A:1{方向}P{パルス数}
-        cmd_a = f"A:1{direction}P{abs_pulse}"
-        resp_a = self._send_command(cmd_a)
+        # 1. 優先ロックの有効化
+        # 監視タスクに対して「重要な命令を送るので待って」という合図を送ります。
+        self.is_priority_locked = True
         
-        if resp_a != "OK":
-            logger.error(f"{self.log_tag} Move setup failed: {resp_a}")
-            raise StageCommandError(f"Move setup failed: {resp_a}")
-        
-        # 2. 駆動開始コマンド送信: G:
-        resp_g = self._send_command("G:")
-        
-        if resp_g == "OK":
-            logger.info(f"{self.log_tag} Move Abs Command Sent: {target_angle} deg")
-            return True
-        else:
-            logger.error(f"{self.log_tag} Move Abs Command Failed: {resp_g}")
-            raise StageCommandError(f"Move start failed: {resp_g}")
+        try:
+            # 2. 移動量設定コマンド送信: A:1{方向}P{パルス数}
+            # ハードウェア内部の完了処理との微小な重なりによる "NG" を吸収するため、リトライを行います。
+            resp_a = "NG"
+            for attempt in range(3):
+                cmd_a = f"A:1{direction}P{abs_pulse}"
+                resp_a = self._send_command(cmd_a)
+                if resp_a == "OK":
+                    break
+                logger.warning(f"{self.log_tag} Move setup (A:1) returned NG (attempt {attempt+1}/3). Waiting...")
+                time.sleep(0.1) # 100ms 待機してコントローラを落ち着かせる
+            
+            if resp_a != "OK":
+                raise StageCommandError(f"Move setup failed after retries: {resp_a}")
+            
+            # 3. 駆動開始コマンド送信: G:
+            resp_g = "NG"
+            for attempt in range(3):
+                resp_g = self._send_command("G:")
+                if resp_g == "OK":
+                    logger.info(f"{self.log_tag} Move Abs Command Sent: {target_angle} deg")
+                    return True
+                logger.warning(f"{self.log_tag} Move start (G:) returned NG (attempt {attempt+1}/3). Waiting...")
+                time.sleep(0.1)
+                
+            raise StageCommandError(f"Move start failed after retries: {resp_g}")
+
+        finally:
+            # 命令の送信が終わったので、監視タスクへ制御を戻します（角度表示の再開）。
+            self.is_priority_locked = False
     
     def move_relative(self, delta_angle: float, current_angle_hint: float | None = None):
         """現在の位置から指定した角度[deg]だけ相対移動させます。"""
@@ -521,9 +549,17 @@ class StageController:
             return 0.0, False
 
     def try_get_status(self) -> Tuple[float, bool] | None:
-        """ロックが空いているときだけステータスを取得し、埋まっていれば None を返します。"""
+        """ロックが空いているときだけステータスを取得し、埋まっていれば None を返します。
+        
+        優先ロック(is_priority_locked)が有効な場合、またはロックが即座に取得できない場合は
+        通信の競合を避けるために None を返します。
+        """
         if self.is_mock_env:
             return self.get_status()
+
+        # 優先ロック（移動コマンド送信中）の場合は譲る
+        if getattr(self, 'is_priority_locked', False):
+            return None
 
         if not self.ser or not self.ser.is_open:
             raise Exception("Device not connected")
