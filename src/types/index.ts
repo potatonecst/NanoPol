@@ -51,7 +51,8 @@ export type AutoMeasurementPhase =
 export interface AutoMeasurementHistoryEntry {
     id: string;               // 枝番付きID（例: "Left_Front_001"）
     step_category: string;    // カテゴリ名（例: "Left_Front"）
-    status: 'completed' | 'aborted' | 'failed'; // 測定結果の状態
+    status: 'completed' | 'cancelled' | 'failed'; // 測定結果の状態
+    message?: string;          // 詳細メッセージ（エラー理由など）
     timestamp_start?: string; // 開始時刻
     timestamp_end?: string;   // 終了時刻
     folder_path: string;      // この枝番データの保存先フォルダ
