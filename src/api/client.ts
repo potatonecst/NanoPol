@@ -412,7 +412,9 @@ export const systemApi = {
             message: string,
             current_angle: number,
             target_angle: number,
-            cancel_requested: boolean
+            cancel_requested: boolean,
+            has_warning?: boolean,
+            warning_message?: string
         }>(url);
     },
 

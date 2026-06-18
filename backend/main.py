@@ -765,13 +765,30 @@ def _run_auto_measurement(
             logger.error(f"[AUTO] Failed to initialize CSV: {e}")
 
         # --- Step & Shoot メインループ ---
+        saturated_angles = []
         for i, target_deg in enumerate(angles):
             if _get_auto_operation_snapshot().get("cancel_requested"):
                 _set_auto_operation_state(status="cancelled", message="Measurement cancelled by user")
                 break
 
             percent = int((i / num_steps) * 100)
-            _set_auto_operation_state(percent=percent, message=f"Moving to {target_deg:.2f}°", current_angle=app_state.current_angle)
+            
+            # ====================================================================
+            # 【警告（Warning）状態の伝播】
+            # これまでに見つかった「飽和した角度」のリストから、フロントエンド向けの警告メッセージを生成します。
+            # 測定を強制停止（Abort）はせず、この has_warning フラグを True にして送ることで、
+            # フロントエンド（React）側でプログレスバーをオレンジ色に変え、ユーザーに自発的なキャンセルを促します。
+            # ====================================================================
+            has_warning = len(saturated_angles) > 0
+            warning_msg = f"Saturated at: {', '.join([f'{a:.1f}°' for a in saturated_angles])}" if has_warning else ""
+            
+            _set_auto_operation_state(
+                percent=percent, 
+                message=f"Moving to {target_deg:.2f}°", 
+                current_angle=app_state.current_angle,
+                has_warning=has_warning,
+                warning_message=warning_msg
+            )
 
             stage.move_absolute(target_deg, allow_overflow=True)
             # ステージが実際に動き出し、Busy フラグが True になるまでの猶予を
@@ -790,7 +807,11 @@ def _run_auto_measurement(
             # この微小な揺れが完全に収まり、かつコントローラ内部の完了処理が確実に終わるのを待つため、
             # 待機時間を 0.2s から 0.3s に延長します。これにより実機での NG エラーを徹底的に防ぎます。
             time.sleep(0.3)
-            _set_auto_operation_state(message=f"Taking snapshot at {target_deg:.2f}°")
+            _set_auto_operation_state(
+                message=f"Taking snapshot at {target_deg:.2f}°",
+                has_warning=has_warning,
+                warning_message=warning_msg
+            )
             
             filename = f"angle_{target_deg:09.4f}.tif"
             snapshot_result = camera.take_snapshot(filename_override=filename, save_dir_override=images_dir, force_centroid=is_prescan)
@@ -798,6 +819,16 @@ def _run_auto_measurement(
             if snapshot_result and snapshot_result.get("roi_stats"):
                 stats = snapshot_result["roi_stats"]
                 rois_map = {r.get("index"): r for r in camera.rois}
+                
+                # --- 飽和判定 ---
+                # カメラのビット深度（例: 8-bit なら 255, 10-bit なら 1023）を取得し、
+                # ギリギリのダイナミックレンジを活用するため、マージンは設けず理論上の最大値に達したかを判定する
+                sensor_bpp = getattr(camera, 'input_bpp', 8)
+                theoretical_max = (1 << sensor_bpp) - 1
+                sat_threshold = theoretical_max
+                
+                is_saturated_this_frame = False
+                
                 try:
                     with open(csv_path, "a", newline="", encoding="utf-8") as f:
                         writer = csv.writer(f)
@@ -805,6 +836,10 @@ def _run_auto_measurement(
                         for r_idx_str in sorted(stats.keys(), key=lambda x: int(x)):
                             r_idx = int(r_idx_str)
                             r_data = stats[r_idx_str]
+                            
+                            if r_data.get("max", 0) >= sat_threshold:
+                                is_saturated_this_frame = True
+                                
                             drift = 0.0
                             roi_def = rois_map.get(r_idx)
                             if roi_def:
@@ -813,6 +848,10 @@ def _run_auto_measurement(
                                 drift = ((r_data.get("cx",0) - base_x)**2 + (r_data.get("cy",0) - base_y)**2)**0.5
                             row.extend([r_data.get("sum",0), r_data.get("max",0), r_data.get("center_val",0), r_data.get("cx",0), r_data.get("cy",0), round(drift, 4)])
                         writer.writerow(row)
+                        
+                        if is_saturated_this_frame and target_deg not in saturated_angles:
+                            saturated_angles.append(target_deg)
+                            
                 except Exception as e:
                     logger.error(f"[AUTO] Failed to append to CSV: {e}")
 

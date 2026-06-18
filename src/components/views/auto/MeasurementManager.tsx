@@ -19,7 +19,8 @@ import {
     MoveRight, 
     House, 
     FolderOpen, 
-    Square
+    Square,
+    AlertTriangle
 } from 'lucide-react';
 import { autoApi } from '@/api/client';
 import { toast } from 'sonner';
@@ -100,6 +101,8 @@ export function MeasurementManager() {
     const [operationId, setOperationId] = useState<string | null>(null); // バックエンドでの非同期タスクID
     const [progressPercent, setProgressPercent] = useState<number>(0);   // 進捗率 (0-100)
     const [progressMessage, setProgressMessage] = useState<string>("");  // 現在の動作メッセージ
+    const [hasWarning, setHasWarning] = useState<boolean>(false);        // 飽和などの警告状態
+    const [warningMessage, setWarningMessage] = useState<string>("");    // 警告の具体的内容
 
     // 現在の測定（Pre-Scanから本番まで）で共通して使用するデータ保存先フォルダ
     const [currentBranchPath, setCurrentBranchPath] = useState<string | null>(null);
@@ -150,6 +153,18 @@ export function MeasurementManager() {
 
                 setProgressPercent(res.percent);
                 setProgressMessage(res.message);
+                
+                // ============================================================================
+                // 【非破壊的エラーハンドリング (Non-Destructive Error Handling)】
+                // バックエンドから送られてくる `has_warning` フラグを監視します。
+                // 飽和などを検知してもバックエンドは測定を止めず、このフラグだけを true にして送ってきます。
+                // これを受け取ったフロントエンドは、プログレスバーをオレンジ色（Amber）に変化させ、
+                // ユーザーに対して「止まってはいないが異常が起きている」ことを視覚的に警告します。
+                // ============================================================================
+                if (res.has_warning) {
+                    setHasWarning(true);
+                    setWarningMessage(res.warning_message || "Warning detected during measurement.");
+                }
 
                 // 完了・失敗・キャンセルのいずれかの「最終状態」に達したら監視を終了
                 if (res.status === "succeeded" || res.status === "failed" || res.status === "cancelled") {
@@ -244,6 +259,8 @@ export function MeasurementManager() {
         setForceStartUnlocked(false);
         setProgressPercent(0);
         setProgressMessage("Starting Pre-Scan...");
+        setHasWarning(false);
+        setWarningMessage("");
 
         try {
             // 前回のグラフデータをクリア
@@ -311,6 +328,8 @@ export function MeasurementManager() {
         setIsPrescan(false);  // 本番測定であることを明示（グラフの自動切り替え用）
         setProgressPercent(0);
         setProgressMessage("Starting Measurement...");
+        setHasWarning(false);
+        setWarningMessage("");
 
         try {
             // 前回のグラフデータをクリア
@@ -369,16 +388,18 @@ export function MeasurementManager() {
         <div className="flex flex-col h-full space-y-6">
             {/* ヘッダー領域: ナビゲーションと現在のコンテキスト表示 */}
             <div className="flex items-center justify-between border-b pb-4">
-                <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleBack}
-                    disabled={isFormDisabled}
-                    className="text-muted-foreground"
-                >
-                    <ArrowLeft className="w-4 h-4 mr-2" />
-                    Back
-                </Button>
+                <div className="flex items-center gap-2">
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleBack}
+                        disabled={isFormDisabled}
+                        className="text-muted-foreground"
+                    >
+                        <ArrowLeft className="w-4 h-4 mr-2" />
+                        Back
+                    </Button>
+                </div>
                 
                 <div className="text-right space-y-1">
                     {/* 現在アクティブなサンプル（セッション）名 */}
@@ -536,18 +557,18 @@ export function MeasurementManager() {
 
                         {/* 失敗時のみ表示される救済措置（強制開始） */}
                         {prescanStatus === "failed" && !forceStartUnlocked && (
-                            <div className="mt-4 p-3 bg-destructive/10 border border-destructive/20 rounded-md">
-                                <p className="text-xs text-destructive mb-2 font-medium">
+                            <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-md flex flex-col gap-3">
+                                <p className="text-xs text-destructive font-medium leading-tight">
                                     Alignment failed. Check if the signal is saturated or too weak.
                                 </p>
                                 <Button
                                     type="button"
                                     variant="destructive"
                                     size="sm"
-                                    className="w-full text-xs"
+                                    className="w-full text-xs h-auto py-1.5 whitespace-normal"
                                     onClick={handleForceUnlock}
                                 >
-                                    Force Unlock (Manual Override)
+                                    Force Proceed
                                 </Button>
                             </div>
                         )}
@@ -675,11 +696,24 @@ export function MeasurementManager() {
                     /* 動作中のプログレス表示と中止ボタン */
                     <div className="space-y-4">
                         <div className="space-y-2">
-                            <div className="flex justify-between text-xs font-medium">
+                            <div className="flex justify-between text-xs font-medium mb-1">
                                 <span className="text-muted-foreground truncate pr-4">{progressMessage}</span>
                                 <span>{progressPercent}%</span>
                             </div>
-                            <Progress value={progressPercent} className="h-2" />
+                            
+                            {/* 
+                              * 飽和などの警告がある場合の表示領域 
+                              * `whitespace-normal break-words` を指定することで、飽和した角度（15.0°, 30.0°...）が
+                              * 多数リストアップされた場合でも、サイドバーの横幅を突き破らずに安全に改行されるようにしています。
+                              */}
+                            {hasWarning && (
+                                <div className="text-xs text-amber-500 font-bold mb-2 flex items-start leading-tight">
+                                    <AlertTriangle className="w-3 h-3 mr-1 mt-0.5 shrink-0" />
+                                    <span className="whitespace-normal break-words">{warningMessage}</span>
+                                </div>
+                            )}
+                            
+                            <Progress value={progressPercent} className={`h-2 ${hasWarning ? "[&>div]:bg-amber-500" : ""}`} />
                         </div>
                         <Button
                             type="button"
