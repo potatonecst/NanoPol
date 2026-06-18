@@ -150,7 +150,9 @@ Autoモードに入った最初のフェーズ。サンプルの新規作成ま�
 
 `src/components/views/SettingsView.tsx`
 
-  * **File Save Settings:**
+  * **画面レイアウト:**
+      * 左側にカテゴリ選択サイドバー（`File & Storage`, `Hardware Defaults`, `Measurement`）、右側に選択されたカテゴリに対応する設定項目（カード形式）を動的に切り替えて表示する、他のビュー（Manual や Auto）と統一された左右分割レイアウト構成。
+  * **File Save Settings (File & Storage):**
       * **Output Directory:** 測定データの保存先フォルダ。
           * **Default:** `Documents/NanoPol` (OSのドキュメントフォルダ配下)。
           * **Behavior:** 設定保存時にフォルダが存在しない場合、自動的に再帰作成される。

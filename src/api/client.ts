@@ -321,7 +321,11 @@ export const systemApi = {
             ? `/measurement/sessions?date_dir=${encodeURIComponent(dateDir)}`
             : "/measurement/sessions";
         return request<{
-            sessions: string[],
+            sessions: Array<{
+                name: string;
+                created_at: string;
+                progress: string;
+            }>,
             base_dir: string,
             today_dir: string,
             selected_dir: string

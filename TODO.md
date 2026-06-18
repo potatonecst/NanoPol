@@ -3,10 +3,10 @@
 本ドキュメントは、仕様書に定義されているが未実装の機能や、今後の開発タスクを管理するためのチェックリストです。
 
 ## 🎯 次の目標 (Next Actions)
-- [ ] **Auto Mode フロントエンド実装 (Session Management)**
-  - `Table` によるセッション一覧表示。
-  - `Calendar` & `Popover` による日付選択 (Date Picker) の実装。
-  - `Sample Name` の自動採番ロジックと新規作成フローの実装。
+- [x] **Auto Mode フロントエンド実装 (Session Management)**
+  - [x] `Table` によるセッション一覧表示。
+  - [x] `Calendar` & `Popover` による日付選択 (Date Picker) の実装。
+  - [x] `Sample Name` の自動採番ロジックと新規作成フローの実装。
 
 ## 🔧 ハードウェア制御 (Backend / Python)
 - [ ] **2x2 ソフトウェアビニングの実装**

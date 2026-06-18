@@ -59,22 +59,22 @@ def get_today_dir(base_dir: str) -> str:
     """
     return get_date_dir(base_dir, None)
 
-def get_sessions(output_dir: str, date_str: str | None = None) -> list[str]:
+def get_sessions(output_dir: str, date_str: str | None = None) -> list[dict]:
     """
-    指定された日付フォルダ内にある既存のサンプル（セッション）名のリストを取得します。
+    指定された日付フォルダ内にある既存のサンプル（セッション）の詳細情報のリストを取得します。
     date_str が None の場合は、自動的に今日の日付を対象にします。
 
     ロジックの解説:
         1. 指定された日付、または今日の日付フォルダを特定します。
         2. フォルダ内の各項目を走査し、「フォルダである」かつ「settings.jsonがある」
-           ものだけを有効なセッションとして抽出します。
+           ものからセッション名、作成日時、完了した測定数（進捗）を抽出します。
 
     引数:
         output_dir (str): 大元の保存先パス
         date_str (str | None): 対象の日付文字列 (例: "20260601")。None なら今日。
 
     戻り値:
-        list[str]: 有効なサンプル名のリスト
+        list[dict]: セッション詳細情報の辞書リスト
     """
     base_dir = get_base_dir(output_dir)
     target_dir = get_date_dir(base_dir, date_str)
@@ -86,13 +86,41 @@ def get_sessions(output_dir: str, date_str: str | None = None) -> list[str]:
     sessions = []
     for entry in os.listdir(target_dir):
         full_path = os.path.join(target_dir, entry)
+        settings_path = os.path.join(full_path, "settings.json")
         # 有効なセッションフォルダかどうかの厳密なチェック（settings.jsonの存在確認）
-        if os.path.isdir(full_path) and os.path.exists(os.path.join(full_path, "settings.json")):
-            sessions.append(entry)
+        if os.path.isdir(full_path) and os.path.exists(settings_path):
+            try:
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    settings_data = json.load(f)
+                
+                created_at = settings_data.get("created_at", "")
+                measurements = settings_data.get("measurements", [])
+                
+                # completed状態の一意なカテゴリ数をカウントする
+                completed_categories = set()
+                for m in measurements:
+                    if m.get("status") == "completed" and m.get("step_category"):
+                        completed_categories.add(m.get("step_category"))
+                
+                progress = f"{len(completed_categories)}/4"
+                
+                sessions.append({
+                    "name": entry,
+                    "created_at": created_at,
+                    "progress": progress
+                })
+            except Exception as e:
+                # settings.jsonが破損しているなどの異常系
+                sessions.append({
+                    "name": entry,
+                    "created_at": "",
+                    "progress": "0/4"
+                })
             
-    return sorted(sessions)
+    # セッション名（フォルダ名）順にソートします
+    return sorted(sessions, key=lambda x: x["name"])
 
-def get_today_sessions(output_dir: str) -> list[str]:
+def get_today_sessions(output_dir: str) -> list[dict]:
     """
     【後方互換用】今日の日付フォルダ内のセッション一覧を取得します。
     """

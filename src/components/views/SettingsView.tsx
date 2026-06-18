@@ -48,6 +48,8 @@ import {
   Save,
   RotateCcw,
   TriangleAlert,
+  Settings as SettingsIcon,
+  Beaker,
 } from "lucide-react";
 import { Switch } from "../ui/switch";
 import { toast } from "sonner";
@@ -72,6 +74,10 @@ export const SettingsView: React.FC = () => {
   // 画面の読み込み状態（ローディング中かどうか）。初期値はtrue。
   // useState: コンポーネント内で変化するデータ（状態）を管理するReactのフックです。
   const [isLoading, setIsLoading] = useState(true);
+
+  // 現在選択されているカテゴリの管理
+  // 【重要】ReactのHookルールに基づき、早期リターン（Early Return）よりも必ず前で定義する必要があります。
+  const [activeCategory, setActiveCategory] = useState<"file" | "hardware" | "measurement">("file");
 
   // React Hook Form の初期化
   // useForm は、フォームの入力値、エラー、送信状態などを一元管理するためのフックです。
@@ -319,266 +325,151 @@ export const SettingsView: React.FC = () => {
     );
   }
 
+
   // 画面の描画（JSX）
   return (
-    // 全体のレイアウト: 縦方向に並べるフレックスボックス。画面の高さ(h-full)いっぱいに広げ、はみ出しは隠す(overflow-hidden)
-    <div className="absolute inset-0 flex flex-col overflow-hidden">
-      {/* Header (Fixed) */}
-      {/* 画面上部のヘッダー領域。スクロールしても常に上に固定表示されます。 */}
+    // 【全体レイアウト】
+    // inset-0: 画面いっぱいに広げます。flex-col: ヘッダー、メイン領域、フッターを縦に並べます。
+    // overflow-hidden: 画面全体の不要なスクロールやバウンスを防ぎます。
+    <div className="absolute inset-0 flex flex-col overflow-hidden bg-background">
+      {/* Header (Fixed): 固定ヘッダー */}
+      {/* shrink-0: 画面サイズが小さくなってもこのヘッダーは縮まず、元の高さを維持します。 */}
       <div className="p-8 pb-6 shrink-0 border-b bg-card z-10">
-        <div className="max-w-5xl mx-auto flex justify-between items-center">
+        <div className="max-w-6xl mx-auto flex justify-between items-center">
           <h2 className="text-2xl font-bold tracking-tight">Settings</h2>
         </div>
       </div>
 
-      {/* Scrollable Content */}
-      {/* メインコンテンツ領域。flex-1を指定して残りの高さを全て使い、中身が多い場合はここだけスクロール(overflow-y-auto)します。 */}
-      <div className="flex-1 overflow-y-auto bg-background">
-        <div className="p-8 max-w-5xl mx-auto">
+      {/* Main Content Area: メイン左右分割エリア */}
+      {/* flex-col md:flex-row: モバイル時は縦並び、PCなどの画面幅(md以上)では横並び(左右分割)にします。 */}
+      {/* overflow-hidden: メイン領域全体のはみ出しを防ぎ、スクロールは内部のコンテンツエリアに限定します。 */}
+      <div className="flex-1 overflow-hidden flex flex-col md:flex-row max-w-6xl w-full mx-auto">
+        
+        {/* Sidebar Navigation: 左側カテゴリ選択サイドバー */}
+        {/* w-full md:w-64: モバイル時は幅一杯、PC時は幅64(16rem/約256px)に固定します。 */}
+        {/* border-r: 右側に細い区切り線を引きます（モバイル時は下側 border-b に切り替えます）。 */}
+        <div className="w-full md:w-64 shrink-0 p-4 border-b md:border-b-0 md:border-r overflow-y-auto bg-muted/10">
+          {/* nav: セマンティックなナビゲーション。md:flex-colによりPC時はボタンを縦一列に並べます。 */}
+          <nav className="flex md:flex-col gap-2 overflow-x-auto md:overflow-x-visible pb-2 md:pb-0">
+            {/* Button (File & Storage): 保存・画像等の設定カテゴリ */}
+            {/* variant: 現在アクティブなカテゴリであれば secondary (灰色塗りつぶし)、それ以外は ghost (透明背景) に切り替えます。 */}
+            <Button
+              variant={activeCategory === "file" ? "secondary" : "ghost"}
+              className={`justify-start shrink-0 ${activeCategory === "file" ? "font-semibold" : ""}`}
+              onClick={() => setActiveCategory("file")} // クリックで file カテゴリをアクティブに
+            >
+              <FolderOpen className="w-4 h-4 mr-2" />
+              File & Storage
+            </Button>
+            {/* Button (Hardware Defaults): 機器の初期設定カテゴリ */}
+            <Button
+              variant={activeCategory === "hardware" ? "secondary" : "ghost"}
+              className={`justify-start shrink-0 ${activeCategory === "hardware" ? "font-semibold" : ""}`}
+              onClick={() => setActiveCategory("hardware")} // クリックで hardware カテゴリをアクティブに
+            >
+              <SettingsIcon className="w-4 h-4 mr-2" />
+              Hardware Defaults
+            </Button>
+            {/* Button (Measurement): 自動測定のプリセット（将来機能）カテゴリ */}
+            <Button
+              variant={activeCategory === "measurement" ? "secondary" : "ghost"}
+              className={`justify-start shrink-0 ${activeCategory === "measurement" ? "font-semibold" : ""}`}
+              onClick={() => setActiveCategory("measurement")} // クリックで measurement カテゴリをアクティブに
+            >
+              <Beaker className="w-4 h-4 mr-2" />
+              Measurement
+            </Button>
+          </nav>
+        </div>
+
+        {/* Scrollable Content: 右側設定フォームエリア */}
+        {/* flex-1: 残りの画面幅すべてをこのエリアに割り当てます。 */}
+        {/* overflow-y-auto: 設定項目が多くスクロールが必要な場合、このエリア内部だけで縦スクロールさせます。 */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-8">
           {/* フォーム定義: onSubmitイベントで form.handleSubmit を呼び出します */}
-          <form id="settings-form" onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+          <form id="settings-form" onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 max-w-3xl">
 
-            {/* --- General File Settings --- */}
-            <Card>
-              <CardHeader>
-                <CardTitle>General File Settings</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <FieldGroup className="grid gap-4">
-                  {/* Controller: React Hook FormとUIコンポーネントを繋ぐラッパー */}
-                  {/* これを使うことで、shadcn/uiのInputコンポーネントなどがフォームの状態と連動します */}
-                  {/* useFormは基本「非制御」で高速ですが、Controllerを使うと明示的に「制御コンポーネント」として扱います。 */}
-                  {/* これにより、値が変更されたタイミングでこのフィールド部分だけが確実に再レンダリングされ、表示が更新されます。 */}
-                  {/* name属性で、Settings型のどのプロパティと紐付けるかを指定します */}
-                  <Controller
-                    control={form.control}
-                    name="outputDirectory"
-                    render={({ field, fieldState }) => (
-                      // Field: ラベル、入力欄、エラーメッセージをまとめるラッパーコンポーネント
-                      <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel htmlFor="outputDirectory">Output Directory</FieldLabel>
-                        <div className="flex gap-2">
-                          {/* Input: テキスト入力欄。readOnlyにすることで手入力を防ぎ、必ずBrowseボタンを使わせます */}
-                          {/* {...field} を展開することで、valueやonChangeなどのイベントハンドラが自動的に設定されます */}
-                          <Input {...field} id="outputDirectory" readOnly placeholder="Select a folder..." />
-                          <Button type="button" variant="outline" onClick={handleSelectDir}>
-                            <FolderOpen className="w-4 h-4 mr-2" />
-                            Browse
-                          </Button>
-                        </div>
-                        {/* バリデーションエラーがある場合のみ、エラーメッセージを表示します */}
-                        {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                      </Field>
-                    )}
-                  />
+            {/* --- Category: File & Storage --- */}
+            <div className={activeCategory === "file" ? "block space-y-6" : "hidden"}>
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold tracking-tight mb-1">File & Storage</h3>
+                <p className="text-sm text-muted-foreground">Manage where and how your measurement data is saved.</p>
+              </div>
 
-                  <Controller
-                    control={form.control}
-                    name="askSavePath"
-                    render={({ field }) => (
-                      <Field orientation="horizontal" className="justify-between rounded-lg border p-4">
-                        <div className="space-y-0.5">
-                          <FieldLabel>Always ask where to save files</FieldLabel>
-                          <FieldDescription>
-                            If disabled, files will be saved automatically using the prefixes and timestamp.
-                          </FieldDescription>
-                        </div>
-                        <Switch checked={field.value} onCheckedChange={field.onChange} />
-                      </Field>
-                    )}
-                  />
-                </FieldGroup>
-              </CardContent>
-            </Card>
-
-            {/* --- Camera Settings --- */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Camera Settings</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <FieldGroup className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <Controller
-                    control={form.control}
-                    name="cameraMode"
-                    render={({ field, fieldState }) => (
-                      <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel>Color Mode</FieldLabel>
-                        <Select onValueChange={field.onChange} defaultValue={field.value}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select mode" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {CameraModes.map((mode) => (
-                              <SelectItem key={mode} value={mode}>
-                                {mode}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                      </Field>
-                    )}
-                  />
-                  <Controller
-                    control={form.control}
-                    name="defaultExposure"
-                    render={({ field, fieldState }) => {
-                      // ストアに保存されているカメラの露光レンジを優先的に使用
-                      const exposureMin = cameraExposureRange?.min ?? DEFAULT_EXPOSURE_MIN_MS;
-                      const exposureMax = cameraExposureRange?.max ?? DEFAULT_EXPOSURE_MAX_MS;
-                      const exposureStep = cameraExposureRange?.step ?? DEFAULT_EXPOSURE_STEP_MS;
-
-                      return (
-                        <Field data-invalid={fieldState.invalid}>
-                          <FieldLabel htmlFor="defaultExposure">Default Exposure (ms)</FieldLabel>
-                          <Input type="number" step={exposureStep} min={exposureMin} max={exposureMax} {...field} id="defaultExposure" />
-                          {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                        </Field>
-                      );
-                    }}
-                  />
-                  <Controller
-                    control={form.control}
-                    name="defaultGain"
-                    render={({ field, fieldState }) => {
-                      const gainMin = cameraGainRange?.min ?? DEFAULT_GAIN_MIN;
-                      const gainMax = cameraGainRange?.max ?? DEFAULT_GAIN_MAX;
-
-                      return (
-                        <Field data-invalid={fieldState.invalid}>
-                          <FieldLabel htmlFor="defaultGain">Default Gain (×{gainMin.toFixed(2)}-×{gainMax.toFixed(2)})</FieldLabel>
-                          <Input type="number" step={0.01} min={gainMin} max={gainMax} {...field} id="defaultGain" />
-                          {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                        </Field>
-                      );
-                    }}
-                  />
-                </FieldGroup>
-              </CardContent>
-            </Card>
-
-            {/* --- Motion Settings --- */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Stage Motion Defaults</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <FieldGroup className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <Controller
-                    control={form.control}
-                    name="defaultSpeedMin"
-                    render={({ field, fieldState }) => (
-                      <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel htmlFor="defaultSpeedMin">Min Speed (PPS)</FieldLabel>
-                        <Input type="number" {...field} id="defaultSpeedMin" step={100} />
-                        {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                      </Field>
-                    )}
-                  />
-                  <Controller
-                    control={form.control}
-                    name="defaultSpeedMax"
-                    render={({ field, fieldState }) => (
-                      <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel htmlFor="defaultSpeedMax">Max Speed (PPS)</FieldLabel>
-                        <Input type="number" {...field} id="defaultSpeedMax" step={100} />
-                        {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                      </Field>
-                    )}
-                  />
-                  <Controller
-                    control={form.control}
-                    name="defaultAccelTime"
-                    render={({ field, fieldState }) => (
-                      <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel htmlFor="defaultAccelTime">Accel Time (ms)</FieldLabel>
-                        <Input type="number" {...field} id="defaultAccelTime" />
-                        {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                      </Field>
-                    )}
-                  />
-                </FieldGroup>
-              </CardContent>
-            </Card>
-
-            {/* --- Snapshot Settings --- */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Snapshot Settings</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <FieldGroup className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <Controller
-                    control={form.control}
-                    name="snapshotPrefix"
-                    render={({ field, fieldState }) => (
-                      <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel htmlFor="snapshotPrefix">Snapshot Prefix</FieldLabel>
-                        <Input {...field} id="snapshotPrefix" />
-                        <FieldDescription>Example: {field.value}20260101_143000{currentExt}</FieldDescription>
-                        {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                      </Field>
-                    )}
-                  />
-                  <Controller
-                    control={form.control}
-                    name="imageFormat"
-                    render={({ field, fieldState }) => (
-                      <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel>Image Format</FieldLabel>
-                        <Select onValueChange={field.onChange} defaultValue={field.value}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select format" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {ImageFormats.map((fmt) => (
-                              <SelectItem key={fmt} value={fmt}>
-                                {fmt}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                      </Field>
-                    )}
-                  />
-                </FieldGroup>
-              </CardContent>
-            </Card>
-
-            {/* --- Recording Settings --- */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Recording Settings</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <FieldGroup className="grid gap-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* General File Settings */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Output Directory</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <FieldGroup className="grid gap-4">
                     <Controller
                       control={form.control}
-                      name="recordPrefix"
+                      name="outputDirectory"
                       render={({ field, fieldState }) => (
                         <Field data-invalid={fieldState.invalid}>
-                          <FieldLabel htmlFor="recordPrefix">Record Prefix</FieldLabel>
-                          <Input {...field} id="recordPrefix" />
-                          <FieldDescription>Example: {field.value}20260101_143000.tif</FieldDescription>
+                          <div className="flex gap-2">
+                            <Input {...field} id="outputDirectory" readOnly placeholder="Select a folder..." />
+                            <Button type="button" variant="outline" onClick={handleSelectDir} className="shrink-0">
+                              <FolderOpen className="w-4 h-4 mr-2" />
+                              Browse
+                            </Button>
+                          </div>
+                          {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                        </Field>
+                      )}
+                    />
+
+                    <Controller
+                      control={form.control}
+                      name="askSavePath"
+                      render={({ field }) => (
+                        <Field orientation="horizontal" className="justify-between rounded-lg border p-4 bg-card">
+                          <div className="space-y-0.5 pr-4">
+                            <FieldLabel>Always ask where to save files</FieldLabel>
+                            <FieldDescription>
+                              If disabled, files will be saved automatically using the prefixes and timestamp.
+                            </FieldDescription>
+                          </div>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </Field>
+                      )}
+                    />
+                  </FieldGroup>
+                </CardContent>
+              </Card>
+
+              {/* Snapshot Settings */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Snapshot Format</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <FieldGroup className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Controller
+                      control={form.control}
+                      name="snapshotPrefix"
+                      render={({ field, fieldState }) => (
+                        <Field data-invalid={fieldState.invalid}>
+                          <FieldLabel htmlFor="snapshotPrefix">Prefix</FieldLabel>
+                          <Input {...field} id="snapshotPrefix" />
+                          <FieldDescription className="truncate">Ex: {field.value}20260101_143000{currentExt}</FieldDescription>
                           {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
                         </Field>
                       )}
                     />
                     <Controller
                       control={form.control}
-                      name="recordFormat"
+                      name="imageFormat"
                       render={({ field, fieldState }) => (
                         <Field data-invalid={fieldState.invalid}>
-                          <FieldLabel>Record Format (Raw TIFF)</FieldLabel>
+                          <FieldLabel>Image Format</FieldLabel>
                           <Select onValueChange={field.onChange} defaultValue={field.value}>
                             <SelectTrigger>
                               <SelectValue placeholder="Select format" />
                             </SelectTrigger>
                             <SelectContent>
-                              {RecordFormats.map((fmt) => (
+                              {ImageFormats.map((fmt) => (
                                 <SelectItem key={fmt} value={fmt}>
                                   {fmt}
                                 </SelectItem>
@@ -586,68 +477,247 @@ export const SettingsView: React.FC = () => {
                             </SelectContent>
                           </Select>
                           {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
-                          {/* 8-bit TIFF選択時に遅延の可能性に関する注意書きを表示 */}
-                          {field.value === "8-bit TIFF" && (
-                            <FieldDescription className="text-amber-600 dark:text-amber-500 flex items-center gap-2 mt-2">
-                              <TriangleAlert className="h-4 w-4 shrink-0" />
-                              <span>
-                                録画開始時にモード切替のため僅かな遅延が生じる場合があります。
-                              </span>
-                            </FieldDescription>
-                          )}
                         </Field>
                       )}
                     />
-                  </div>
+                  </FieldGroup>
+                </CardContent>
+              </Card>
 
-                  <Controller
-                    control={form.control}
-                    name="autoConvertMp4"
-                    render={({ field }) => (
-                      <Field orientation="horizontal" className="justify-between rounded-lg border p-4">
-                        <div className="space-y-0.5">
-                          <FieldLabel>Auto Convert to MP4</FieldLabel>
-                          <FieldDescription>
-                            Generate a lightweight MP4 video file automatically after the measurement is complete.
-                          </FieldDescription>
-                        </div>
-                        <Switch checked={field.value} onCheckedChange={field.onChange} />
-                      </Field>
-                    )}
-                  />
+              {/* Recording Settings */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Recording Format</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <FieldGroup className="grid gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <Controller
+                        control={form.control}
+                        name="recordPrefix"
+                        render={({ field, fieldState }) => (
+                          <Field data-invalid={fieldState.invalid}>
+                            <FieldLabel htmlFor="recordPrefix">Prefix</FieldLabel>
+                            <Input {...field} id="recordPrefix" />
+                            <FieldDescription className="truncate">Ex: {field.value}20260101_143000.tif</FieldDescription>
+                            {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                          </Field>
+                        )}
+                      />
+                      <Controller
+                        control={form.control}
+                        name="recordFormat"
+                        render={({ field, fieldState }) => (
+                          <Field data-invalid={fieldState.invalid}>
+                            <FieldLabel>Record Format (Raw TIFF)</FieldLabel>
+                            <Select onValueChange={field.onChange} defaultValue={field.value}>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select format" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {RecordFormats.map((fmt) => (
+                                  <SelectItem key={fmt} value={fmt}>
+                                    {fmt}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                            {field.value === "8-bit TIFF" && (
+                              <FieldDescription className="text-amber-600 dark:text-amber-500 flex items-center gap-2 mt-2 leading-tight">
+                                <TriangleAlert className="h-4 w-4 shrink-0" />
+                                <span>録画開始時にモード切替のため僅かな遅延が生じる場合があります。</span>
+                              </FieldDescription>
+                            )}
+                          </Field>
+                        )}
+                      />
+                    </div>
 
-                  {/* autoConvertMp4 が ON の時だけ、TIFFを残すかどうかの設定を表示する */}
-                  {form.watch("autoConvertMp4") && (
                     <Controller
                       control={form.control}
-                      name="keepRawTiff"
+                      name="autoConvertMp4"
                       render={({ field }) => (
-                        <Field orientation="horizontal" className="justify-between rounded-lg border p-4 bg-muted/50">
-                          <div className="space-y-0.5">
-                            <FieldLabel>Keep Raw TIFF Data</FieldLabel>
+                        <Field orientation="horizontal" className="justify-between rounded-lg border p-4 bg-card">
+                          <div className="space-y-0.5 pr-4">
+                            <FieldLabel>Auto Convert to MP4</FieldLabel>
                             <FieldDescription>
-                              If disabled, the heavy multi-page TIFF file will be deleted after MP4 conversion.
+                              Generate a lightweight MP4 video file automatically after the measurement is complete.
                             </FieldDescription>
                           </div>
                           <Switch checked={field.value} onCheckedChange={field.onChange} />
                         </Field>
                       )}
                     />
-                  )}
-                </FieldGroup>
-              </CardContent>
-            </Card>
+
+                    {form.watch("autoConvertMp4") && (
+                      <Controller
+                        control={form.control}
+                        name="keepRawTiff"
+                        render={({ field }) => (
+                          <Field orientation="horizontal" className="justify-between rounded-lg border p-4 bg-muted/30">
+                            <div className="space-y-0.5 pr-4">
+                              <FieldLabel>Keep Raw TIFF Data</FieldLabel>
+                              <FieldDescription>
+                                If disabled, the heavy multi-page TIFF file will be deleted after MP4 conversion.
+                              </FieldDescription>
+                            </div>
+                            <Switch checked={field.value} onCheckedChange={field.onChange} />
+                          </Field>
+                        )}
+                      />
+                    )}
+                  </FieldGroup>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* --- Category: Hardware Defaults --- */}
+            <div className={activeCategory === "hardware" ? "block space-y-6" : "hidden"}>
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold tracking-tight mb-1">Hardware Defaults</h3>
+                <p className="text-sm text-muted-foreground">Default parameters applied when connecting to devices.</p>
+              </div>
+
+              {/* Camera Settings */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Camera Initialization</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <FieldGroup className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Controller
+                      control={form.control}
+                      name="cameraMode"
+                      render={({ field, fieldState }) => (
+                        <Field data-invalid={fieldState.invalid}>
+                          <FieldLabel>Color Mode</FieldLabel>
+                          <Select onValueChange={field.onChange} defaultValue={field.value}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select mode" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {CameraModes.map((mode) => (
+                                <SelectItem key={mode} value={mode}>
+                                  {mode}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                        </Field>
+                      )}
+                    />
+                    {/* Placeholder for layout */}
+                    <div className="hidden sm:block"></div>
+
+                    <Controller
+                      control={form.control}
+                      name="defaultExposure"
+                      render={({ field, fieldState }) => {
+                        const exposureMin = cameraExposureRange?.min ?? DEFAULT_EXPOSURE_MIN_MS;
+                        const exposureMax = cameraExposureRange?.max ?? DEFAULT_EXPOSURE_MAX_MS;
+                        const exposureStep = cameraExposureRange?.step ?? DEFAULT_EXPOSURE_STEP_MS;
+                        return (
+                          <Field data-invalid={fieldState.invalid}>
+                            <FieldLabel htmlFor="defaultExposure">Exposure (ms)</FieldLabel>
+                            <Input type="number" step={exposureStep} min={exposureMin} max={exposureMax} {...field} id="defaultExposure" />
+                            {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                          </Field>
+                        );
+                      }}
+                    />
+                    <Controller
+                      control={form.control}
+                      name="defaultGain"
+                      render={({ field, fieldState }) => {
+                        const gainMin = cameraGainRange?.min ?? DEFAULT_GAIN_MIN;
+                        const gainMax = cameraGainRange?.max ?? DEFAULT_GAIN_MAX;
+                        return (
+                          <Field data-invalid={fieldState.invalid}>
+                            <FieldLabel htmlFor="defaultGain">Hardware Gain (×{gainMin.toFixed(2)}-×{gainMax.toFixed(2)})</FieldLabel>
+                            <Input type="number" step={0.01} min={gainMin} max={gainMax} {...field} id="defaultGain" />
+                            {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                          </Field>
+                        );
+                      }}
+                    />
+                  </FieldGroup>
+                </CardContent>
+              </Card>
+
+              {/* Stage Settings */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Stage Motion Profile</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <FieldGroup className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Controller
+                      control={form.control}
+                      name="defaultSpeedMin"
+                      render={({ field, fieldState }) => (
+                        <Field data-invalid={fieldState.invalid}>
+                          <FieldLabel htmlFor="defaultSpeedMin">Min Speed (PPS)</FieldLabel>
+                          <Input type="number" {...field} id="defaultSpeedMin" step={100} />
+                          {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                        </Field>
+                      )}
+                    />
+                    <Controller
+                      control={form.control}
+                      name="defaultSpeedMax"
+                      render={({ field, fieldState }) => (
+                        <Field data-invalid={fieldState.invalid}>
+                          <FieldLabel htmlFor="defaultSpeedMax">Max Speed (PPS)</FieldLabel>
+                          <Input type="number" {...field} id="defaultSpeedMax" step={100} />
+                          {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                        </Field>
+                      )}
+                    />
+                    <Controller
+                      control={form.control}
+                      name="defaultAccelTime"
+                      render={({ field, fieldState }) => (
+                        <Field data-invalid={fieldState.invalid} className="sm:col-span-2">
+                          <FieldLabel htmlFor="defaultAccelTime">Acceleration Time (ms)</FieldLabel>
+                          <Input type="number" {...field} id="defaultAccelTime" />
+                          <FieldDescription>Time required to reach max speed.</FieldDescription>
+                          {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                        </Field>
+                      )}
+                    />
+                  </FieldGroup>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* --- Category: Measurement (Future) --- */}
+            <div className={activeCategory === "measurement" ? "block space-y-6" : "hidden"}>
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold tracking-tight mb-1">Measurement</h3>
+                <p className="text-sm text-muted-foreground">Configure profiles and presets for automated measurements.</p>
+              </div>
+              <Card className="border-dashed bg-muted/10">
+                <CardContent className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                  <Beaker className="w-8 h-8 mb-4 opacity-50" />
+                  <p className="font-medium">Presets feature is coming soon.</p>
+                  <p className="text-sm mt-1">You will be able to manage Start/End/Step angle presets here.</p>
+                </CardContent>
+              </Card>
+            </div>
+
           </form>
         </div>
       </div>
 
       {/* Footer (Fixed) */}
       {/* 画面下部のフッター領域。保存ボタンなどを配置し、常に画面下に固定表示されます。 */}
-      <div className="p-4 border-t bg-card shrink-0 z-10">
-        <div className="max-w-5xl mx-auto flex justify-end gap-4">
+      <div className="p-4 border-t bg-card shrink-0 z-20">
+        <div className="max-w-6xl mx-auto flex justify-end gap-4">
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             onClick={() => form.reset()} // リセット処理（最後に保存された値に戻す）
           >
             <RotateCcw className="w-4 h-4 mr-2" />
