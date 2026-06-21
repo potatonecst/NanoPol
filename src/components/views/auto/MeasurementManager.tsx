@@ -31,6 +31,7 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Label } from '@/components/ui/label';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
     Popover,
     PopoverContent,
@@ -292,9 +293,17 @@ export function MeasurementManager() {
             setOperationId(runRes.operation_id); // 監視を開始
             toast.success("Pre-Scan started.");
         } catch (error: any) {
+            // ============================================================================
+            // 【例外ハンドリングとUI状態のクリーンアップ】
+            // バックエンドへのPre-Scan要求（HTTP POST）が通信エラーや例外で失敗した場合、
+            // UIが「測定中」の状態のままロック（フリーズ）されるのを防止します。
+            // 以下のフラグを即座に初期状態へ戻し、入力フォームやナビゲーションを再開放します。
+            // ============================================================================
             console.error("Pre-Scan start failed", error);
             toast.error(error.message || "Failed to start Pre-Scan");
-            setPrescanStatus("idle");
+            setIsMeasuring(false); // UIのナビゲーションロックを解除（サイドバー等のディセーブル解除）
+            setIsPrescan(false);   // Pre-Scanモードフラグをリセット
+            setPrescanStatus("idle"); // 進捗ステータスを待機状態へ
         }
     };
 
@@ -362,19 +371,46 @@ export function MeasurementManager() {
         } catch (error: any) {
             console.error("Measurement start failed", error);
             toast.error(error.message || "Failed to start measurement");
+            setIsMeasuring(false);
         }
     };
 
     /**
      * 自動測定タスクの強制中断。
+     * 
+     * 【解説】
+     * 実行中のPre-Scanまたは本番測定タスクを中断します。
+     * バックエンドに対してキャンセルAPIを呼び出すと、物理ステージが安全に減速停止し、
+     * 測定ループが中断されます。通常時は、ポーリング処理がバックエンドのキャンセル完了状態を
+     * 検知してUIロックを解除しますが、API通信エラーや初期化失敗で監視タスク（operationId）が
+     * 開始されなかった場合に備え、安全のための強制解除フォールバック処理を含んでいます。
      */
     const handleCancel = async () => {
         try {
+            // バックエンドにキャンセル要求（HTTP POST）を送信します。
+            // これにより、バックエンド側で物理ステージの停止処理（減速停止）が走り、
+            // バックグラウンドで稼働している測定ループの状態が "cancelled" に移行します。
             await autoApi.cancelAutoMeasurement();
             setProgressMessage("Cancelling operation...");
             toast.info("Cancellation signal sent.");
         } catch (error: any) {
+            // 通信障害等でキャンセルAPIの呼び出し自体が失敗した場合のエラーハンドリング。
             toast.error("Failed to cancel: " + (error.message || "Unknown error"));
+        } finally {
+            // ============================================================================
+            // 【堅牢な状態管理とエラー復帰（クリーンアップ & 強制フォールバック）】
+            // もし測定の開始時にAPIエラーが発生した等の理由で、進捗ポーリングのキーとなる
+            // `operationId` が null（未割り当て）のままUIだけが「測定中」としてロックしてしまった場合、
+            // ユーザーがCancelボタンを押すことで、フロントエンド側のロックを強制解除します。
+            // これにより、通信トラブル時にもUIがフリーズしたままにならず、安全に入力画面へ戻れます。
+            // ============================================================================
+            if (!operationId) {
+                setIsMeasuring(false); // フロントエンドの画面遷移ロックを解除
+                setIsPrescan(false);   // Pre-Scanモードフラグをリセット
+                if (prescanStatus === "running") {
+                    setPrescanStatus("idle"); // Pre-Scanの実行ステータスを解除
+                }
+            }
         }
     };
 
@@ -636,21 +672,18 @@ export function MeasurementManager() {
                                     <div className="space-y-3">
                                         <div className="flex items-center justify-between">
                                             <Label className="text-[9px] uppercase text-muted-foreground">Jog Step</Label>
-                                            {/* ステップ量の選択肢 (0.1, 1, 5) */}
-                                            <div className="flex bg-muted rounded-md p-0.5">
+                                            <Tabs value={String(jogStep)} onValueChange={(v) => setJogStep(parseFloat(v))} className="h-7">
+                                                <TabsList className="h-7 p-0.5">
                                                 {[0.1, 1, 5].map((s) => (
-                                                    <button
-                                                        key={s}
-                                                        onClick={() => setJogStep(s)}
-                                                        className={`px-2 py-0.5 text-[9px] font-bold rounded-sm transition-all ${jogStep === s
-                                                                ? 'bg-background text-primary shadow-sm'
-                                                                : 'text-muted-foreground hover:text-foreground'
-                                                            }`}
+                                                     <TabsTrigger
+                                                         key={s} value={String(s)}
+                                                         className="text-[9px] h-6 px-2"
                                                     >
                                                         {s}°
-                                                    </button>
+                                                     </TabsTrigger>
                                                 ))}
-                                            </div>
+                                                </TabsList>
+                                            </Tabs>
                                         </div>
                                         {/* ジョグボタン群: [マイナス] [Home] [プラス] */}
                                         <div className="flex gap-2">

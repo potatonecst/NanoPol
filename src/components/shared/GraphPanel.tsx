@@ -120,8 +120,12 @@ export function GraphPanel() {
                     </Badge>
                 </div>
 
+                {/* UI構造: 散乱光強度の描画モード切り替え部。
+                    「Sum（総輝度和）」「Max（最大輝度）」「Center（輝度重心）」「Drift（重心ドリフト）」を選択し、
+                    対応するプロファイルグラフにリアルタイムで切り替えます。
+                    TabsListの不要な境界線（border）や背景色を排除し、ヘッダーにスッキリ馴染むシンプルなデザインに調整しています。 */}
                 <Tabs value={mode} onValueChange={(v) => setMode(v as DisplayMode)} className="h-7">
-                    <TabsList className="h-7 p-0.5 bg-background/50 border">
+                    <TabsList className="h-7 p-0.5">
                         <TabsTrigger value="sum" className="text-[9px] h-6 px-2.5">Sum</TabsTrigger>
                         <TabsTrigger value="max" className="text-[9px] h-6 px-2.5">Max</TabsTrigger>
                         <TabsTrigger value="center" className="text-[9px] h-6 px-2.5">Center</TabsTrigger>

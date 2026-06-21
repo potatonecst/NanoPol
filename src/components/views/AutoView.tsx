@@ -31,7 +31,7 @@ export function AutoView() {
             <div className="w-full md:w-80 border-r bg-card flex flex-col h-full z-10 overflow-hidden">
                 <div className="p-8 pb-5 shrink-0">
                     <h2 className="text-2xl font-bold tracking-tight">Auto Measurement</h2>
-                    <p className="text-sm text-muted-foreground mt-2">Guided measurement workflow.</p>
+                    <p className="text-xs text-muted-foreground mt-2">Guided measurement workflow.</p>
                 </div>
 
                 {/* フェーズごとのコンテンツ表示 */}

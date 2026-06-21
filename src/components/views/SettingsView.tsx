@@ -48,8 +48,7 @@ import {
   Save,
   RotateCcw,
   TriangleAlert,
-  Settings as SettingsIcon,
-  Beaker,
+  Activity,
 } from "lucide-react";
 import { Switch } from "../ui/switch";
 import { toast } from "sonner";
@@ -358,17 +357,15 @@ export const SettingsView: React.FC = () => {
               className={`justify-start shrink-0 ${activeCategory === "file" ? "font-semibold" : ""}`}
               onClick={() => setActiveCategory("file")} // クリックで file カテゴリをアクティブに
             >
-              <FolderOpen className="w-4 h-4 mr-2" />
               File & Storage
             </Button>
-            {/* Button (Hardware Defaults): 機器の初期設定カテゴリ */}
+            {/* Button (Hardware): 機器の設定カテゴリ */}
             <Button
               variant={activeCategory === "hardware" ? "secondary" : "ghost"}
               className={`justify-start shrink-0 ${activeCategory === "hardware" ? "font-semibold" : ""}`}
               onClick={() => setActiveCategory("hardware")} // クリックで hardware カテゴリをアクティブに
             >
-              <SettingsIcon className="w-4 h-4 mr-2" />
-              Hardware Defaults
+              Hardware
             </Button>
             {/* Button (Measurement): 自動測定のプリセット（将来機能）カテゴリ */}
             <Button
@@ -376,7 +373,6 @@ export const SettingsView: React.FC = () => {
               className={`justify-start shrink-0 ${activeCategory === "measurement" ? "font-semibold" : ""}`}
               onClick={() => setActiveCategory("measurement")} // クリックで measurement カテゴリをアクティブに
             >
-              <Beaker className="w-4 h-4 mr-2" />
               Measurement
             </Button>
           </nav>
@@ -572,11 +568,11 @@ export const SettingsView: React.FC = () => {
               </Card>
             </div>
 
-            {/* --- Category: Hardware Defaults --- */}
+            {/* --- Category: Hardware --- */}
             <div className={activeCategory === "hardware" ? "block space-y-6" : "hidden"}>
               <div className="mb-6">
-                <h3 className="text-lg font-semibold tracking-tight mb-1">Hardware Defaults</h3>
-                <p className="text-sm text-muted-foreground">Default parameters applied when connecting to devices.</p>
+                <h3 className="text-lg font-semibold tracking-tight mb-1">Hardware</h3>
+                <p className="text-sm text-muted-foreground">Configure hardware parameters and connection settings.</p>
               </div>
 
               {/* Camera Settings */}
@@ -700,7 +696,7 @@ export const SettingsView: React.FC = () => {
               </div>
               <Card className="border-dashed bg-muted/10">
                 <CardContent className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                  <Beaker className="w-8 h-8 mb-4 opacity-50" />
+                  <Activity className="w-8 h-8 mb-4 opacity-50" />
                   <p className="font-medium">Presets feature is coming soon.</p>
                   <p className="text-sm mt-1">You will be able to manage Start/End/Step angle presets here.</p>
                 </CardContent>
