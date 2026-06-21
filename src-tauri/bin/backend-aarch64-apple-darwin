@@ -1,3 +1,4 @@
 #!/bin/bash
 echo "[Mock] Dummy sidecar running..."
-sleep infinity
+# macOS (BSD) では infinity は非対応のため、非常に大きな数値で代用します
+sleep 999999999

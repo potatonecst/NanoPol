@@ -62,7 +62,7 @@
           * **実装済み:** リフレッシュボタン、または画面マウント時に `/system/cameras` を叩き、ハードウェアから取得した正確なカメラID・モデル名リストをドロップダウンに表示・更新する。
       * **Action:** `[Connect]` / `[Disconnect]`. 処理中のスピナー表示を追加。
   * **Troubleshooting:**
-      * `[Force Reset All Connections]`: システム全体の接続状態を強制リセットし、UIロックを解除する緊急ボタン。
+      * `[Force Reset All Connections]`: システム全体のフリーズや通信デッドロックを回復するための緊急ボタン。通常のHTTP APIが不通の場合でも、TauriのIPC（Rust）を通じてバックエンドのPythonプロセスをOSレベルで強制終了（Kill）し、初回起動時のポート番号を維持したまま再起動（Respawn）することで、掴みっぱなしになっていたCOMポートやカメラなどの物理デバイスハンドルを確実に解放する仕様。
   * **Code Quality:**
       * `RefreshButton` などの内部コンポーネントはファイル外または別ファイルに切り出し、不要な再レンダリングを防止する。
 

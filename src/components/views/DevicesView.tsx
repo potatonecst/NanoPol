@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store/useAppStore";
 import { stageApi, cameraApi, systemApi } from "@/api/client";
+import { invoke } from "@tauri-apps/api/core"; // Tauri IPC コマンド呼び出し用の関数
 
 import { Button } from "../ui/button";
 import {
@@ -268,22 +269,41 @@ export function DevicesView() {
      * 1. バックエンドに対し、全デバイスのシリアルポートやカメラハンドルの強制クローズ（解放）を要求します。
      * 2. フロントエンド（Zustandストア）の接続フラグを全て「未接続」状態にリセットします。
      */
+    /**
+     * 【緊急用】システム全体強制リセット処理
+     * 
+     * 【設計意図】
+     * 機器のフリーズや通信のデッドロックなどで通常のHTTP APIが反応しない場合に備え、
+     * TauriのIPC経由でRustコアに直接「Pythonプロセスの強制再起動（Kill & Respawn）」を要求します。
+     * プロセスをOSレベルで再生成することで、以前のゾンビ接続が握り潰していたCOMポートやカメラリソースを確実に解放します。
+     */
     const executeForceReset = async () => {
         console.log("Executing Force Reset...");
         systemApi.postLogs("WARNING", "User initiated Force Reset sequence").catch((e) => console.debug("※ログ送信も失敗しました:", e));
 
         try {
-            await systemApi.reset();
-            toast.success("System reset command sent.");
-            systemApi.postLogs("INFO", "Force system reset command executed by backend successfully").catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            // HTTP API経由ではなく、TauriのIPC（Rust）を直接叩き、バックエンドのPythonプロセスを強制終了＆再起動させます。
+            // これにより、通信デッドロック時にも確実にOSレベルでプロセスがリセットされます。
+            await invoke("force_restart_backend");
+            toast.success("Backend process restarted by OS.");
+            systemApi.postLogs("INFO", "Force backend process restart executed successfully via Rust core").catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (error) {
-            console.error(error);
-            toast.warning("Backend reset failed, but resetting UI anyway.");
-            systemApi.postLogs("ERROR", `Backend force reset failed (API error): ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            console.error("Force reset failed:", error);
+            toast.error("Failed to restart backend process.");
+            systemApi.postLogs("ERROR", `Force reset failed via Tauri: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
+            // フロントエンド（Zustandストア）の接続フラグを「未接続」状態にリセット
             resetAllConnections();
-            toast.info("All connections reset.");
-            systemApi.postLogs("INFO", "All frontend connection states have been reset").catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            toast.info("Frontend connection states reset.");
+            
+            // バックエンドプロセスが再起動し、FastAPIのWebサーバーがポートを再確保して
+            // リクエストの受付を開始するまでに約1.5〜2秒のオーバーヘッドがあるため、
+            // 2秒待ってからCOMポートおよびカメラ一覧の再スキャンを実行します。
+            setTimeout(async () => {
+                await fetchPorts();
+                await fetchCameras();
+                toast.info("Available ports and cameras refreshed.");
+            }, 2000);
         }
     }
 
@@ -464,8 +484,8 @@ export function DevicesView() {
                             <AlertDialogHeader>
                                 <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
                                 <AlertDialogDescription>
-                                    This will forcefully disconnected all devices and reset the system states.
-                                    Any ongoing measurements will be stopped.
+                                    This will forcefully terminate (kill) the backend control process and restart it via Rust core to release all hardware handles.
+                                    Any ongoing measurements will be stopped, and all connection states will be reset.
                                 </AlertDialogDescription>
                             </AlertDialogHeader>
                             <AlertDialogFooter>
@@ -479,7 +499,7 @@ export function DevicesView() {
                     </AlertDialog>
 
                     <p className="text-xs text-muted-foreground mt-2">
-                        Use this if devices are stuck or not responding. It will forcefully close all handles.
+                        Use this if devices are stuck or not responding. It will forcefully restart the backend process to free locked COM ports or camera handles. (Note: If running the backend manually in a terminal, you will need to restart it manually after reset.)
                     </p>
                 </div>
             </div>

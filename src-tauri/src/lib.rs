@@ -56,12 +56,59 @@ fn append_shutdown_note(app_handle: &tauri::AppHandle, message: &str) {
     }
 }
 
+/// バックエンドが使用しているポート番号を、安全かつ複数のフォールバック経路を用いて解決します。
+///
+/// 【設計背景】
+/// フロントエンドとの接続を維持するため、以下の優先順位でポート特定を試みます。
+/// 1. 共有メモリ（`BackendPort`）にすでに検知済みのポートが存在すればそれを使用。
+/// 2. 未検知の場合、アプリデータ保存先（AppData）直下の `backend_port.json` からJSONを読み取って解析。
+/// 3. それも存在しない場合、開発環境のデフォルトポートである `14201` をフォールバックとして使用。
+/// 決定したポート番号は、次回の再利用のために共有メモリ（`BackendPort`）に書き込んで同期させます。
+fn resolve_backend_port(app_handle: &tauri::AppHandle) -> u16 {
+    // 共有ポート情報を保持するグローバルステート（BackendPort）を取得します。
+    let state = app_handle.state::<BackendPort>();
+    
+    // Mutexロックを取得してスレッド間での同時書き込み/読み込みによる競合を防ぎます。
+    // unwrap() は、万が一他スレッドでパニックが起きてロックが汚染（Poisoned）されていた場合に
+    // プロセスを安全に終了させるRustの標準的な例外処理です。
+    let mut guard = state.0.lock().unwrap();
+    
+    // すでに共有メモリにポートが格納されている（Some(port)）なら、その値をそのまま返します。
+    if let Some(p) = *guard {
+        p
+    } else {
+        let mut fallback_port = None;
+        
+        // 共有メモリにない場合、AppData ディレクトリ（例: WindowsのAppData/Local/nanopolなど）を特定します。
+        if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
+            let hint_path = app_data_dir.join("backend_port.json");
+            
+            // `backend_port.json` ファイルが存在するか確認します。
+            if hint_path.exists() {
+                // ファイルの内容を文字列として一括で読み込みます（UTF-8エンコード前提）。
+                if let Ok(content) = std::fs::read_to_string(&hint_path) {
+                    // 外部パッケージ `serde_json` を使用して文字列を汎用JSONオブジェクト（Value型）にパースします。
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+                        // JSON内の "port" キーを取り出し、整数値（u64）に変換可能であれば u16 にキャストして取得します。
+                        if let Some(p) = parsed.get("port").and_then(|v| v.as_u64()) {
+                            fallback_port = Some(p as u16);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 特定できたポート、あるいは最終手段のデフォルトポート `14201` を解決値とします。
+        let resolved_port = fallback_port.unwrap_or(14201);
+        
+        // 次回の呼び出しでパース処理をスキップするため、確定したポートを共有メモリにキャッシュ（上書き保存）します。
+        *guard = Some(resolved_port);
+        resolved_port
+    }
+}
+
 fn request_backend_shutdown(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let port = {
-        let state = app_handle.state::<BackendPort>();
-        let guard = state.0.lock().unwrap();
-        guard.ok_or_else(|| "backend port is not available yet".to_string())?
-    };
+    let port = resolve_backend_port(app_handle);
 
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500))
@@ -291,7 +338,73 @@ pub fn run() {
                 _ => {}
             }
         })
-        .invoke_handler(tauri::generate_handler![greet, get_backend_port])
+        .invoke_handler(tauri::generate_handler![greet, get_backend_port, force_restart_backend])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// バックエンド（Python sidecar）プロセスをOSレベルで強制再起動するTauriコマンドです。
+///
+/// 【解説】
+/// 通信障害やバックエンドのフリーズなどで操作が不可能になった際、
+/// 既存の安定した終了処理（stop_backend_sidecar）を用いて現在のプロセスを安全かつ確実に終了し、
+/// 初回起動時に決定したポート番号を維持したまま、同じ設定でバックエンドプロセスを再起動（OSレベルで再生成）します。
+/// 再起動された子プロセスは再び `BackendChildState` に格納されるため、アプリ終了時の自動クリーンアップ（Kill）も継続して保証されます。
+#[tauri::command]
+async fn force_restart_backend(app_handle: tauri::AppHandle) -> Result<(), String> {
+    println!("[SYSTEM] force_restart_backend command received.");
+
+    // 1. 既存の安定した終了シーケンス（シャットダウン要求＆Kill）をそのまま呼び出してプロセスを安全に消去
+    stop_backend_sidecar(&app_handle);
+
+    // 2. OSがポート等のシステムリソースを完全に解放するまで少し待機（500ms）
+    std::thread::sleep(Duration::from_millis(500));
+
+    // 3. 現在設定されているポート番号を共有状態（またはヒントファイル/デフォルト値）から解決
+    let port = resolve_backend_port(&app_handle);
+
+    // 4. 初回起動時と全く同じアプリデータディレクトリのパスを取得
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {e}"))?;
+
+    // 5. 初回起動時と同一のSidecarコマンドを組み立て、ポートのみ環境変数で固定指定して起動（spawn）
+    let sidecar_command = app_handle
+        .shell()
+        .sidecar("backend")
+        .map_err(|e| format!("Failed to create sidecar command: {e}"))?
+        .env("NANOPOL_APP_DATA_DIR", app_data_dir.to_string_lossy().to_string())
+        .env("PYTHONUNBUFFERED", "1")
+        .env("NANOPOL_BACKEND_PORT", port.to_string()); // ポートを初回と同じ値に固定
+
+    println!("[SYSTEM] Spawning new backend sidecar on port {port}...");
+    let (mut rx, child) = sidecar_command
+        .spawn()
+        .map_err(|e| format!("Failed to spawn backend sidecar: {e}"))?;
+
+    // 6. 新しい子プロセスハンドルを共有状態（BackendChildState）に格納
+    // これにより、再起動後にウィンドウを閉じても、この新しいプロセスが正しく自動Killされます。
+    {
+        let child_state = app_handle.state::<BackendChildState>();
+        let mut guard = child_state.0.lock().unwrap();
+        *guard = Some(child);
+    }
+
+    // 7. 再起動後の標準出力・標準エラーログを監視する非同期タスクを立ち上げる
+    // （ポートはすでに BackendPort に格納済みのため、単純にログを標準出力に流す監視を行います）
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
+                    let log_line = String::from_utf8_lossy(&line);
+                    println!("[Backend (Restarted)] {}", log_line);
+                }
+                _ => {}
+            }
+        }
+    });
+
+    println!("[SYSTEM] Backend successfully restarted on port {port}");
+    Ok(())
 }

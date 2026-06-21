@@ -2448,12 +2448,21 @@ if __name__ == "__main__":
     is_tauri = os.getenv("NANOPOL_APP_DATA_DIR") is not None
 
     if is_tauri:
-        # 1) OSに空きポートを確保させ、そのポート番号を Tauri(Rust) 側に通知する
-        #    -> Rust 側がこのポートへ接続してバックエンドを利用できるようにする
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("127.0.0.1", 0))  # port=0 で OS に任せる
-        port = sock.getsockname()[1]
-        sock.close()
+        # ------------------------------------------------------------------
+        # Tauri(Rust)側から特定のポートが指定されている（NANOPOL_BACKEND_PORT）場合は
+        # それを優先して使用します（再起動時に同じポートを維持するため）。
+        # 指定がない場合は、OSに空きポートを動的に確保させます。
+        # ------------------------------------------------------------------
+        env_port = os.getenv("NANOPOL_BACKEND_PORT")
+        if env_port and env_port.strip().isdigit():
+            port = int(env_port.strip())
+        else:
+            # 1) OSに空きポートを確保させ、そのポート番号を Tauri(Rust) 側に通知する
+            #    -> Rust 側がこのポートへ接続してバックエンドを利用できるようにする
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(("127.0.0.1", 0))  # port=0 で OS に任せる
+            port = sock.getsockname()[1]
+            sock.close()
 
         # 2) Tauri に渡すための標準出力/標準エラーへポート番号を出力
         #    flush=True により出力の遅延を避ける
