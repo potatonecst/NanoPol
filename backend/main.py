@@ -1992,6 +1992,34 @@ async def set_camera_rois(req: ROISetRequest):
         logger.exception("Failed to set ROIs")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/camera/rois")
+async def get_camera_rois():
+    """
+    【現在設定されている解析対象の ROI リストの取得】
+    
+    【目的・役割】
+    フロントエンド（UI画面）とバックエンド（画像処理エンジン）との間で、ROI（関心領域）の設定を同期するためのGETエンドポイントです。
+    特に、Pre-Scan（プレスキャン）などの画像解析によって、バックエンド側でROIの重心位置が自動で再計算された後、
+    フロントエンドが最新の重心座標をプル（取得）して画面上の枠線位置をアップデートするために使用されます。
+
+    【戻り値の仕様】
+    - リスト型 (JSON配列): 各要素は以下のキーを持つ辞書（オブジェクト）です。
+        - "index": ROIの識別番号（1から始まる整数値）。
+        - "x", "y": 画像全体の絶対ピクセル座標における、ROIの中心位置（浮動小数点数）。
+        - "size": ROIの一辺の長さ（整数値、奇数ピクセル）。
+        - "optical_centroid_x", "optical_centroid_y" (任意): サブピクセル精度の重心計算値。
+
+    【エラーハンドリング】
+    - エラー発生時はエラーログを出力し、HTTP 500 (Internal Server Error) をクライアントに返します。
+    """
+    try:
+        # camera.rois には [ {"index": 1, "x": 500.0, "y": 300.0, "size": 33}, ... ] という形式でリストが保持されています。
+        # FastAPI は Python の辞書リストを自動で JSON 配列形式にシリアライズしてクライアントに返送します。
+        return camera.rois
+    except Exception as e:
+        logger.exception("[CAMERA API] Failed to retrieve ROI configurations from camera controller")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/camera/roi_stats")
 async def get_camera_roi_stats():
     """最新の ROI 解析統計（Sum, Max, Centroid）を取得します"""

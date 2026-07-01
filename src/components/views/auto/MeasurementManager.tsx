@@ -62,7 +62,8 @@ export function MeasurementManager() {
         setAutoPhase,       // フェーズ切り替え用アクション
         currentAngle,       // ステージの現在角度（ポーリングで更新される）
         setPlotData,        // グラフデータを更新するアクション
-        clearPlotData       // グラフデータをクリアするアクション
+        clearPlotData,      // グラフデータをクリアするアクション
+        fetchRois           // 最新のROIリストをバックエンドから取得するアクション
     } = useAppStore(useShallow((state) => ({
         isMeasuring: state.isMeasuring,
         setIsMeasuring: state.setIsMeasuring,
@@ -73,7 +74,8 @@ export function MeasurementManager() {
         setAutoPhase: state.setAutoPhase,
         currentAngle: state.currentAngle,
         setPlotData: state.setPlotData,
-        clearPlotData: state.clearPlotData
+        clearPlotData: state.clearPlotData,
+        fetchRois: state.fetchRois
     })));
 
     // --- ステージ操作ロジックの取得 (Custom Hook) ---
@@ -176,6 +178,20 @@ export function MeasurementManager() {
 
                     if (res.status === "succeeded") {
                         if (prescanStatus === "running") {
+                            // ============================================================================
+                            // 【Pre-Scan（アライメント）成功時の自動ROI同期と画面更新】
+                            // Pre-Scan が正常に完了すると、バックエンド側で光の重心を元にした新しいROI座標が算出され、
+                            // カメラコントローラ内のROIデータが自律的に更新されます。
+                            //
+                            // フロントエンド側の画面に表示されている枠線（SVG）や座標テーブルを、
+                            // その新しく計算された重心に自動で追従（吸着）させるため、
+                            // ここで `fetchRois()` 非同期アクションを呼び出してストア内のデータを更新します。
+                            // 
+                            // 呼び出し後に `rois` ステートが変更されると、Reactのリアクティブな仕組みにより
+                            // `CameraPanel.tsx` コンポーネントが自動で検知して再描画を行い、
+                            // 画面上の四角い枠線が新しい重心位置にスッと移動します。
+                            // ============================================================================
+                            await fetchRois();
                             toast.success("Pre-Scan completed successfully.");
                             setPrescanStatus("success");
                         } else {
@@ -208,7 +224,7 @@ export function MeasurementManager() {
         }, 500); // 0.5秒ごとに確認
 
         return () => clearInterval(intervalId);
-    }, [operationId, prescanStatus]);
+    }, [operationId, prescanStatus, fetchRois]);
 
     // ============================================================================
     // グラフデータの定期取得 (Plot Data Polling)

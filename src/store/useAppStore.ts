@@ -97,6 +97,7 @@ interface AppState {
     updateROI: (id: string, updates: Partial<ROIData>) => void; // ROIを更新
     removeROI: (id: string) => void; // ROIを削除
     clearROIs: () => void; // 全てのROIをクリア
+    fetchRois: () => Promise<void>; // バックエンドから最新のROIを取得してUIに同期
 
     // --- 自動測定 (Auto Mode) 専用の状態 ---
     autoPhase: AutoMeasurementPhase;
@@ -271,6 +272,46 @@ export const useAppStore = create<AppState>((set) => ({
         syncRoisToBackend([]);
         return { rois: [] };
     }),
+    fetchRois: async () => {
+        try {
+            // バックエンドから最新のROIリスト（重心等に更新されたもの）を非同期で取得します
+            const backendRois = await cameraApi.getRois();
+            set((state) => {
+                // UI表示に重要なUUID（id）や描画カラー（color）を壊さないよう、既存のROI情報を維持しながら座標とサイズだけをマッピング更新します
+                const updatedRois = backendRois.map((b) => {
+                    const existing = state.rois.find((r) => r.index === b.index);
+                    
+                    if (existing) {
+                        return {
+                            ...existing,
+                            x: b.x,
+                            y: b.y,
+                            size: b.size
+                        };
+                    } else {
+                        // 万が一バックエンドに新規ROIが存在した場合の、フロントエンド側の自動ID/カラー割当（フォールバック）
+                        const id = (typeof crypto !== 'undefined' && (crypto as any).randomUUID) 
+                            ? (crypto as any).randomUUID() 
+                            : Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
+                        
+                        const color = ROI_COLORS[(b.index - 1) % ROI_COLORS.length];
+                        return {
+                            id,
+                            index: b.index,
+                            x: b.x,
+                            y: b.y,
+                            size: b.size,
+                            color
+                        };
+                    }
+                }).sort((a, b) => a.index - b.index); // ROIテーブルや描画の表示順序を一定にするためインデックスでソートします
+
+                return { rois: updatedRois };
+            });
+        } catch (err) {
+            console.error("Failed to fetch ROIs from backend:", err);
+        }
+    },
 
     // --- 自動測定 (Auto Mode) 専用の状態 ---
     autoPhase: 'select_session',

@@ -18,7 +18,8 @@ import {
     DEFAULT_EXPOSURE_STEP_MS,
     DEFAULT_GAIN_MIN,
     DEFAULT_GAIN_MAX,
-    MIN_ROI_SIZE
+    MIN_ROI_SIZE,
+    PIXEL_CENTER_OFFSET
 } from "@/constants/constants";
 
 interface CameraPanelProps {
@@ -235,9 +236,14 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         const fx = relativeX / zoomLevel;
         const fy = relativeY / zoomLevel;
 
-        // 3. 表示スケール (fitSize / cameraResolution) で割ることで、生ピクセル座標に変換
-        const rx = fx / imageScale;
-        const ry = fy / imageScale;
+        // 3. 表示スケール (fitSize / cameraResolution) で割ることで、生ピクセル座標に変換します。
+        //    【重要: 0.5ピクセル座標系齟齬の補正（入力）】
+        //    画面（UI）のコンテナ座標系は「画像の左端エッジ」を 0.0 とするのに対し、
+        //    バックエンド（画像処理エンジン）の座標系は「最初のピクセルの中心」を 0.0 と定義します（左端エッジが -0.5）。
+        //    この両者の原点のズレ（0.5ピクセル分）を埋めるため、
+        //    得られた生のピクセル座標から定数 `PIXEL_CENTER_OFFSET` (0.5ピクセル) を減算し、バックエンドの座標系へ完全同期させます。
+        const rx = (fx / imageScale) - PIXEL_CENTER_OFFSET;
+        const ry = (fy / imageScale) - PIXEL_CENTER_OFFSET;
 
         return { x: rx, y: ry };
     }, [zoomLevel, imageScale, fitSize]);
@@ -330,6 +336,19 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
 
     // ドラッグ終了（マウスアップ）
     const handleMouseUp = () => {
+        if (draggingRoiId) {
+            const roi = rois.find(r => r.id === draggingRoiId);
+            if (roi) {
+                // 【重要: 整合性の確保】
+                // ドラッグ終了時に、小数のピクセル座標（サブピクセル）を最も近い整数ピクセルに丸めます。
+                // これにより、バックエンド（実際に切り出すピクセル）とフロントエンド（SVGの描画枠線）の
+                // 座標がピッタリと整合し、描画上および画像処理上の境界の不整合が発生するのを防ぎます。
+                updateROI(draggingRoiId, {
+                    x: Math.round(roi.x),
+                    y: Math.round(roi.y),
+                });
+            }
+        }
         isDragging.current = false;
         setDraggingRoiId(null);
         setResizingRoiId(null);
@@ -581,10 +600,13 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                             {/* ズームされた画像の左上位置までオフセットを戻す */}
                             <g style={{ transform: `translate(${-((fitSize?.width || 0) * zoomLevel) / 2}px, ${-((fitSize?.height || 0) * zoomLevel) / 2}px)` }}>
                                 {rois.map((roi) => {
-                                    // カメラの生ピクセル座標から、現在のズーム画面上の位置(px)を正確に計算
-                                    // これにより「何倍に拡大しても」ピクセルパーフェクトな位置にROIを描画できます。
-                                    const sx = roi.x * imageScale * zoomLevel;
-                                    const sy = roi.y * imageScale * zoomLevel;
+                                    // 【重要: 0.5ピクセル座標系齟齬の補正（出力・描画）】
+                                    // ストア内の座標（roi.x, roi.y）は、バックエンド基準の「ピクセル中心を整数（0.0, 1.0...）」とする座標系です。
+                                    // これを画面（SVG）に描画する際は、「画像の左端エッジ」を 0.0 とする表示座標系に変換する必要があります。
+                                    // そのため、座標値に `PIXEL_CENTER_OFFSET` (0.5ピクセル) を加算したうえで、表示倍率（ズームおよび画面縮小スケール）を掛け算します。
+                                    // これにより、例えば roi.x = 0 (1番目のピクセルの中心) の時、画面上の最初のピクセルの「中心」にピッタリと枠線が描画されます。
+                                    const sx = (roi.x + PIXEL_CENTER_OFFSET) * imageScale * zoomLevel;
+                                    const sy = (roi.y + PIXEL_CENTER_OFFSET) * imageScale * zoomLevel;
                                     const ss = roi.size * imageScale * zoomLevel;
 
                                     return (

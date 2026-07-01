@@ -245,6 +245,19 @@ export const cameraApi = {
             body: JSON.stringify({ rois })
         }),
 
+    /**
+     * 【現在設定されているROIリストの取得】
+     * 
+     * 【解説】
+     * バックエンドの FastAPI サーバーから、現在カメラコントローラに適用されているすべての ROI のインデックス、座標、サイズを配列で取得します。
+     * Pre-Scan が完了した際、バックエンドで再計算された「重心」をフロントエンドの画面表示に同期させるために呼び出されます。
+     * 
+     * @returns {Promise<Array<{ index: number, x: number, y: number, size: number }>>}
+     * 各ROIのインデックス、中心座標(x,y)、サイズを含むオブジェクトの配列を返すPromiseオブジェクト。
+     */
+    getRois: () =>
+        request<Array<{ index: number, x: number, y: number, size: number }>>("/camera/rois"),
+
     // 最新フレームのROI統計情報（Sum, Max, Centroid）をバックエンドから取得します
     getRoiStats: () =>
         request<Record<string, { sum: number, max: number, cx: number, cy: number }>>("/camera/roi_stats"),
