@@ -58,6 +58,7 @@ export function DevicesView() {
         isCameraConnected, setIsCameraConnected,
         setCameraGainRange,
         setCameraExposureRange,
+        setCameraResolution,
         isRecording,
         resetAllConnections,
         isBackendConnected,
@@ -80,6 +81,7 @@ export function DevicesView() {
             resetAllConnections: state.resetAllConnections,
             setCameraGainRange: state.setCameraGainRange,
             setCameraExposureRange: state.setCameraExposureRange,
+            setCameraResolution: state.setCameraResolution,
             isBackendConnected: state.isBackendConnected,
         }))
     );
@@ -230,6 +232,22 @@ export function DevicesView() {
 
             //成功したら接続状態にする
             setIsCameraConnected(true);
+
+            // ============================================================================
+            // 【重要：物理解像度の動的同期】
+            // カメラから実際に取得される映像の物理寸法（width, height）をストアに反映させます。
+            // これにより、フロントエンド側でカメラ画像アスペクト比に基づいた描画フィット領域（fitSize）が
+            // 正しく再計算され、SVGでのROI枠線描画と実際のピクセル位置が1ナノピクセルもズレないようにします。
+            // ============================================================================
+            if ((res as any).resolution) {
+                try {
+                    const { width, height } = (res as any).resolution;
+                    setCameraResolution(Number(width), Number(height));
+                    console.log(`Camera resolution synchronized: ${width}x${height}`);
+                } catch (e) {
+                    console.debug("Failed to parse resolution from connect response", e);
+                }
+            }
             // 接続レスポンスにデバイス側ゲイン範囲があればストアに保存
             if ((res as any).gain_range) {
                 try {

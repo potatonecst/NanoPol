@@ -559,15 +559,28 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                     */}
                     <div
                         ref={imageContainerRef}
-                        className="relative bg-black shadow-2xl border border-zinc-700 will-change-transform"
+                        className="relative bg-black shadow-2xl"
                         style={{
                             width: fitSize?.width,
                             height: fitSize?.height,
                             transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
+                            // 【重要：枠線干渉の排除】
+                            // border(1px)の代わりにoutlineを使用することで、枠線がボックスモデルの幅・高さに影響を与えるのを防ぎ、
+                            // 高倍率ズーム時でも画像とSVGの描画位置が1ピクセルもズレないようにします。
+                            // ※以前指定されていた `will-change-transform` はブラウザに低解像度テクスチャを固定化（キャッシュ）させ、
+                            // ズーム時にぼやける原因になるため削除しました。
+                            outline: "1px solid rgb(63, 63, 70)",
+                            outlineOffset: "-1px",
                         }}
                     >
                         {/* Camera Image: 接続時はMJPEGストリームを表示、未接続時はプレースホルダー */}
-                        {isCameraConnected ? (
+                        {/* 
+                            【重要：最初期フレームのぼやけ防止】
+                            コンテナサイズ（containerSize）が完全に決定し、レイアウトが確定してから <img> をマウントします。
+                            これにより、サイズ 0 の初期描画状態で画像がロードされて、ブラウザがぼやけたテクスチャを
+                            固定化して使い回す問題を防ぎ、最初からシャープなピクセルで表示されます。
+                        */}
+                        {isCameraConnected && containerSize.width > 0 && containerSize.height > 0 ? (
                             <img
                                 src={videoFeedUrl}
                                 alt="Camera Stream"

@@ -1941,7 +1941,15 @@ def connect_camera(req: CameraConnectRequest):
     except Exception as e:
         logger.debug(f"[CAMERA] Failed to read gain range: {e}")
 
-    resp = {"status": "success", "mode": mode, "message": f"Connected to Camera {req.camera_id} ({mode})"}
+    # フロントエンド側の画面レイアウト（画像フィットサイズ・比率）およびSVGでのROI描画位置の
+    # 座標計算が実際のカメラ映像と完全に一致するように、接続されたカメラの物理解像度（width, height）を
+    # レスポンスに含めて返却します。これによりフロントエンドは解像度を動的に同期できます。
+    resp = {
+        "status": "success",
+        "mode": mode,
+        "message": f"Connected to Camera {req.camera_id} ({mode})",
+        "resolution": {"width": camera.width, "height": camera.height}
+    }
     if gain_range is not None:
         resp["gain_range"] = gain_range
     # exposure_range も同様に、接続時だけ取得してフロントへ渡します。

@@ -133,7 +133,18 @@ pnpm tauri dev
 ビルドプロセスの最終的な成果物は、OS標準のインストーラー（Windowsなら `.msi`、macOSなら `.dmg` や `.app`）です。
 ユーザーはこれをダブルクリックするだけで、フロントエンドとバックエンドが一体となったアプリケーションを簡単にインストールできます。この複雑な内部構造はユーザーからは完全に見えません。
 
-### 5.4 検証ビルド運用 (QA / 解析用)
+### 5.4 バージョン管理の一元化 (Centralized Versioning)
+
+本プロジェクトにおけるアプリケーションのバージョン管理は、不整合を防ぐため **[package.json](file:///Users/neirotakada/Programming_Deliverables/研究用/nanopol/package.json) の1箇所で一元管理**されています。
+
+*   **Tauri設定との同期:**
+    *   [src-tauri/tauri.conf.json](file:///Users/neirotakada/Programming_Deliverables/研究用/nanopol/src-tauri/tauri.conf.json) の `"version"` キーには `"../package.json"` が設定されており、Tauriビルドおよびインストーラー生成時に自動的に `package.json` のバージョン情報が読み込まれます。
+*   **Rust (Cargo.toml) との同期:**
+    *   [src-tauri/Cargo.toml](file:///Users/neirotakada/Programming_Deliverables/研究用/nanopol/src-tauri/Cargo.toml) 内の `version` は、GitHub Actions（Tauri公式アクション）のビルド処理時に `package.json` のバージョン情報で動的に自動上書きされるため、手動で同期させる必要はありません。
+*   **バージョン更新手順:**
+    *   次回のバージョンアップ時には、[package.json](file:///Users/neirotakada/Programming_Deliverables/研究用/nanopol/package.json) の `"version"` フィールドの値のみを変更してコミット・プッシュしてください。
+
+### 5.5 検証ビルド運用 (QA / 解析用)
 
 本プロジェクトでは、GitHub Actions から 2 種類の Windows ビルドを用意しています。
 
