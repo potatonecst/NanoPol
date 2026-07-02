@@ -71,8 +71,24 @@ export function AutoView() {
             {/* 
                 右側: ビュー領域 
                 上下分割構造。 orientation="vertical" を使用します。
+
+                【重要：Windows実機環境（WebView2）における描画乱れ対策とGPU隔離】
+                可変の分割パネル（ResizablePanelGroup）の中で高頻度に再描画される要素（カメラ映像、グラフSVG）が
+                同居した際、Windows実機環境（WebView2/Chromium）の描画エンジンの部分描画フリーズ（Partial Paint）
+                により、画面全体が乱れたりポインタの動きに合わせて要素が見え隠れする不具合が発生していました。
+                これを防ぐため、親コンテナおよび各パネルのラッパー要素に対して transform: translate3d(0,0,0) と
+                backface-visibility: hidden を適用し、GPU上で個別の独立した合成レイヤーとして強制隔離します。
+
+                ※なお、標準プロパティの will-change: transform は、カメラ画像拡大時に荒い初期テクスチャをGPUにキャッシュ固定
+                させてしまい「ぼやけバグ」を引き起こすため使用せず、あえてこの無変形3Dハック（translate3d）を採用しています。
             */}
-            <div className="flex-1 h-full overflow-hidden bg-secondary/20 relative">
+            <div 
+                className="flex-1 h-full overflow-hidden bg-secondary/20 relative"
+                style={{
+                    transform: 'translate3d(0, 0, 0)',
+                    backfaceVisibility: 'hidden'
+                }}
+            >
                 <ResizablePanelGroup orientation="vertical">
                     {/* 上段: カメラ映像パネル */}
                     <ResizablePanel defaultSize={65} minSize={30}>
@@ -80,7 +96,13 @@ export function AutoView() {
                             CameraPanel が正しく表示されるよう、flex コンテナで包みます。
                             これにより、ManualView と同じ表示ロジックが働きます。
                         */}
-                        <div className="flex flex-col h-full w-full overflow-hidden">
+                        <div 
+                            className="flex flex-col h-full w-full overflow-hidden"
+                            style={{
+                                transform: 'translate3d(0, 0, 0)',
+                                backfaceVisibility: 'hidden'
+                            }}
+                        >
                             <CameraPanel showAngle={true} />
                         </div>
                     </ResizablePanel>
@@ -91,7 +113,15 @@ export function AutoView() {
                     {/* 下段: グラフ表示パネル */}
                     {/* minSize を少し増やして、ヘッダーが埋もれないように調整 */}
                     <ResizablePanel defaultSize={35} minSize={32}>
-                        <GraphPanel />
+                        <div 
+                            className="h-full w-full overflow-hidden"
+                            style={{
+                                transform: 'translate3d(0, 0, 0)',
+                                backfaceVisibility: 'hidden'
+                            }}
+                        >
+                            <GraphPanel />
+                        </div>
                     </ResizablePanel>
                 </ResizablePanelGroup>
             </div>
