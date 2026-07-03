@@ -913,6 +913,18 @@ def _run_auto_measurement(
         logger.exception("[AUTO] Fatal error during measurement")
         _set_auto_operation_state(status="failed", message=str(e))
     finally:
+        # ====================================================================
+        # 【最優先クリーンアップ：測定中フラグの即座解除】
+        # 後続のファイル保存（I/O）やステージの物理的な原点復帰で例外が発生しても、
+        # システム全体が「測定中」のままフリーズしてデッドロックするのを完全に防ぐため、
+        # 何よりも先に測定中ロックフラグを解除します。
+        # ====================================================================
+        try:
+            with stage_command_lock:
+                app_state.is_measuring = False
+        except Exception as e:
+            logger.error(f"[AUTO] Failed to release measuring flag: {e}")
+
         # 最終状態の取得。succeeded はユーザー表示用の completed にマッピングします。
         final_state = _get_auto_operation_snapshot()
         raw_status = final_state.get("status", "failed")
@@ -1017,9 +1029,6 @@ def _run_auto_measurement(
             stage.home()
         except Exception as e:
             logger.error(f"[AUTO] Failed to return to origin: {e}")
-
-        with stage_command_lock:
-            app_state.is_measuring = False
 
 
 def _terminate_backend_process():

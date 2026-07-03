@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS = {
     cameraMode: "Monochrome",
     defaultExposure: 0.06675,
     defaultGain: 1.0,
+    defaultStagePort: "", // デフォルトのステージCOMポート（初期値は空文字列）
 } as const;
 
 /**

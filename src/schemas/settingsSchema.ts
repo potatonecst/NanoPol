@@ -75,6 +75,11 @@ export const settingsSchema = z.object({
     cameraMode: z.enum(CameraModes).default("Monochrome"),
     defaultExposure: z.coerce.number().min(DEFAULT_EXPOSURE_MIN_MS).max(DEFAULT_EXPOSURE_MAX_MS).default(DEFAULT_SETTINGS.defaultExposure),
     defaultGain: z.coerce.number().min(DEFAULT_GAIN_MIN).max(DEFAULT_GAIN_MAX).default(DEFAULT_SETTINGS.defaultGain),
+    
+    // --- Default Device Connections (起動時・デバイス検出時の自動選択設定) ---
+    // 初回起動時や設定未登録の段階で誤ったポートが勝手に選択されるのを防ぐため、
+    // 初期デフォルト値は空文字列（`""`：未指定）となります。
+    defaultStagePort: z.string().default(DEFAULT_SETTINGS.defaultStagePort),
 })
     // refine: オブジェクト全体に対する検証（クロスフィールドバリデーション）
     // 「最大速度」が「最小速度」より小さい場合など、複数の項目が絡む矛盾をチェックします。

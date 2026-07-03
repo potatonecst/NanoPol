@@ -3,6 +3,9 @@ import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store/useAppStore";
 import { stageApi, cameraApi, systemApi } from "@/api/client";
 import { invoke } from "@tauri-apps/api/core"; // Tauri IPC コマンド呼び出し用の関数
+import { readTextFile, exists, BaseDirectory } from "@tauri-apps/plugin-fs";
+import { CONFIG_FILENAME } from "@/constants/constants";
+import { Settings } from "@/schemas/settingsSchema";
 
 import { Button } from "../ui/button";
 import {
@@ -100,6 +103,24 @@ export function DevicesView() {
         try {
             const res = await systemApi.getPorts();
             setAvailablePorts(res.ports);
+
+            // 【自動プレ選択：config.json に保存されたポートを自動セットする】
+            // TauriのセキュアファイルシステムAPI (`exists`, `readTextFile`) を使用して、
+            // 設定フォルダから直接 config.json を安全に非同期ロードします。
+            const configExists = await exists(CONFIG_FILENAME, { baseDir: BaseDirectory.AppConfig });
+            if (configExists) {
+                const contents = await readTextFile(CONFIG_FILENAME, { baseDir: BaseDirectory.AppConfig });
+                const settings = JSON.parse(contents) as Partial<Settings>;
+                const defaultPort = settings.defaultStagePort || "";
+
+                // 【安全ガード設計】
+                // 1. すでにユーザーがポートを手動選択している場合は、それを勝手に上書きしないよう保護します (`!stagePort`)。
+                // 2. 設定されたデフォルトポートが空欄でないことを検証します (`defaultPort !== ""`)。
+                // 3. バックエンドが現在物理的に検出しているCOMポート一覧に存在する場合のみ自動選択します (`res.ports.includes`)。
+                if (!stagePort && defaultPort !== "" && res.ports.includes(defaultPort)) {
+                    setStagePort(defaultPort);
+                }
+            }
         } catch (error) {
             console.error("Failed to fetch ports", error);
             toast.error("Failed to list COM ports");

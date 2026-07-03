@@ -575,6 +575,35 @@ export const SettingsView: React.FC = () => {
                 <p className="text-sm text-muted-foreground">Configure hardware parameters and connection settings.</p>
               </div>
 
+               {/* 
+                【デバイス接続の初期設定カード（最優先表示）】
+                ユーザーが起動時に毎回COMポートを手動選択する手間を省くための永続化設定です。
+                初回の誤操作による誤接続を防ぐため、初期値は空文字列（未設定）で扱われます。
+                物理運動特性（Motion Profile）と論理的に分離するために独立したカードとして最上部に配置しています。
+              */}
+              {/* Device Connection Defaults */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Device Connection Defaults</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <FieldGroup className="grid grid-cols-1 gap-4">
+                    <Controller
+                      control={form.control}
+                      name="defaultStagePort"
+                      render={({ field, fieldState }) => (
+                        <Field data-invalid={fieldState.invalid}>
+                          <FieldLabel htmlFor="defaultStagePort">Default Stage COM Port</FieldLabel>
+                          <Input {...field} id="defaultStagePort" placeholder="e.g. COM5 (Leave empty to disable auto-selection)" />
+                          <FieldDescription>The COM port that will be automatically selected on startup. If left blank, no port will be pre-selected.</FieldDescription>
+                          {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+                        </Field>
+                      )}
+                    />
+                  </FieldGroup>
+                </CardContent>
+              </Card>
+
               {/* Camera Settings */}
               <Card>
                 <CardHeader>

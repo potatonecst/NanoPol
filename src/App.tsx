@@ -387,6 +387,16 @@ function App() {
         // 起動直後は backend 側がまだ接続完了していないことがあるため、
         // 読み込んだ設定は state に保持し、接続後に再送できるようにする。
         setStartupSettings(settings);
+
+        // 【起動時自動選択のためのストア初期化】
+        // config.json から読み込まれたデフォルトCOMポートの設定を、Zustandグローバルストアの
+        // `stagePort` ステートに直接反映（ディスパッチ）します。
+        // これにより、DevicesView画面のマウント時にドロップダウンの選択状態が最初から
+        // 指定されたポートに自動的にセットされます。
+        // ※空文字列（未設定）の場合は、勝手に違うポートが選択されるのを避けるため、何もしません。
+        if (settings.defaultStagePort) {
+          useAppStore.getState().setStagePort(settings.defaultStagePort);
+        }
       } catch (error) {
         console.warn("Failed to sync settings on startup:", error);
       }
