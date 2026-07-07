@@ -104,6 +104,7 @@ class CameraController:
         self._capture_thread = None  # 特急レーン（最速で画像を取得し続ける）のバックグラウンドスレッド
         self._mock_angle = 0.0  # Mock画像生成用の内部状態
         self._pending_snapshot = None  # Snapshot時に「保存先を聞く」設定の場合、一時的に画像データを保持するメモリ
+        self.active_stream_id = None  # 現在アクティブなMJPEG映像ストリームのID（ゾンビ接続破棄用）
 
         # 起動時にカメラ実行モードの判定根拠を明示する（切り分け用）
         logger.info(
@@ -1416,54 +1417,70 @@ class CameraController:
         - 複数クライアント対応: notify_all() で全リスナーを起動
         - CPU効率的: wait(timeout) で無駄なポーリング回避
         """
-        logger.info(f"{self.log_tag} Starting MJPEG stream")
+        import uuid
+        my_stream_id = uuid.uuid4().hex
+        self.active_stream_id = my_stream_id
+        logger.info(f"{self.log_tag} Starting MJPEG stream (id={my_stream_id})")
         
-        while self.is_connected:
-            with self.frame_condition:
+        try:
+            while self.is_connected:
+                # 【ゾンビ接続の自動排除とスレッドプール枯渇の防止】
+                # ビューの切り替えやリサイズにより、新しく /camera/video_feed 接続要求が来ると、
+                # グローバルな `self.active_stream_id` が新しいストリームID（UUID）に上書きされます。
+                # 自分が「最新のアクティブなストリーム」でなくなったことを検知した時点で、
+                # この古い映像配信ループを即座に break して、FastAPI（anyio）のスレッドプールへ
+                # 同期スレッドリソースを安全かつ速やかに返却（解放）します。
+                if self.active_stream_id != my_stream_id:
+                    logger.info(f"{self.log_tag} Discarding old MJPEG stream (id={my_stream_id})")
+                    break
+
+                with self.frame_condition:
+                    # ====================================================================
+                    # 【待機と受信】threading.Condition の wait/notify パターン
+                    # ====================================================================
+                    # wait(timeout=1.0) を呼ぶと、このスレッドは一時停止(Sleep)し、
+                    # CPU使用率が 0% になります(忙しいスピンロックではない)。
+                    # 
+                    # 特急レーンから notify_all() (ベルを鳴らす) が呼ばれると、
+                    # 待機中のスレッドは即座に目覚め、最新プレビュー(self.latest_preview)を取得します。
+                    # 
+                    # メリット:
+                    # - CPU 効率的(ポーリングなし)
+                    # - 複数クライアント対応(notify_all で全リスナー起動)
+                    # - キューと違い、常に最新フレーム(古いフレーム喪失なし)
+                    if not self.frame_condition.wait(timeout=1.0) or self.latest_preview is None:
+                        continue
+                    frame_data = self.latest_preview
+
                 # ====================================================================
-                # 【待機と受信】threading.Condition の wait/notify パターン
+                # 【画像変換・前処理】
                 # ====================================================================
-                # wait(timeout=1.0) を呼ぶと、このスレッドは一時停止(Sleep)し、
-                # CPU使用率が 0% になります(忙しいスピンロックではない)。
-                # 
-                # 特急レーンから notify_all() (ベルを鳴らす) が呼ばれると、
-                # 待機中のスレッドは即座に目覚め、最新プレビュー(self.latest_preview)を取得します。
-                # 
-                # メリット:
-                # - CPU 効率的(ポーリングなし)
-                # - 複数クライアント対応(notify_all で全リスナー起動)
-                # - キューと違い、常に最新フレーム(古いフレーム喪失なし)
-                if not self.frame_condition.wait(timeout=1.0) or self.latest_preview is None:
+                # 16-bit RAWデータを表示用に 8-bit に変換
+                # (JPEG 圧縮で 8bit 必須、カラーパレットのため)
+                if frame_data.dtype == np.uint16:
+                    display_frame = cv2.normalize(frame_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                else:
+                    display_frame = frame_data
+
+                # Bayer パターンをフルカラー (BGR) にデモザイク
+                # (is_color_mode=True の場合のみ、通常はモノクロで十分)
+                bayer_code = self._get_bayer_color_conversion_code()
+                if bayer_code is not None:
+                    display_frame = cv2.cvtColor(display_frame, bayer_code)
+
+                # ====================================================================
+                # 【JPEG 圧縮・配信】
+                # ====================================================================
+                # OpenCV の imencode() で JPEG に圧縮
+                # 品質を 98 に設定し、プレビューでも画素の輪郭を可能な限り鮮明に保ちます。
+                ret, buffer = cv2.imencode('.jpg', display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
+                if not ret:
                     continue
-                frame_data = self.latest_preview
+                    
+                frame_bytes = buffer.tobytes()
 
-            # ====================================================================
-            # 【画像変換・前処理】
-            # ====================================================================
-            # 16-bit RAWデータを表示用に 8-bit に変換
-            # (JPEG 圧縮で 8bit 必須、カラーパレットのため)
-            if frame_data.dtype == np.uint16:
-                display_frame = cv2.normalize(frame_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-            else:
-                display_frame = frame_data
-
-            # Bayer パターンをフルカラー (BGR) にデモザイク
-            # (is_color_mode=True の場合のみ、通常はモノクロで十分)
-            bayer_code = self._get_bayer_color_conversion_code()
-            if bayer_code is not None:
-                display_frame = cv2.cvtColor(display_frame, bayer_code)
-
-            # ====================================================================
-            # 【JPEG 圧縮・配信】
-            # ====================================================================
-            # OpenCV の imencode() で JPEG に圧縮
-            # 品質を 98 に設定し、プレビューでも画素の輪郭を可能な限り鮮明に保ちます。
-            ret, buffer = cv2.imencode('.jpg', display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
-            if not ret:
-                continue
-                
-            frame_bytes = buffer.tobytes()
-
-            # MJPEG配信フォーマット
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                # MJPEG配信フォーマット
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        finally:
+            logger.info(f"{self.log_tag} MJPEG stream ended (id={my_stream_id})")

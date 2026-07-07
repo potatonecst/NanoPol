@@ -6,9 +6,10 @@
 
 階層構造: `[Base] / AutoMeasurementData / [YYYYMMDD] / [SampleName] / ...`
 
-  * **[Base]:** Settingsモードで設定されたルートパス。
+  * **[Base]:** ルート保存パス。
       * **Default:** `~/Documents/NanoPol` (ユーザーのドキュメントフォルダ内)。
       * **Config:** `AppConfig/config.json` に保存された `outputDirectory` の値を使用。
+      * **Presets (動的切り替え):** DevicesViewにて選択された「出力先プリセット（保存先プロファイル）」のパスで動的に上書きされます。詳細な挙動は [15. 出力先プリセット仕様](file:///Users/neirotakada/Programming_Deliverables/研究用/nanopol/spec/15_output_presets_design.md) を参照。
   * **AutoMeasurementData:** 手動操作（SnapshotsやManual Sweep）のデータと区別するための、自動測定専用のルートフォルダ。
   * **[YYYYMMDD]:** 測定実行日の日付（ローカルタイム）で自動生成。
 

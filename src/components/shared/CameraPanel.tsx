@@ -111,6 +111,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const imageContainerRef = useRef<HTMLDivElement>(null);
     const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+    const imageRef = useRef<HTMLImageElement>(null); // MJPEG映像ストリームの接続切断用Ref
 
     // ドラッグ操作の状態管理
     const isDragging = useRef(false);
@@ -408,6 +409,19 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         return () => obs.disconnect();
     }, [])
 
+    // 【重要：アンマウント時のストリーム切断処理】
+    // ビューの切り替え（コンポーネントのアンマウント）の際、ブラウザの画像要素（img）の src を明示的に空にします。
+    // これにより、ブラウザに対してMJPEGのHTTP長接続を即座に中止するよう要求し、
+    // バックエンド側での接続リーク（ゾンビスレッド化）を完全に防止します。
+    useEffect(() => {
+        return () => {
+            if (imageRef.current) {
+                // src を空にすることで、ブラウザが掴んでいる接続を明示的に解放させる
+                imageRef.current.src = "";
+            }
+        };
+    }, []);
+
     // Exposure slider の値をデバイスの step/min に合わせて丸め・クランプする
     const handleExposureSliderChange = (val: number[]) => {
         let v = val[0];
@@ -582,6 +596,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                         */}
                         {isCameraConnected && containerSize.width > 0 && containerSize.height > 0 ? (
                             <img
+                                ref={imageRef} // 【重要】画面遷移（アンマウント）の際、この要素の src を強制的に空（""）に書き換えてブラウザのMJPEGストリーム接続を即座に破棄（Abort）させるためにアタッチします。
                                 src={videoFeedUrl}
                                 alt="Camera Stream"
                                 /* 
