@@ -89,9 +89,8 @@ export function MeasurementManager() {
 
     // --- ローカル状態の管理 ---
 
-    // Pre-Scan（アライメント）のステータス
-    // "idle": 未実施, "running": 実行中, "success": 成功（アライメント完了）, "failed": 失敗
-    const [prescanStatus, setPrescanStatus] = useState<"idle" | "running" | "success" | "failed">("idle");
+    // "idle": 未実施, "running": 実行中, "success": 成功（アライメント完了）, "saturated": 飽和警告あり完了, "failed": 失敗
+    const [prescanStatus, setPrescanStatus] = useState<"idle" | "running" | "success" | "saturated" | "failed">("idle");
     
     // アライメント失敗時でも強制的に開始するためのフラグ
     const [forceStartUnlocked, setForceStartUnlocked] = useState(false);
@@ -192,8 +191,13 @@ export function MeasurementManager() {
                             // 画面上の四角い枠線が新しい重心位置にスッと移動します。
                             // ============================================================================
                             await fetchRois();
-                            toast.success("Pre-Scan completed successfully.");
-                            setPrescanStatus("success");
+                            if (res.has_warning) {
+                                toast.warning("Pre-Scan completed with saturation warnings. Check exposure levels.");
+                                setPrescanStatus("saturated");
+                            } else {
+                                toast.success("Pre-Scan completed successfully.");
+                                setPrescanStatus("success");
+                            }
                         } else {
                             toast.success("Measurement complete. Returning to category selection.");
                             // 測定完了後は、履歴をリフレッシュしてからカテゴリ選択画面へ戻る
@@ -349,8 +353,19 @@ export function MeasurementManager() {
     const handleStartMeasurement = async (values: SetupFormValues) => {
         if (!currentSession || !selectedCategory) return;
 
-        setIsMeasuring(true); // ナビゲーションをロック
-        setIsPrescan(false);  // 本番測定であることを明示（グラフの自動切り替え用）
+        setIsMeasuring(true); // ナビゲーションをロック（測定実行中はサイドバー等のページ移動を無効化します）
+        setIsPrescan(false);  // 本番測定であることを明示（フロントエンドの表示やグラフ描画の自動切り替え判定に使用します）
+        
+        // ============================================================================
+        // 【Pre-Scan 完了警告表示の動的クリア】
+        // 本番測定を開始するにあたり、以前の Pre-Scan で検出されていた警告表示（アライメント
+        // セクション内の Saturation Warning パネル）を画面上から綺麗に消去するために、
+        // 完了状態（"saturated" または "success"）を一度未実施の "idle" にリセットします。
+        // これを行わないと、本番測定中に発生した別の飽和警告（warningMessage の更新）が、
+        // Pre-Scan用の古い警告文のエラー詳細エリアへ干渉してリアルタイム上書きされてしまうためです。
+        // ============================================================================
+        setPrescanStatus("idle"); 
+        
         setProgressPercent(0);
         setProgressMessage("Starting Measurement...");
         setHasWarning(false);
@@ -433,8 +448,8 @@ export function MeasurementManager() {
     // --- 表示制御用の計算変数 ---
     // UIパーツの無効化条件: 測定中、またはPre-Scan実行中
     const isFormDisabled = isMeasuring || prescanStatus === "running";
-    // 本番測定を開始できる条件: Pre-Scan成功、または強制解除済み
-    const canStartMeasurement = prescanStatus === "success" || forceStartUnlocked;
+    // 本番測定を開始できる条件: Pre-Scan成功（警告あり含む）、または強制解除済み
+    const canStartMeasurement = prescanStatus === "success" || prescanStatus === "saturated" || forceStartUnlocked;
 
     return (
         <div className="flex flex-col h-full space-y-6">
@@ -583,6 +598,7 @@ export function MeasurementManager() {
                         <span>3. Alignment</span>
                         {/* スキャン完了時のステータスバッジ */}
                         {prescanStatus === "success" && <span className="text-green-500 text-xs font-bold flex items-center"><Scan className="w-3 h-3 mr-1" /> Ready</span>}
+                        {prescanStatus === "saturated" && <span className="text-amber-500 text-xs font-bold flex items-center"><AlertCircle className="w-3.5 h-3.5 mr-1 text-amber-500" /> Saturated</span>}
                         {prescanStatus === "failed" && <span className="text-destructive text-xs font-bold flex items-center"><AlertCircle className="w-3 h-3 mr-1" /> Failed</span>}
                     </h4>
 
@@ -606,6 +622,31 @@ export function MeasurementManager() {
                             )}
                             {prescanStatus === "running" ? "Scanning..." : "Run Pre-Scan"}
                         </Button>
+
+                        {/* 
+                          * 【アライメント警告パネル (Saturation Warning Panel)】
+                          * Pre-Scan実行中にカメラの飽和（白飛び）を検知した場合に、注意喚起を促すために表示します。
+                          * スキャンが完了した後も本番測定が開始されるまで画面に残り続け、自動測定への自動移行を
+                          * 抑止し、ユーザーに露光時間やゲインの再設定を促す「安全上のセーフガード」として機能します。
+                          * 本番測定（START MEASUREMENT）が押された時点で、上の handleStartMeasurement() 内で
+                          * ステータスが idle にリセットされ、このパネルは自動的に非表示になります。
+                          */}
+                        {prescanStatus === "saturated" && (
+                            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-md flex flex-col gap-1.5 text-xs text-amber-600 font-medium leading-normal">
+                                <div className="flex items-start">
+                                    <AlertTriangle className="w-3.5 h-3.5 mr-1.5 mt-0.5 shrink-0 text-amber-500" />
+                                    <span className="font-bold">Saturation Warning</span>
+                                </div>
+                                <p className="text-[10px] text-muted-foreground leading-snug">
+                                    Pre-Scanの過程で光の飽和が検出されました。露光時間（Exposure）やゲイン（Gain）を下げて再調整することをお勧めします。このまま本番測定に進むことも可能ですが、正確な強度評価が行えない可能性があります。
+                                </p>
+                                {warningMessage && (
+                                    <p className="text-[10px] font-mono break-all bg-amber-500/5 p-1.5 rounded border border-amber-500/10 text-amber-700">
+                                        {warningMessage}
+                                    </p>
+                                )}
+                            </div>
+                        )}
 
                         {/* 失敗時のみ表示される救済措置（強制開始） */}
                         {prescanStatus === "failed" && !forceStartUnlocked && (

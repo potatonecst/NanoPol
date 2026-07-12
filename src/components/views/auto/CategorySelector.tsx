@@ -1,6 +1,7 @@
 import { useShallow } from 'zustand/react/shallow';
 import { 
     CheckCircle2, 
+    AlertCircle,
     ArrowLeft, 
     ChevronRight, 
     History,
@@ -60,13 +61,32 @@ export function CategorySelector() {
     if (!currentSession) return null;
 
     /**
-     * 特定のカテゴリが既に完了しているかどうかを判定します。
-     * measurements 履歴の中に status が 'completed' のエントリが1つでもあれば完了とみなします。
+     * ============================================================================
+     * 【最新測定結果への追従（トレーサビリティと整合性の保証）】
+     * 特定のカテゴリ（例: Left-Front）における「最新」の測定ステータスを取得します。
+     *
+     * 【背景と設計思想】
+     * 理化学測定においては、過去の測定履歴をすべて残しつつ、ディスク上に保存されている
+     * 「最新のデータフォルダの状態」と画面上のステータス表示が一致している必要があります。
+     * もし過去に1度成功（completed）していても、その後同じカテゴリで再測定（Redo）を行い、
+     * 光が飽和してしまった（saturated）場合、ディスク上の最新データは異常値（飽和）になります。
+     * このため、過去の成功に甘んじて緑チェックの表示を残し続けるのではなく、
+     * 履歴配列 `measurements` の末尾（＝最新の測定試行）を評価して、最新の状態（Saturated/オレンジ）
+     * に上書き更新する設計にしています。
+     * ============================================================================
      */
-    const isCategoryCompleted = (categoryId: string) => {
-        return currentSession.settings.measurements.some(
-            (m) => m.step_category === categoryId && m.status === 'completed'
+    const getCategoryStatus = (categoryId: string): "none" | "completed" | "saturated" => {
+        // measurements 履歴の中から、指定されたカテゴリのものだけを抽出
+        const catHistory = currentSession.settings.measurements.filter(
+            (m) => m.step_category === categoryId
         );
+        if (catHistory.length === 0) return "none";
+        
+        // 配列の末尾（＝JS配列において直近で追加された最新の測定レコード）のステータスを参照
+        const latest = catHistory[catHistory.length - 1];
+        if (latest.status === "completed") return "completed";
+        if (latest.status === "saturated") return "saturated";
+        return "none"; // cancelled (キャンセル) や failed (失敗) は、有効なデータが存在しないため「未測定」扱いとします
     };
 
     /**
@@ -123,12 +143,16 @@ export function CategorySelector() {
                     </Label>
                     <div className="grid grid-cols-1 gap-2">
                         {MEASUREMENT_CATEGORIES.map((cat) => {
-                            const completed = isCategoryCompleted(cat.id);
+                            const status = getCategoryStatus(cat.id);
                             return (
                                 <Card 
                                     key={cat.id}
                                     className={`relative p-3 cursor-pointer transition-all hover:ring-2 hover:ring-amber-500/50 group overflow-hidden bg-card ${
-                                        completed ? 'border-green-500/30' : ''
+                                        status === 'completed' 
+                                            ? 'border-green-500/30 bg-green-500/[0.01]' 
+                                            : status === 'saturated' 
+                                            ? 'border-amber-500/30 bg-amber-500/[0.01]'
+                                            : ''
                                     }`}
                                     onClick={() => handleSelectCategory(cat.id)}
                                 >
@@ -138,8 +162,11 @@ export function CategorySelector() {
                                                 <span className="font-bold text-xs group-hover:text-amber-600 transition-colors">
                                                     {cat.label}
                                                 </span>
-                                                {completed && (
+                                                {status === 'completed' && (
                                                     <CheckCircle2 className="size-3.5 text-green-500" />
+                                                )}
+                                                {status === 'saturated' && (
+                                                    <AlertCircle className="size-3.5 text-amber-500" />
                                                 )}
                                             </div>
                                             <p className="text-[10px] text-muted-foreground leading-tight">
@@ -213,8 +240,10 @@ export function CategorySelector() {
                                                         className={`text-[8px] h-4 px-1.5 font-bold uppercase ${
                                                             entry.status === 'completed' 
                                                                 ? 'border-green-500/50 text-green-600 bg-green-500/5' 
-                                                                : entry.status === 'cancelled'
+                                                                : entry.status === 'saturated'
                                                                 ? 'border-amber-500/50 text-amber-600 bg-amber-500/5'
+                                                                : entry.status === 'cancelled'
+                                                                ? 'border-muted-foreground/30 text-muted-foreground bg-muted-foreground/5'
                                                                 : 'border-destructive/50 text-destructive bg-destructive/5'
                                                         }`}
                                                     >

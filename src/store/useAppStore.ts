@@ -40,6 +40,8 @@ interface AppState {
     setStagePort: (port: string) => void; //ステージコントローラのポートを設定する関数
     isStageConnected: boolean; //ステージコントローラの接続状態
     setIsStageConnected: (connected: boolean) => void; //ステージコントローラの接続状態を設定する関数
+    stagePollingInterval: number; //ステージ位置のポーリング間隔 (ms)
+    setStagePollingInterval: (interval: number) => void; //ステージ位置ポーリング間隔を設定する関数
 
     //カメラ接続
     cameraId: string; //カメラのID
@@ -141,6 +143,8 @@ export const useAppStore = create<AppState>((set) => ({
 
     isStageConnected: false, //初期値はfalse
     setIsStageConnected: (connected) => set({ isStageConnected: connected }), //set関数でisStageConnectedを書き換え
+    stagePollingInterval: 1000, // 初期値は 1000ms (1秒間隔)
+    setStagePollingInterval: (interval) => set({ stagePollingInterval: interval }),
 
     cameraId: "", //初期値
     setCameraId: (id) => set({ cameraId: id }), //set関数でcameraIdを書き換え
@@ -341,6 +345,7 @@ export const useAppStore = create<AppState>((set) => ({
     resetAllConnections: () => set({
         isStageConnected: false,
         stagePort: "",
+        stagePollingInterval: 1000,
         isCameraConnected: false,
         cameraId: "",
         availableCameras: [],

@@ -24,12 +24,14 @@ export function useStageActions() {
         setCurrentAngle, 
         isSystemBusy, 
         setIsSystemBusy,
-        isStageConnected
+        isStageConnected,
+        setStagePollingInterval
     } = useAppStore(useShallow((state) => ({
         setCurrentAngle: state.setCurrentAngle,
         isSystemBusy: state.isSystemBusy,
         setIsSystemBusy: state.setIsSystemBusy,
         isStageConnected: state.isStageConnected,
+        setStagePollingInterval: state.setStagePollingInterval,
     })));
 
     /**
@@ -105,6 +107,7 @@ export function useStageActions() {
         if (isSystemBusy || !isStageConnected) return;
         
         setIsSystemBusy(true); // UIを操作不能にする（二重押し防止）
+        setStagePollingInterval(100); // 【動的ポーリング】移動開始の直前にポーリング間隔を 100ms（高頻度）に引き上げます。
         stopSignal.current = false; // 停止フラグをリセット
 
         try {
@@ -127,6 +130,7 @@ export function useStageActions() {
             toast.error(`${actionName} Failed: ${e.message || "Unknown error"}`);
             systemApi.postLogs("ERROR", `${actionName} Failed: ${e}`).catch(() => {});
         } finally {
+            setStagePollingInterval(1000); // 【動的ポーリング】移動完了（またはエラー終了）直後にポーリング間隔を 1000ms（低頻度）に戻します。
             setIsSystemBusy(false); // 何があっても最後にはUIロックを解除する
         }
     };

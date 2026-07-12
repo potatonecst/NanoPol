@@ -683,6 +683,7 @@ def _run_auto_measurement(
     # finally ブロックで安全に参照できるよう、変数を関数の冒頭で定義・初期化します
     start_time_iso = datetime.now(timezone.utc).isoformat()
     initial_rois = []
+    saturated_angles = [] # 測定中に飽和（白飛び）が発生した角度を追跡し、finallyブロックで警告ステータスに反映します。
     
     try:
         # Pre-Scan開始前（ユーザーが手動で配置したまま）の初期ROIをコピーして保持
@@ -765,7 +766,6 @@ def _run_auto_measurement(
             logger.error(f"[AUTO] Failed to initialize CSV: {e}")
 
         # --- Step & Shoot メインループ ---
-        saturated_angles = []
         for i, target_deg in enumerate(angles):
             if _get_auto_operation_snapshot().get("cancel_requested"):
                 _set_auto_operation_state(status="cancelled", message="Measurement cancelled by user")
@@ -928,7 +928,15 @@ def _run_auto_measurement(
         # 最終状態の取得。succeeded はユーザー表示用の completed にマッピングします。
         final_state = _get_auto_operation_snapshot()
         raw_status = final_state.get("status", "failed")
-        final_status = "completed" if raw_status == "succeeded" else raw_status
+        
+        # 【飽和警告ステータスの永続化】
+        # 物理的に正常終了（succeeded）した場合でも、測定の過程で一度でも飽和角度が検出されていた場合
+        # （len(saturated_angles) > 0）は、最終的な保存ステータスを "completed" ではなく "saturated" に設定します。
+        if raw_status == "succeeded":
+            final_status = "saturated" if len(saturated_angles) > 0 else "completed"
+        else:
+            final_status = raw_status
+            
         final_message = final_state.get("message", "")
 
         # measurement_details.json (旧 roi_settings.json) の更新
