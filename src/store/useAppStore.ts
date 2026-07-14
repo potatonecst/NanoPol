@@ -67,6 +67,17 @@ interface AppState {
     isRecording: boolean; //録画中かどうか
     setIsRecording: (isRecording: boolean) => void; //録画中かどうかを設定する関数
 
+    // 出力先フォルダおよびプロファイル設定
+    outputDirectory: string; // 現在適用されている有効な出力先フォルダパス
+    setOutputDirectory: (dir: string) => void; // 有効な出力先フォルダを設定する関数
+    defaultOutputDirectory: string; // プロファイル未選択時の共通デフォルト保存先パス
+    setDefaultOutputDirectory: (dir: string) => void; // 共通デフォルト保存先を設定する関数
+    outputPresets: Array<{ id: string; name: string; path: string }>; // 登録されているプリセットリスト
+    setOutputPresets: (presets: Array<{ id: string; name: string; path: string }>) => void; // プリセットリストを設定する関数
+    activePresetId: string; // 現在選択中のプロファイルID
+    setActivePresetId: (id: string) => void; // 選択プロファイルIDを設定しパスを同期する関数
+    syncActivePresetIdFromPath: (path: string) => void; // パス値から対応するプロファイルIDを逆引き同期する関数
+
     //ステージコントローラーマニュアル操作
     currentAngle: number; //QWPの回転角度
     setCurrentAngle: (angle: number) => void; //QWPの回転角度を設定する関数
@@ -158,6 +169,75 @@ export const useAppStore = create<AppState>((set) => ({
 
     isRecording: false, //初期値
     setIsRecording: (val) => set({ isRecording: val }), //set関数
+
+    outputDirectory: "", // 現在測定データや画像を保存するフォルダの有効な絶対パス（初期値は空文字列）
+    // 【有効パス設定アクション】
+    // 画面上で選択された保存パスを Zustand のグローバル状態にセットし、コンポーネントの再描画をトリガーします。
+    setOutputDirectory: (dir) => set({ outputDirectory: dir }),
+
+    defaultOutputDirectory: "", // プロファイル（プリセット）を使用しない場合にフォールバックする、システムの大元の基準デフォルトパス
+    // 【基準パス設定アクション】
+    // アプリ起動時に決定されるシステム標準のフォルダパスを状態ストアに記憶させます。
+    setDefaultOutputDirectory: (dir) => set({ defaultOutputDirectory: dir }),
+
+    outputPresets: [], // ユーザーが設定画面で登録した保存先プロファイルのオブジェクト配列
+    // 【プロファイルリスト設定アクション】
+    // 設定ファイル config.json から読み込まれた、または設定画面で保存されたプロファイルリストをストアにロードします。
+    setOutputPresets: (presets) => set({ outputPresets: presets }),
+
+    activePresetId: "", // 現在接続画面でアクティブ（選択）になっているプロファイルの内部ID（空文字列は未選択）
+    // 【アクティブプロファイルID選択アクション】
+    // ドロップダウンでプロファイルが選ばれた際に呼び出され、選択されたID（または未選択・Custom）をセットすると同時に、
+    // 選択されたプロファイルが持つパス（または基準パス）を現在の出力先絶対パス `outputDirectory` に同期させます。
+    setActivePresetId: (id) => set((state) => {
+        if (id === "") {
+            // No Preset (デフォルト) が選ばれた場合は、アクティブIDを空文字列にし、
+            // 現在の保存先パスを、起動時にロードされた基準デフォルトパス (defaultOutputDirectory) に安全に戻します。
+            return {
+                activePresetId: "",
+                outputDirectory: state.defaultOutputDirectory
+            };
+        }
+        
+        // 登録されているプロファイルリストの中から、選択されたIDと一致するものを探索
+        const preset = state.outputPresets.find((p) => p.id === id);
+        if (preset) {
+            // 一致するプロファイルが見つかった場合は、アクティブIDにそのIDをセットし、
+            // そのプロファイルに紐付けられている絶対パスを有効パス `outputDirectory` に連動コピーします。
+            return {
+                activePresetId: id,
+                outputDirectory: preset.path
+            };
+        }
+        
+        // Custom (手動設定) のダミーキー "__custom__" が選択された場合など、
+        // 登録プロファイルに該当がない場合は、パスは書き換えずにアクティブIDのみを更新します。
+        return { activePresetId: id };
+    }),
+
+    // 【パス値からのプロファイルID逆引き同期アクション】
+    // 起動時や設定画面で「Save Settings」を押した際に、現在の出力先フォルダパス (path) を確認し、
+    // 対応するドロップダウンの表示選択状態 (activePresetId) を自動で逆引き判定・同期します。
+    syncActivePresetIdFromPath: (path) => set((state) => {
+        if (!path) return { activePresetId: "" };
+        
+        // 1. 登録されているプロファイル配列の中に、指定された絶対パスと一致するものがあるか探索
+        const matchedPreset = state.outputPresets.find((p) => p.path === path);
+        if (matchedPreset) {
+            // 完全一致するプロファイルがあれば、ドロップダウンをそのプロファイル選択状態にします
+            return { activePresetId: matchedPreset.id };
+        }
+        
+        // 2. システムの大元の基準デフォルトパス (defaultOutputDirectory) と完全に一致する場合
+        // プロファイルに該当がなく、かつ基準デフォルト値と同じであれば、「未指定（No Preset）」に戻します
+        if (path === state.defaultOutputDirectory) {
+            return { activePresetId: "" };
+        }
+        
+        // 3. 上記のいずれとも一致しない（ユーザーが設定画面等で独自に手動指定した別パスである）場合
+        // プロファイル外のカスタムパスが適用されているため、ドロップダウンの表示を Custom に自動切り替えします
+        return { activePresetId: "__custom__" };
+    }),
 
     currentAngle: 0, //初期値
     setCurrentAngle: (angle) => set({ currentAngle: angle }), //set関数でcurrentAngleを書き換え
@@ -346,6 +426,10 @@ export const useAppStore = create<AppState>((set) => ({
         isStageConnected: false,
         stagePort: "",
         stagePollingInterval: 1000,
+        outputDirectory: "",
+        defaultOutputDirectory: "",
+        outputPresets: [],
+        activePresetId: "",
         isCameraConnected: false,
         cameraId: "",
         availableCameras: [],

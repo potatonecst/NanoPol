@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 // React Hook Form: フォームの状態管理（入力値、エラー、送信処理など）を簡単に行うためのライブラリ
-import { useForm, Controller } from "react-hook-form";
+import { useForm, Controller, useFieldArray } from "react-hook-form";
 // zodResolver: バリデーションライブラリ Zod と React Hook Form を連携させるためのアダプター
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
@@ -49,6 +49,8 @@ import {
   RotateCcw,
   TriangleAlert,
   Activity,
+  Plus,
+  Trash2,
 } from "lucide-react";
 import { Switch } from "../ui/switch";
 import { toast } from "sonner";
@@ -78,6 +80,19 @@ export const SettingsView: React.FC = () => {
   // 【重要】ReactのHookルールに基づき、早期リターン（Early Return）よりも必ず前で定義する必要があります。
   const [activeCategory, setActiveCategory] = useState<"file" | "hardware" | "measurement">("file");
 
+  /**
+   * 【UUID生成ユーティリティ】
+   * プロファイル（プリセット）の新規追加時に、それぞれの項目を識別するための一意なID（UUID）を生成します。
+   * ブラウザ標準の crypto.randomUUID が使用できるセキュア環境ではそれを優先し、
+   * 非セキュア環境など一部のモック開発環境用に、乱数と基数変換（toString(36)）を組み合わせた簡易ID生成を安全なフォールバックとして実装しています。
+   */
+  const generateUUID = () => {
+    if (typeof window !== "undefined" && window.crypto && window.crypto.randomUUID) {
+      return window.crypto.randomUUID();
+    }
+    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+  };
+
   // React Hook Form の初期化
   // useForm は、フォームの入力値、エラー、送信状態などを一元管理するためのフックです。
   // 【useFormを使うメリット】
@@ -100,13 +115,57 @@ export const SettingsView: React.FC = () => {
     },
   });
 
+  const { fields, append, remove } = useFieldArray({
+    control: form.control,
+    name: "outputPresets",
+  });
+
   // 現在選択されている画像フォーマットを監視し、対応する拡張子を決定する
   const currentFormat = form.watch("imageFormat");
 
-  // ストアからカメラのキャッシュされたレンジを購読する（変化があれば再レンダリングされる）
-  const { cameraExposureRange, cameraGainRange } = useAppStore(
-    useShallow((s) => ({ cameraExposureRange: s.cameraExposureRange, cameraGainRange: s.cameraGainRange }))
+  // ストアからカメラのキャッシュされたレンジ、およびプロファイル連動アクションを購読
+  const { 
+    cameraExposureRange, 
+    cameraGainRange,
+    setOutputDirectory,
+    setDefaultOutputDirectory,
+    setOutputPresets,
+    syncActivePresetIdFromPath
+  } = useAppStore(
+    useShallow((s) => ({ 
+      cameraExposureRange: s.cameraExposureRange, 
+      cameraGainRange: s.cameraGainRange,
+      setOutputDirectory: s.setOutputDirectory,
+      setDefaultOutputDirectory: s.setDefaultOutputDirectory,
+      setOutputPresets: s.setOutputPresets,
+      syncActivePresetIdFromPath: s.syncActivePresetIdFromPath,
+    }))
   );
+
+  /**
+   * 【個別プロファイルの保存先選択ダイアログ起動処理】
+   * プリセットリスト内の各行に配置された「Browse」ボタンが押された際に呼び出されます。
+   * Tauri のダイアログプラグインを呼び出してOS標準のフォルダ選択画面を表示し、
+   * 選択された絶対パスを該当行（インデックス指定）のプリセット情報に安全にセットします。
+   * 
+   * @param index - フォルダパスを適用する対象プロファイルの配列インデックス（0から始まる行番号）
+   */
+  const handleSelectPresetDir = async (index: number) => {
+    try {
+      const selected = await open({
+        directory: true, // フォルダ選択モード
+        multiple: false, // 単一フォルダ選択のみ許可
+        defaultPath: form.getValues(`outputPresets.${index}.path`) || undefined, // 現在その行に指定されているパスをダイアログの初期位置とする
+      });
+
+      if (selected && typeof selected === "string") {
+        // react-hook-form の setValue を使用し、対象行の path プロパティを書き換えてバリデーションをトリガーします
+        form.setValue(`outputPresets.${index}.path`, selected, { shouldValidate: true });
+      }
+    } catch (e) {
+      console.error("Failed to select preset directory:", e);
+    }
+  };
 
   /**
    * 画像フォーマット名から対応する拡張子を取得します。
@@ -141,31 +200,46 @@ export const SettingsView: React.FC = () => {
         });
 
         if (configExists) {
-          // 設定ファイルがある場合: 読み込んでJSONパースし、フォームに反映(reset)
-          // readTextFile: テキストファイルの中身を文字列として読み込むTauriの関数です。
+          // 既存の設定ファイルがある場合: readTextFile を使って config.json の内容をテキスト文字列として安全に非同期ロードします。
+          // BaseDirectory.AppConfig は、OSごとの標準的なアプリ設定保存フォルダ（例: AppData/Roaming等）を指します。
           const contents = await readTextFile(CONFIG_FILENAME, {
             baseDir: BaseDirectory.AppConfig,
           });
+          // ロードされたテキスト文字列を、JavaScriptオブジェクトにデシリアライズ（JSONパース）します。
           const savedSettings = JSON.parse(contents);
-
-          // 【重要】古い設定ファイル(config.json)に新しい項目のキーが存在しない場合、
-          // undefinedとして上書きされ、入力欄が空欄になってしまうのを防ぐためのマージ処理です。
+          
+          // 【マイグレーション/マージ設計】
+          // 過去の設定ファイル(config.json)のオブジェクトデータに、新しく定義されたキー（出力プリセット配列等）が存在しない場合、
+          // undefinedとして上書きされ、入力欄が空欄化するバグを防ぐため、スキーマ規定デフォルト値と保存データをマージします。
           const mergedSettings = {
-            ...form.getValues(), // スキーマで定義したデフォルト値をベースにする
-            ...savedSettings,    // 保存された値で上書きする（存在するものだけ）
+            ...form.getValues(), // Zodスキーマ側で定義されたデフォルト値・型情報
+            ...savedSettings,    // ファイルからロードされた保存データ（存在するキーのみ上書き）
           };
 
-          // form.reset: フォームの値を新しいデータで上書きする関数です。
+          // form.reset: フォームの全ての入力欄の値を、解決されたマージ済みのオブジェクトデータで一括上書き更新します。
           form.reset(mergedSettings);
         } else {
-          // 設定ファイルがない初回起動時だけ、OSのドキュメントフォルダ配下を初期値として入れる。
+          // 【初回起動時/新規インストール時】設定ファイル config.json が存在しない場合、
+          // OS標準のドキュメントフォルダ配下（Doc/NanoPol）を自動検索・生成して、一時的な仮パスとして初期入力します。
           // defaultValues で空文字にしているのは、ここで実行時のパスを後から確定させるため。
-          // つまり、空文字は最終値ではなく「後で埋めるための仮の初期値」。
+          // つまり、空文字は最終値ではなく「後で埋めるための仮の初期値」です。
           const defaultPath = await getDefaultOutputDirectory();
-          // form.setValue: フォームの特定の項目の値をプログラムから設定する関数です。
-          // これを実行すると、内部の値が書き換わり、UIにも反映されます。
+          // form.setValue: 指定した特定の入力項目に対してプログラムから値をセットし、UIテキストボックスへも即時反映させます。
           form.setValue("outputDirectory", defaultPath || "");
         }
+
+        // ============================================================================
+        // 【Zustand グローバルストアへの初期マウント・ロード同期】
+        // アプリ起動時にファイルから読み込まれたプロファイル配列と有効パスを
+        // グローバルな Zustand ストアへディスパッチして状態を同期させます。
+        // defaultOutputDirectory はシステム既定の固定フォールバック先としてロード保持します。
+        // ============================================================================
+        const freshSettings = form.getValues();
+        const defaultPathForFallback = await getDefaultOutputDirectory();
+        setOutputPresets(freshSettings.outputPresets || []);
+        setDefaultOutputDirectory(defaultPathForFallback || "");
+        setOutputDirectory(freshSettings.outputDirectory || "");
+        syncActivePresetIdFromPath(freshSettings.outputDirectory || "");
       } catch (error) {
         console.error("Failed to load settings:", error);
         toast.error("設定の読み込みに失敗しました");
@@ -259,6 +333,10 @@ export const SettingsView: React.FC = () => {
       // ファイル保存の成功をログに記録
       systemApi.postLogs("INFO", "Settings saved to config.json successfully.");
 
+      setOutputPresets(data.outputPresets || []);
+      setOutputDirectory(data.outputDirectory || "");
+      syncActivePresetIdFromPath(data.outputDirectory || "");
+
       // 4. バックエンド(FastAPI)に設定変更を通知して即時反映させる
       try {
         // APIクライアントを経由して通信を行う
@@ -286,26 +364,24 @@ export const SettingsView: React.FC = () => {
   };
 
   /**
-   * フォルダ選択ダイアログを開く処理
-   * 
-   * Tauriのネイティブダイアログプラグイン(`@tauri-apps/plugin-dialog`)を呼び出し、
-   * ユーザーにOSのフォルダ選択画面を表示します。選択されたパスはフォームに反映されます。
+   * 【出力先フォルダ参照ダイアログ起動処理】
+   * ユーザーにOS標準のフォルダ選択画面を表示し、
+   * 選択されたパスをフォームの有効パス（`outputDirectory`）へ安全に設定します。
    */
   const handleSelectDir = async () => {
     console.log("Browse button clicked. Trying to open dialog...");
     try {
-      // Tauriのダイアログプラグインを使用
-      // open: ネイティブのファイル/フォルダ選択ダイアログを表示する関数です。
+      // open: Tauriのネイティブダイアログプラグイン(@tauri-apps/plugin-dialog)を呼び出し、OS標準のフォルダ選択ダイアログを開きます
       const selected = await open({
-        directory: true, // trueにすると、ファイルではなくフォルダを選択するモードになります。
-        multiple: false, // falseにすると、1つのフォルダしか選択できなくなります。
-        defaultPath: form.getValues("outputDirectory"), // ダイアログが開いたときの初期フォルダを指定します。
+        directory: true, // trueにすることで、ファイル選択ではなく「フォルダ選択モード」で起動させます
+        multiple: false, // 単一フォルダ選択のみ（複数選択は不可）に制限
+        defaultPath: form.getValues("outputDirectory") || undefined, // ダイアログを開いたときに最初に表示するフォルダ位置を指定
       });
       console.log("Dialog selection result:", selected);
 
-      // 選択された場合、パス（文字列）が返ってきます。キャンセルされた場合は null が返ります。
+      // フォルダが選択された場合は絶対パス文字列が返り、キャンセルされた場合は null が返ります
       if (selected && typeof selected === "string") {
-        // 選択されたパスをフォームに設定し、バリデーション（入力チェック）を実行します。
+        // 選択されたパスをフォームの項目に反映し、即時バリデーション（入力チェック）を実行して警告表示などを更新します
         form.setValue("outputDirectory", selected, { shouldValidate: true });
       } else {
         console.log("Dialog was cancelled or returned an unexpected value.");
@@ -315,7 +391,9 @@ export const SettingsView: React.FC = () => {
     }
   };
 
-  // 初期読み込み中（かつ、まだディレクトリ設定が空の場合）は、画面全体にローディングスピナーを表示して待機させます。
+  // 【初期化中表示】
+  // 設定ファイルの非同期読み込みが完了する前に画面を描画しようとして、
+  // パスが空のまま崩れたフォームが表示されるのを防ぐため、ローディングスピナーを全画面表示して待機させます。
   if (isLoading && !form.getValues("outputDirectory")) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -432,6 +510,118 @@ export const SettingsView: React.FC = () => {
                       )}
                     />
                   </FieldGroup>
+                </CardContent>
+              </Card>
+
+              {/*
+                【保存先プロファイルプリセット管理カード】
+                複数のプロジェクトやオペレーターごとに、ワンクリックで保存フォルダを切り替えるためのプリセット（プロファイル）管理テーブルです。
+                react-hook-form の `useFieldArray` フックを利用し、オブジェクト配列を動的かつ型安全にバインドします。
+                各行の追加時には UUID が一意キーとして割り振られるため、React 描画時の行の並び替え・削除バグが防止されます。
+              */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Storage Profile Presets</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {fields.length === 0 ? (
+                    /* 登録プロファイルが無い場合のプレースホルダー表示 */
+                    <div className="text-center py-6 border border-dashed rounded-lg bg-muted/10 text-xs text-muted-foreground">
+                      No presets registered. Add profiles for quick folder switching.
+                    </div>
+                  ) : (
+                    /* 登録済みのプロファイル行をループ描画するコンテナ */
+                    <div className="space-y-3">
+                      {fields.map((field, index) => (
+                        <div key={field.id} className="flex flex-col sm:flex-row gap-3 items-start sm:items-end border p-3 rounded-lg bg-card/50 shadow-inner relative group border-muted-foreground/10">
+                          
+                          {/* プロファイル表示名（ラベル）の入力エリア */}
+                          <div className="w-full sm:w-1/3 space-y-1.5">
+                            <FieldLabel className="text-xs font-semibold text-foreground/80">Profile Name</FieldLabel>
+                            <Controller
+                              control={form.control}
+                              name={`outputPresets.${index}.name`}
+                              render={({ field, fieldState }) => (
+                                <Field data-invalid={fieldState.invalid}>
+                                  <Input {...field} placeholder="e.g. Sato (User A)" className="h-9" />
+                                  {fieldState.invalid && <FieldError className="text-[9px]">{fieldState.error?.message}</FieldError>}
+                                </Field>
+                              )}
+                            />
+                          </div>
+
+                          {/* プロファイル固有の絶対パス設定エリア（Browseボタン連携） */}
+                          <div className="w-full sm:flex-1 space-y-1.5">
+                            <FieldLabel className="text-xs font-semibold text-foreground/80">Target Output Directory Path</FieldLabel>
+                            <Controller
+                              control={form.control}
+                              name={`outputPresets.${index}.path`}
+                              render={({ field, fieldState }) => (
+                                <Field data-invalid={fieldState.invalid}>
+                                  <div className="flex gap-2">
+                                    <Input {...field} placeholder="Click Browse to select folder..." readOnly className="h-9 bg-muted/20 text-xs font-mono truncate" />
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-9 shrink-0 text-xs"
+                                      onClick={() => handleSelectPresetDir(index)}
+                                    >
+                                      Browse
+                                    </Button>
+                                  </div>
+                                  {fieldState.invalid && <FieldError className="text-[9px]">{fieldState.error?.message}</FieldError>}
+                                </Field>
+                              )}
+                            />
+                          </div>
+
+                          {/* 特定のプロファイル行を削除するボタン */}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-destructive hover:bg-destructive/10 shrink-0 h-9 w-9 border border-border sm:border-0"
+                            onClick={() => {
+                              // 削除しようとしているプロファイルIDが、現在選択中のアクティブIDと同一の場合は、
+                              // バインドデータの整合性を維持するため、選択中のID（activePresetId）も同時に空文字列クリアします。
+                              const deletedId = form.getValues(`outputPresets.${index}.id`);
+                              const activeId = form.getValues("activePresetId");
+                              if (deletedId === activeId) {
+                                form.setValue("activePresetId", "");
+                              }
+                              remove(index);
+                            }}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 新規プロファイル行を追加するボタン */}
+                  <div className="flex justify-start">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="text-xs"
+                      onClick={() => append({ id: generateUUID(), name: "", path: "" })}
+                    >
+                      <Plus className="w-3.5 h-3.5 mr-1" />
+                      Add Profile
+                    </Button>
+                  </div>
+
+                  {/* 現在アクティブなプロファイルIDを react-hook-form の管理対象にバインドしておくための隠しフィールド */}
+                  <Controller
+                    control={form.control}
+                    name="activePresetId"
+                    render={({ field }) => (
+                      <input type="hidden" {...field} />
+                    )}
+                  />
                 </CardContent>
               </Card>
 

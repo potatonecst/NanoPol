@@ -397,6 +397,21 @@ function App() {
         if (settings.defaultStagePort) {
           useAppStore.getState().setStagePort(settings.defaultStagePort);
         }
+
+        // ============================================================================
+        // 【起動時の保存先プロファイル・基準パスの初期同期】
+        // 1. ファイルからロードされた `outputPresets`（プロファイルリスト）をストアに流し込みます。
+        // 2. `defaultOutputDirectory`（基準デフォルトパス）には、config.json 内の保存値に左右されず、
+        //    常にシステム起動時に動的に決定された本来の OS 既定パス（defaultPath）をロード割り当てして固定保護します。
+        // 3. `outputDirectory`（現在有効なパス）には、ファイルから読み込まれた現在の保存先を同期します。
+        // 4. 有効パスと大元デフォルトパスを比較・評価する「プロファイルIDの逆引き同期（syncActivePresetIdFromPath）」を
+        //    実行し、起動時のドロップダウン表示状態（Custom なのか No Preset なのか等）を自動決定します。
+        // ============================================================================
+        const store = useAppStore.getState();
+        store.setOutputPresets(settings.outputPresets || []);
+        store.setDefaultOutputDirectory(defaultPath || "");
+        store.setOutputDirectory(settings.outputDirectory || "");
+        store.syncActivePresetIdFromPath(settings.outputDirectory || "");
       } catch (error) {
         console.warn("Failed to sync settings on startup:", error);
       }

@@ -31,6 +31,8 @@ export const DEFAULT_SETTINGS = {
     defaultExposure: 0.06675,
     defaultGain: 1.0,
     defaultStagePort: "", // デフォルトのステージCOMポート（初期値は空文字列）
+    outputPresets: [] as Array<{ id: string; name: string; path: string }>, // 保存先プロファイルプリセットの初期リスト
+    activePresetId: "", // 現在選択中のプロファイルID（初期値は空文字列）
 } as const;
 
 /**

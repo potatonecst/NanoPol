@@ -3,7 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store/useAppStore";
 import { stageApi, cameraApi, systemApi } from "@/api/client";
 import { invoke } from "@tauri-apps/api/core"; // Tauri IPC コマンド呼び出し用の関数
-import { readTextFile, exists, BaseDirectory } from "@tauri-apps/plugin-fs";
+import { readTextFile, writeTextFile, mkdir, exists, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { CONFIG_FILENAME } from "@/constants/constants";
 import { Settings } from "@/schemas/settingsSchema";
 
@@ -39,7 +39,7 @@ import {
 } from "../ui/alert-dialog";
 import { toast } from "sonner";
 
-import { Cable, Camera, RefreshCw, AlertCircle } from "lucide-react";
+import { Cable, Camera, RefreshCw, AlertCircle, FolderOpen } from "lucide-react";
 
 /**
  * デバイス接続管理画面 (Devices View) コンポーネント
@@ -65,9 +65,11 @@ export function DevicesView() {
         isRecording,
         resetAllConnections,
         isBackendConnected,
-        // useShallow: パフォーマンス最適化フック。
-        // ストア全体のデータが変わっても、ここで指定したプロパティ（stagePortなど）に変化がなければ
-        // このコンポーネントは再レンダリングされません。
+        outputDirectory,
+        outputPresets,
+        activePresetId,
+        setActivePresetId,
+        defaultOutputDirectory,
     } = useAppStore(
         useShallow((state) => ({
             stagePort: state.stagePort,
@@ -86,8 +88,71 @@ export function DevicesView() {
             setCameraExposureRange: state.setCameraExposureRange,
             setCameraResolution: state.setCameraResolution,
             isBackendConnected: state.isBackendConnected,
+            outputDirectory: state.outputDirectory,
+            outputPresets: state.outputPresets,
+            activePresetId: state.activePresetId,
+            setActivePresetId: state.setActivePresetId,
+            defaultOutputDirectory: state.defaultOutputDirectory,
         }))
     );
+
+    /**
+     * 【プロファイル選択変更時の自動保存・同期処理】
+     * ユーザーがプロファイル（保存先プリセット）を切り替えた瞬間に呼び出されます。
+     * メモリ上の Zustand ストア状態を即時に更新するとともに、裏で自動的に config.json への書き出しと
+     * バックエンド(FastAPI)への設定同期を行い、画面遷移後や再起動後でも選択状態が安全に維持されるようにします。
+     * 
+     * @param val - ドロップダウンから選択されたプロファイルID、または未指定を示すプレースホルダー "__none__"
+     */
+    const handleProfileChange = async (val: string) => {
+        const presetId = val === "__none__" ? "" : val;
+        
+        // 1. まずメモリ上のストア状態を即時に更新してUIのレスポンスを高める
+        setActivePresetId(presetId);
+        
+        try {
+            // 2. config.json の現在の保存内容を非同期でロード
+            const contents = await readTextFile(CONFIG_FILENAME, {
+                baseDir: BaseDirectory.AppConfig,
+            });
+            const savedSettings = JSON.parse(contents);
+
+            // 3. 選択されたIDから適用すべき出力先絶対パスを決定
+            let targetPath = "";
+            if (presetId === "") {
+                // 未指定の場合は、ストアに設定されているシステム標準 of 基準デフォルトパスを適用
+                targetPath = defaultOutputDirectory;
+            } else {
+                // プロファイルが選ばれた場合は、そのプロファイルの path を抽出
+                const preset = outputPresets.find((p) => p.id === presetId);
+                targetPath = preset ? preset.path : defaultOutputDirectory;
+            }
+
+            // 4. 保存用オブジェクトの構築とファイル保存
+            const updatedSettings = {
+                ...savedSettings,
+                activePresetId: presetId,
+                outputDirectory: targetPath,
+            };
+
+            await writeTextFile(CONFIG_FILENAME, JSON.stringify(updatedSettings, null, 2), {
+                baseDir: BaseDirectory.AppConfig,
+            });
+
+            // 5. 出力先ディレクトリが存在しない場合は自動作成
+            if (targetPath && !(await exists(targetPath))) {
+                await mkdir(targetPath, { recursive: true });
+            }
+
+            // 6. バックエンド(FastAPI)にも即時反映を通知
+            await systemApi.updateSettings(updatedSettings);
+
+            toast.success(`Storage Profile Applied: ${presetId ? "Selected Profile" : "Default Folder"}`);
+        } catch (e) {
+            console.error("Failed to auto-save profile change:", e);
+            toast.error("プロファイルの適用保存に失敗しました");
+        }
+    };
 
     const [availablePorts, setAvailablePorts] = useState<string[]>([]);
     const [isStageLoading, setIsStageLoading] = useState(false);
@@ -386,6 +451,53 @@ export function DevicesView() {
                         Manage connections for the GSC-01 Stage Controller and DCC1545M camera.
                     </p>
                 </div>
+
+                {/* Storage Profile Panel (出力先プリセット) */}
+                <Card>
+                    <CardHeader>
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <FolderOpen className="size-5 text-primary" />
+                                <CardTitle>Storage Profile</CardTitle>
+                            </div>
+                        </div>
+                        <CardDescription>Select a preset profile to apply the target output directory</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                        <div className="space-y-4">
+                            {/* 1段目: プロファイル選択ドロップダウン */}
+                            <div className="space-y-2">
+                                <Label htmlFor="profile-select" className="text-sm font-medium">Select Profile</Label>
+                                <Select value={activePresetId || "__none__"} onValueChange={handleProfileChange}>
+                                    <SelectTrigger id="profile-select" className="w-full">
+                                        <SelectValue placeholder="Select Profile" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="__none__">Default / No Preset</SelectItem>
+                                        {outputPresets.map((preset) => (
+                                            <SelectItem key={preset.id} value={preset.id}>
+                                                {preset.name}
+                                            </SelectItem>
+                                        ))}
+                                        {activePresetId === "__custom__" && (
+                                            <SelectItem value="__custom__" disabled className="text-amber-600 bg-amber-500/5">
+                                                Custom (Manual)
+                                            </SelectItem>
+                                        )}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            
+                            {/* 2段目: 適用パス表示 */}
+                            <div className="space-y-2">
+                                <Label className="text-sm font-medium">Output Path</Label>
+                                <div className="w-full px-3 py-2 border rounded-md bg-muted/40 text-xs font-mono select-all truncate flex items-center text-muted-foreground border-muted-foreground/15 shadow-inner">
+                                    {outputDirectory || "Default (OS Documents/NanoPol)"}
+                                </div>
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {/* Stage Controller Panel */}

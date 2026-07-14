@@ -80,6 +80,16 @@ export const settingsSchema = z.object({
     // 初回起動時や設定未登録の段階で誤ったポートが勝手に選択されるのを防ぐため、
     // 初期デフォルト値は空文字列（`""`：未指定）となります。
     defaultStagePort: z.string().default(DEFAULT_SETTINGS.defaultStagePort),
+
+    // --- Output Folder Presets (保存先プロファイル) ---
+    outputPresets: z.array(
+        z.object({
+            id: z.string(), // プロファイルID（UUID）
+            name: z.string().min(1, "プロファイル名を入力してください"), // UI上の表示ラベル
+            path: z.string().min(1, "保存先フォルダを指定してください"), // 実際の絶対パス
+        })
+    ).default([]),
+    activePresetId: z.string().default(""), // 現在有効化されているプロファイルID
 })
     // refine: オブジェクト全体に対する検証（クロスフィールドバリデーション）
     // 「最大速度」が「最小速度」より小さい場合など、複数の項目が絡む矛盾をチェックします。
