@@ -72,7 +72,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 11
+          version: 11.5.2
 
       # pnpmを動かすためのNode.js環境をインストールします。
       - name: Set up Node.js
