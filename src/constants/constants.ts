@@ -33,6 +33,7 @@ export const DEFAULT_SETTINGS = {
     defaultStagePort: "", // デフォルトのステージCOMポート（初期値は空文字列）
     outputPresets: [] as Array<{ id: string; name: string; path: string }>, // 保存先プロファイルプリセットの初期リスト
     activePresetId: "", // 現在選択中のプロファイルID（初期値は空文字列）
+    rememberLastProfile: false, // 起動時に前回のプロファイル選択を復元するか（デフォルトは安全のためfalse）
 } as const;
 
 /**

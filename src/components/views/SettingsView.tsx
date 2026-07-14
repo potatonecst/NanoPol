@@ -130,7 +130,8 @@ export const SettingsView: React.FC = () => {
     setOutputDirectory,
     setDefaultOutputDirectory,
     setOutputPresets,
-    syncActivePresetIdFromPath
+    syncActivePresetIdFromPath,
+    defaultOutputDirectory,
   } = useAppStore(
     useShallow((s) => ({ 
       cameraExposureRange: s.cameraExposureRange, 
@@ -139,6 +140,7 @@ export const SettingsView: React.FC = () => {
       setDefaultOutputDirectory: s.setDefaultOutputDirectory,
       setOutputPresets: s.setOutputPresets,
       syncActivePresetIdFromPath: s.syncActivePresetIdFromPath,
+      defaultOutputDirectory: s.defaultOutputDirectory,
     }))
   );
 
@@ -500,9 +502,30 @@ export const SettingsView: React.FC = () => {
                       render={({ field }) => (
                         <Field orientation="horizontal" className="justify-between rounded-lg border p-4 bg-card">
                           <div className="space-y-0.5 pr-4">
-                            <FieldLabel>Always ask where to save files</FieldLabel>
+                            <FieldLabel>Ask before saving each file</FieldLabel>
                             <FieldDescription>
-                              If disabled, files will be saved automatically using the prefixes and timestamp.
+                              If enabled, a dialog will prompt you to confirm the destination and filename.
+                            </FieldDescription>
+                          </div>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </Field>
+                      )}
+                    />
+
+                    {/* 
+                      【起動時プロファイル復元トグルスイッチ】
+                      - ON (有効): 前回のアプリ終了時のプロファイル選択と有効フォルダパスを起動時に自動復元します (1人占有環境向け)。
+                      - OFF (無効・規定値): 起動時は強制的に「No Preset (システム既定フォルダ)」にクリアします (共有環境での誤混入防止用)。
+                    */}
+                    <Controller
+                      control={form.control}
+                      name="rememberLastProfile"
+                      render={({ field }) => (
+                        <Field orientation="horizontal" className="justify-between rounded-lg border p-4 bg-card">
+                          <div className="space-y-0.5 pr-4">
+                            <FieldLabel>Restore last selected profile on startup</FieldLabel>
+                            <FieldDescription>
+                              If enabled, the app will remember and restore the active storage profile from your last session.
                             </FieldDescription>
                           </div>
                           <Switch checked={field.value} onCheckedChange={field.onChange} />
@@ -533,7 +556,13 @@ export const SettingsView: React.FC = () => {
                     /* 登録済みのプロファイル行をループ描画するコンテナ */
                     <div className="space-y-3">
                       {fields.map((field, index) => (
-                        <div key={field.id} className="flex flex-col sm:flex-row gap-3 items-start sm:items-end border p-3 rounded-lg bg-card/50 shadow-inner relative group border-muted-foreground/10">
+                        /* 
+                          【エラー発生時のレイアウトガタつき防止（標準的な上揃え設計）】
+                          横並びコンテナの縦揃えを「上揃え（sm:items-start）」に固定します。
+                          これにより、名前やパスのいずれかに赤文字のエラー文が出現して高さが下に拡張された場合でも、
+                          エラーが出ていない隣の入力項目やゴミ箱ボタンが下に引っ張られてズリ下がるバグを完全に防止します。
+                        */
+                        <div key={field.id} className="flex flex-col sm:flex-row gap-3 items-start sm:items-start border p-3 rounded-lg bg-card/50 shadow-inner relative group border-muted-foreground/10">
                           
                           {/* プロファイル表示名（ラベル）の入力エリア */}
                           <div className="w-full sm:w-1/3 space-y-1.5">
@@ -543,7 +572,15 @@ export const SettingsView: React.FC = () => {
                               name={`outputPresets.${index}.name`}
                               render={({ field, fieldState }) => (
                                 <Field data-invalid={fieldState.invalid}>
-                                  <Input {...field} placeholder="e.g. Sato (User A)" className="h-9" />
+                                  <Input 
+                                    {...field} 
+                                    placeholder="e.g. Sato (User A)" 
+                                    className="h-9"
+                                    autoCapitalize="none" // 最初の一文字が勝手に大文字になるのを防ぐ
+                                    autoComplete="off"    // 過去の余計な入力履歴の自動入力補完を防ぐ
+                                    autoCorrect="off"     // オートコレクト（自動スペル修正）を防ぐ
+                                    spellCheck={false}    // スペルエラーの赤い波線を表示しない
+                                  />
                                   {fieldState.invalid && <FieldError className="text-[9px]">{fieldState.error?.message}</FieldError>}
                                 </Field>
                               )}
@@ -577,18 +614,24 @@ export const SettingsView: React.FC = () => {
                           </div>
 
                           {/* 特定のプロファイル行を削除するボタン */}
+                          {/* 
+                            - sm:mt-6: 上揃え（items-start）化に伴い、ゴミ箱ボタンがラベルの高さで上に浮いて
+                              しまわないよう、上部に約24pxのマージンを設けてインプットボックスと縦位置中央を完全に固定します。
+                          */}
                           <Button
                             type="button"
                             variant="ghost"
                             size="icon"
-                            className="text-destructive hover:bg-destructive/10 shrink-0 h-9 w-9 border border-border sm:border-0"
+                            className="text-destructive hover:bg-destructive/10 shrink-0 h-9 w-9 border border-border sm:border-0 sm:mt-6"
                             onClick={() => {
                               // 削除しようとしているプロファイルIDが、現在選択中のアクティブIDと同一の場合は、
-                              // バインドデータの整合性を維持するため、選択中のID（activePresetId）も同時に空文字列クリアします。
+                              // バインドデータの整合性を維持するため、選択中のID（activePresetId）を空にし、
+                              // かつ、適用パス（outputDirectory）もシステム基準デフォルトパス（defaultOutputDirectory）へ即時に連動リセットします。
                               const deletedId = form.getValues(`outputPresets.${index}.id`);
                               const activeId = form.getValues("activePresetId");
                               if (deletedId === activeId) {
                                 form.setValue("activePresetId", "");
+                                form.setValue("outputDirectory", defaultOutputDirectory);
                               }
                               remove(index);
                             }}

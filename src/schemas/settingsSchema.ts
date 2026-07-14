@@ -90,6 +90,7 @@ export const settingsSchema = z.object({
         })
     ).default([]),
     activePresetId: z.string().default(""), // 現在有効化されているプロファイルID
+    rememberLastProfile: z.boolean().default(DEFAULT_SETTINGS.rememberLastProfile), // 起動時に前回のプロファイル選択を復元するか
 })
     // refine: オブジェクト全体に対する検証（クロスフィールドバリデーション）
     // 「最大速度」が「最小速度」より小さい場合など、複数の項目が絡む矛盾をチェックします。

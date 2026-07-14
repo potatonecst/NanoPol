@@ -399,19 +399,31 @@ function App() {
         }
 
         // ============================================================================
-        // 【起動時の保存先プロファイル・基準パスの初期同期】
-        // 1. ファイルからロードされた `outputPresets`（プロファイルリスト）をストアに流し込みます。
-        // 2. `defaultOutputDirectory`（基準デフォルトパス）には、config.json 内の保存値に左右されず、
-        //    常にシステム起動時に動的に決定された本来の OS 既定パス（defaultPath）をロード割り当てして固定保護します。
-        // 3. `outputDirectory`（現在有効なパス）には、ファイルから読み込まれた現在の保存先を同期します。
-        // 4. 有効パスと大元デフォルトパスを比較・評価する「プロファイルIDの逆引き同期（syncActivePresetIdFromPath）」を
-        //    実行し、起動時のドロップダウン表示状態（Custom なのか No Preset なのか等）を自動決定します。
+        // 【起動時の保存先プロファイル・基準パスの初期同期と復元制御】
+        // 1. ファイルからロードされた `outputPresets`（プロファイルリスト）をストアに同期します。
+        // 2. `defaultOutputDirectory`（フォールバック用基準デフォルトパス）には、常にシステム起動時に
+        //    動的自動解決された本来의 OS 既定フォルダ（defaultPath）を固定マウントして保護します。
+        // 3. 起動時復元オプション（rememberLastProfile）の有効/無効に基づく初期ロード分岐:
+        //    - [有効時]: config.json 内に保存されていた outputDirectory の値をロード適用し、
+        //      パス値からの「プロファイルIDの逆引き同期 (syncActivePresetIdFromPath)」によって選択表示状態を復元します。
+        //    - [無効時 (デフォルト/共有環境向け安全仕様)]: 誤混入防止のため、起動時は強制的に
+        //      初期状態を「Default / No Preset」（有効フォルダはシステム既定の defaultPath）にリセットして開始します。
         // ============================================================================
         const store = useAppStore.getState();
         store.setOutputPresets(settings.outputPresets || []);
         store.setDefaultOutputDirectory(defaultPath || "");
-        store.setOutputDirectory(settings.outputDirectory || "");
-        store.syncActivePresetIdFromPath(settings.outputDirectory || "");
+
+        if (settings.rememberLastProfile) {
+          // 前回状態を復元するモード:
+          // ファイルに保存されていた有効パスをロードし、そのパス値からアクティブプロファイルIDを逆引き解決します。
+          store.setOutputDirectory(settings.outputDirectory || defaultPath || "");
+          store.syncActivePresetIdFromPath(settings.outputDirectory || "");
+        } else {
+          // 起動時強制リセットモード (安全優先仕様):
+          // 前回のプロファイル選択に関わらず、起動時は常にシステム既定パスにリセットし、選択状態を No Preset にクリアします。
+          store.setOutputDirectory(defaultPath || "");
+          store.setActivePresetId("");
+        }
       } catch (error) {
         console.warn("Failed to sync settings on startup:", error);
       }

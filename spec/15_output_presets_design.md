@@ -61,6 +61,7 @@
     *   ドロップダウンを変更すると、Zustandストア内の `activePresetId` が更新され、同時に全体の `outputDirectory` がそのプリセットの `path` に自動で書き換わり、下段のパス表示領域（テキスト）に反映されます。
     *   プリセットが「未選択（`Default / No Preset`）」の時は、`outputDirectory` はシステム既定の基準デフォルト保存先フォルダパス（OSドキュメント下のNanoPol）に自動で戻ります。
     *   設定画面で手動でプリセット外のパスを指定した場合は、接続画面のドロップダウンは自動的に `Custom (Manual)` に切り替わります。
+    *   **※警告バッジ表示**: プリセットが「未選択（`Default / No Preset`）」になっている間は、測定者による選択漏れを防ぐため、パス表示の横に `AlertCircle` アイコン付きの「No Profile Selected (Saved to default shared folder)」という注意喚起の警告バッジ（マイルドな警告色）を常時表示します。
 
 ### 15.3.2 設定画面 (SettingsView.tsx)
 プリセット項目のマスター編集（追加・削除・編集）および、プリセットを使用しない運用のためのパスの直接編集（Browseボタン付き）を一元管理する機能を提供する。
@@ -72,10 +73,17 @@
         最上部に従来通り、出力先入力欄と `[Browse]` ボタンを維持します。これは現在有効な `outputDirectory` にバインドされており、プリセットと連動して動的に表示が変わります。また、ここを直接編集して一時的なカスタムパスを指定することも可能です。
     2.  **プリセットリストの表示・編集 (`useFieldArray`)**:
         登録されているプリセットの一覧をフォームテーブルで表示します。「Add Profile」ボタンで新規行が追加され、名前入力と `[Browse]` ボタンから物理パスを指定します。
+        ※**お節介補完の無効化**: プリセット名入力欄では、OSやブラウザが勝手に先頭を大文字化したり、意図しない入力補完を行うのを防ぐため、`autoCapitalize="none"`, `autoCorrect="off"`, `spellCheck={false}` などの自動制御無効化属性を設定します。
     3.  **プリセットの削除**:
-        各プロファイル行の「Delete (削除)」ボタンで削除します。現在選択中のアクティブなプリセットを削除した場合は、自動的に共通デフォルトパスへと安全にフォールバックさせます。
+        各プロファイル行の「Delete (削除)」ボタンで削除します。現在選択中のアクティブなプリセットを削除した場合は、メモリ整合性を維持するため、アクティブID（`activePresetId`）を空にし、かつ有効な出力パス（`outputDirectory`）も自動的にシステム基準デフォルトパス（`defaultOutputDirectory`）へ即座に書き戻し（連動フォールバック）します。
     4.  **保存時の状態同期**:
         「Save Settings」押下時に `config.json` へ保存され、同時にZustandストアへも配列や有効パス（逆引き含む）が最新状態に再同期されます。
+
+### 15.3.3 起動時の自動クリーンと復元選択仕様（データ混入防止ポリシー）
+複数人共有の実験室における測定データの誤混入（他のフォルダへの誤保存）を確実に防止するため、アプリ起動時の挙動を設定画面で選択できる以下の仕様を定義します。
+*   **起動時復元トグル（`rememberLastProfile`）の導入**:
+    *   **OFF（無効・推奨デフォルト）**: 共有環境向け安全仕様。前回のアプリ終了時のプロファイル選択状態に関わらず、起動時は常に強制的に `Default / No Preset`（システム既定の基準デフォルト保存先）へリセットして開始し、測定のたびに明示的な選択を誘導します。
+    *   **ON（有効）**: 1人占有環境向け仕様。前回セッション終了時のプロファイル選択および有効な出力フォルダパスをそのまま自動復元して起動します。
 
 ---
 
@@ -89,10 +97,10 @@ sequenceDiagram
     participant Config as 設定ファイル (config.json)
     participant Devices as 接続画面 (DevicesView.tsx)
 
-    Config->>App: 1. config.json の読込
-    App->>Store: 2. outputPresets & activePresetId をロード
-    Note over Store: activePresetId に対応する<br/>path を outputDirectory にコピーセット
-    Store->>Devices: 3. ドロップダウン初期値と現在のパスを同期
+    Config->>App: 1. config.json の読込 (プリセットリスト等)
+    App->>Store: 2. プリセットリストのみをストアへロード
+    Note over Store: activePresetId: "" (No Preset)<br/>outputDirectory: defaultOutputDirectory (基準パス)
+    Store->>Devices: 3. 初期状態を Default / No Preset で同期表示
     
     rect rgb(240, 240, 240)
         Note over Devices: ユーザーがドロップダウンから別プリセットを選択

@@ -490,7 +490,22 @@ export function DevicesView() {
                             
                             {/* 2段目: 適用パス表示 */}
                             <div className="space-y-2">
-                                <Label className="text-sm font-medium">Output Path</Label>
+                                <div className="flex items-center justify-between">
+                                    <Label className="text-sm font-medium">Output Path</Label>
+                                    {/* 
+                                      【No Preset 注意喚起警告バッジの動的表示】
+                                      共有PCでの運用において、測定者がプロファイル（佐藤など）の選択を忘れたまま自動保存で測定を
+                                      開始してデータが混ざるのを防ぐため、未選択（activePresetId === ""）の時だけバッジを表示します。
+                                      - AlertCircle: OSの絵文字による表示のブレを防ぎ、洗練されたデザインにするための Lucide SVG アイコンです。
+                                      - animate-pulse: 視覚的な注意をマイルドに惹きつけるための、ゆっくりとした明滅アニメーションクラスです。
+                                    */}
+                                    {activePresetId === "" && (
+                                        <Badge variant="outline" className="text-[10px] py-0 px-2 font-normal border-yellow-500/30 bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 select-none animate-pulse flex items-center gap-1">
+                                            <AlertCircle className="size-3" />
+                                            No Profile Selected (Saved to default shared folder)
+                                        </Badge>
+                                    )}
+                                </div>
                                 <div className="w-full px-3 py-2 border rounded-md bg-muted/40 text-xs font-mono select-all truncate flex items-center text-muted-foreground border-muted-foreground/15 shadow-inner">
                                     {outputDirectory || "Default (OS Documents/NanoPol)"}
                                 </div>
