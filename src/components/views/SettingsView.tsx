@@ -485,7 +485,13 @@ export const SettingsView: React.FC = () => {
                       render={({ field, fieldState }) => (
                         <Field data-invalid={fieldState.invalid}>
                           <div className="flex gap-2">
-                            <Input {...field} id="outputDirectory" readOnly placeholder="Select a folder..." />
+                            <Input 
+                              {...field} 
+                              id="outputDirectory" 
+                              readOnly 
+                              placeholder="Select a folder..." 
+                              title={field.value} /* ホバー時に省略された長い絶対パスの全容を確認できるようにします */
+                            />
                             <Button type="button" variant="outline" onClick={handleSelectDir} className="shrink-0">
                               <FolderOpen className="w-4 h-4 mr-2" />
                               Browse
@@ -596,7 +602,13 @@ export const SettingsView: React.FC = () => {
                               render={({ field, fieldState }) => (
                                 <Field data-invalid={fieldState.invalid}>
                                   <div className="flex gap-2">
-                                    <Input {...field} placeholder="Click Browse to select folder..." readOnly className="h-9 bg-muted/20 text-xs font-mono truncate" />
+                                    <Input 
+                                      {...field} 
+                                      placeholder="Click Browse to select folder..." 
+                                      readOnly 
+                                      className="h-9 bg-muted/20 text-xs font-mono truncate" 
+                                      title={field.value} /* ホバー時に省略された長い絶対パスの全容を確認できるようにします */
+                                    />
                                     <Button
                                       type="button"
                                       variant="outline"

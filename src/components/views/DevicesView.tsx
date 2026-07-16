@@ -506,7 +506,10 @@ export function DevicesView() {
                                         </Badge>
                                     )}
                                 </div>
-                                <div className="w-full px-3 py-2 border rounded-md bg-muted/40 text-xs font-mono select-all truncate flex items-center text-muted-foreground border-muted-foreground/15 shadow-inner">
+                                <div 
+                                    className="w-full px-3 py-2 border rounded-md bg-muted/40 text-xs font-mono select-all truncate flex items-center text-muted-foreground border-muted-foreground/15 shadow-inner"
+                                    title={outputDirectory || "Default (OS Documents/NanoPol)"} /* ホバー時に省略された長い絶対パスの全容を確認できるようにします */
+                                >
                                     {outputDirectory || "Default (OS Documents/NanoPol)"}
                                 </div>
                             </div>
