@@ -226,6 +226,12 @@ Thorlabs (IDS Imaging) 製のモノクロUSBカメラ `DCC1545M` を制御しま
 **互換性と追加API:**
 - 最近の修正で `CameraController` は既存の setter に加えて互換性のためのアクセサ `get_exposure()` と `get_gain()` を追加しました。これにより外部から現在の露光/ゲイン値を安全に取得できます。既存の UI や外部スクリプトがこれらの値を参照している場合、`get_*` 系の存在を前提にできます。
 
+**スレッド安全（排他制御）と自己修復機能:**
+- **カメラ専用排他ロック (`self._camera_lock = threading.Lock()`)**:
+  露出時間変更 (`set_exposure`)・ゲイン変更 (`set_gain`) と、バックグラウンドでの連続画像取得 (`snap()`) が同時に発生すると、C++ ドライバ (SDK) 内部でレースコンディションが起きてキャプチャタイムアウトやハングアップの原因となります。これを防ぐため、実機カメラオブジェクトへのすべての操作は `_camera_lock` を用いて完全に直列化（排他制御）されています。
+- **自動再接続による自己修復 (Self-Healing)**:
+  ステージ接続時の一時的なUSBリセットや信号の乱れに起因して `snap()` が連続 3 回失敗したことを検出すると、キャプチャループは自動でループを脱出し、別スレッドから `disconnect()` ➔ 2秒待機 ➔ `connect()` による再初期化＆退避パラメータ（露出・ゲイン）の復元を実行して、プレビューを自動復旧させます。
+
 **テストとドキュメント:**
 - 本プロジェクトでは実機がない環境でも早期に問題を検出するため、`pylablib` の `uc480` を置き換える Mock 実装を用いたユニットテスト群を用意しています。
 - デバイス層の主なテスト対象は、`backend/tests/devices/test_camera_controller.py`、`test_exposure_edge_cases.py`、`test_exposure_unit_mismatch.py`、`test_disconnect_during_recording.py` です。

@@ -96,6 +96,7 @@ class CameraController:
         self.latest_roi_stats = {}  # 最新フレームの解析結果（Sum, Max, Centroid）
         self.enable_centroid_calc = True  # 重心計算を行うかどうか
         self._roi_lock = threading.Lock()  # ROI 設定の更新を保護するロック
+        self._camera_lock = threading.Lock()  # 【重要】カメラデバイス（uc480）へのすべての並行操作を防ぐ排他ロック
         
         # 解析完了時に呼ばれる外部コールバック
         # 署名: callback(angle: float, roi_stats: dict)
@@ -187,6 +188,8 @@ class CameraController:
         if self.is_connected:
             return True
 
+        self.camera_id = camera_id  # 【自動再接続用】接続されたカメラIDを保持します。
+
         # Mock環境では実機に触らず、後続処理が動く最小状態だけ作る。
         if self.is_mock_env:
             # Mockモード（uc480非対応環境）の初期化
@@ -245,7 +248,9 @@ class CameraController:
                 
                 # ここで実際の接続ハンドルを作る。
                 # pylablib.devices.uc480 の公開APIは UC480Camera。
-                self.camera = uc480.UC480Camera(cam_id=target_camera.cam_id)
+                # 初期化中の並行アクセスによる衝突を防ぐため、ロックで保護します。
+                with self._camera_lock:
+                    self.camera = uc480.UC480Camera(cam_id=target_camera.cam_id)
 
                 # --- デバイス検出ロジック（高レベルAPI優先、private補助は局所利用） ---
                 # 目的: 接続時にランタイムで取得可能な情報を順に試し、
@@ -464,15 +469,27 @@ class CameraController:
             except Exception:
                 logger.exception(f"{self.log_tag} Error stopping recording")
 
-        # 実機カメラのクローズ（Mock環境では self.camera は None）
-        if not self.is_mock_env and self.camera is not None:
-            try:
-                self.camera.close()
-            except Exception:
-                logger.exception("[CAMERA] Error closing camera")
-                return
-            finally:
-                self.camera = None
+        # ========================================================================
+        # 【デッドロック防止のための安全な終了・破棄順序】
+        # 実機カメラのクローズ（Mock環境では self.camera は None）を行います。
+        # 
+        # キャプチャスレッド（_capture_loop）が動作している最中に、このメソッドが
+        # self._camera_lock を取得した状態で `_capture_thread.join()` のスレッド終了待ちに
+        # 入ってしまうと、スレッド側は `snap()` 内で `_camera_lock` の解放を待ち、
+        # こちらはスレッドの終了を待つため、永久に処理が固まる「デッドロック」に陥ります。
+        # 
+        # このため、必ず `join()` によるスレッドの完全停止を確認した「後」にロックを取得し、
+        # 安全に `camera.close()` とオブジェクトの破棄（None化）を実行する順序設計にしています。
+        # ========================================================================
+        with self._camera_lock:
+            if not self.is_mock_env and self.camera is not None:
+                try:
+                    self.camera.close()
+                except Exception:
+                    logger.exception("[CAMERA] Error closing camera")
+                    return
+                finally:
+                    self.camera = None
 
         logger.info(f"{self.log_tag} Disconnected")
 
@@ -545,7 +562,9 @@ class CameraController:
             # uc480 は秒単位の API を使う実装が多いため、ミリ秒→秒変換して渡す
             exposure_sec = applied_ms / 1000.0
             # ドライバ呼び出し: ドライバは実際に適用した秒値（あるいは None）を返す
-            applied_sec = self.camera.set_exposure(exposure_sec)
+            # ロックを取得して、キャプチャスレッド（snap()）との衝突を防ぎます。
+            with self._camera_lock:
+                applied_sec = self.camera.set_exposure(exposure_sec)
             # ドライバ返却値をミリ秒に戻して内部状態を上書きする
             applied_ms_from_driver = float(applied_sec) * 1000.0
             # ドライバ側でさらに丸めや制限が行われる可能性があるため、
@@ -603,7 +622,9 @@ class CameraController:
         try:
             # 受け取った値を機種範囲内にクランプして適用（デバイス単位のまま渡す）
             # uc480 のハードウェアゲインは master チャネルとして設定する。
-            self.camera.set_gains(master=applied)
+            # ロックを取得して、キャプチャスレッド（snap()）との衝突を防ぎます。
+            with self._camera_lock:
+                self.camera.set_gains(master=applied)
             # 適用に成功したら内部状態を確定してログを出す
             self.gain = applied
             logger.info(f"{self.log_tag} Set Gain: {self.gain} (requested={val}, range={self.gain_min}-{self.gain_max})")
@@ -1108,13 +1129,26 @@ class CameraController:
         - join(timeout=2) で安全に待機
         """
         logger.info(f"{self.log_tag} Capture thread started.")
+        consecutive_failures = 0
+        should_trigger_reconnect = False
+        
         while self.is_connected:
             start_time = time.time()
             
             frame_data = self._grab_image_from_hardware_or_mock()
             if frame_data is None:
+                if not self.is_mock_env:
+                    consecutive_failures += 1
+                    # 連続 3回キャプチャ失敗した場合、接続ハングとみなして自己修復を開始します。
+                    if consecutive_failures >= 3:
+                        logger.error(f"{self.log_tag} Consecutive capture failures detected ({consecutive_failures}). Triggering auto-reconnect...")
+                        should_trigger_reconnect = True
+                        self.is_connected = False
+                        break
                 time.sleep(0.1)
                 continue
+            
+            consecutive_failures = 0
 
             # ========================================================================
             # 【ブロードキャスト通知】プレビューキャッシュと内部参照の更新
@@ -1232,6 +1266,70 @@ class CameraController:
                 
         logger.info(f"{self.log_tag} Capture thread stopped.")
 
+        # 連続エラーによる停止の場合、自分自身のスレッド（_capture_thread）の干渉を受けないよう、
+        # 新しい別スレッドを立ち上げてカメラの自動再接続・自己修復処理（disconnect() ➔ connect()）を実行します。
+        if should_trigger_reconnect:
+            threading.Thread(target=self._run_auto_reconnect, daemon=True).start()
+
+    def _run_auto_reconnect(self):
+        """【自己修復（オートリカバリー）機能の実行スレッド】
+        一時的なUSB瞬断やノイズによってカメラがフリーズした際、自動で復旧を試みるメソッドです。
+
+        【スレッドの排他・安全設計に関する教育的解説】
+        画像キャプチャを行う `_capture_thread` 自身が動作したまま、そのスレッドの内部から
+        `disconnect()`（内部で `.join()` による自身の終了待ちを行う）を呼び出してしまうと、
+        「自分自身が終了するのを自分で待つ」ことになり、永久に処理が進まないデッドロック状態が発生します。
+        
+        この罠を防ぐため、本実装では以下の手順で安全にスレッドを切り替えて処理します。
+        1. 異常を検知したキャプチャスレッドは、`self.is_connected = False` をセットして自身のループを直ちにブレイク・正常終了する。
+        2. キャプチャスレッドが終了した直後、スレッドの末尾から「この独立した別スレッド（_run_auto_reconnect）」を新しく起動する。
+        3. このスレッドの中で `disconnect()` を呼ぶことで、すでに動いていない旧キャプチャスレッドの `.join()` は
+           タイムラグなしで即座に通過し、安全かつ確実に古いカメラハンドルを破棄・再起動することができます。
+        """
+        logger.info(f"{self.log_tag} Auto-reconnect thread started.")
+        try:
+            # 1. 現在適用されていた露出時間・ゲインの設定値を退避
+            old_exposure = self.exposure_ms
+            old_gain = self.gain
+            old_camera_id = getattr(self, "camera_id", 1)
+
+            logger.info(f"{self.log_tag} Saved parameters for auto-healing: exposure={old_exposure}ms, gain={old_gain}")
+
+            # 2. ハングアップしたカメラを完全に安全クローズ（切断）
+            #    ※自分自身のスレッドはすでに停止して抜けているため、disconnect()内のjoin()も即座に通過します。
+            self.disconnect()
+
+            # 3. USBポートのリセットおよびデバイス状態が落ち着くのを待つため、2秒間待機します
+            time.sleep(2.0)
+
+            # 4. 再接続を最大 5回試みます
+            reconnect_success = False
+            for attempt in range(5):
+                logger.info(f"{self.log_tag} Auto-reconnect attempt {attempt+1}/5...")
+                try:
+                    if self.connect(camera_id=old_camera_id):
+                        reconnect_success = True
+                        break
+                except Exception as e:
+                    logger.warning(f"{self.log_tag} Connect attempt {attempt+1} failed: {e}")
+                time.sleep(2.0)
+
+            if not reconnect_success:
+                logger.error(f"{self.log_tag} Auto-reconnect failed after maximum retries. Camera requires manual physical reconnection.")
+                return
+
+            # 5. 再接続が成功したら、退避していた設定値を順に再適用します
+            logger.info(f"{self.log_tag} Auto-reconnect succeeded! Restoring parameters...")
+            if old_exposure is not None:
+                self.set_exposure(old_exposure)
+            if old_gain is not None:
+                self.set_gain(old_gain)
+            
+            logger.info(f"{self.log_tag} Camera self-healing process successfully completed.")
+
+        except Exception as e:
+            logger.exception(f"{self.log_tag} Exception occurred in auto-reconnect thread: {e}")
+
     def _grab_image_from_hardware_or_mock(self) -> Optional[np.ndarray]:
         """
         カメラから生データを取得し、Numpy配列として返す。
@@ -1286,7 +1384,9 @@ class CameraController:
         # pylablib の uc480.Camera.snap() を呼び出して、生 RAW データを取得。
         # 取得形式は通常 16bit グレースケール（センサー依存）。
         try:
-            image_data = self.camera.snap()  # ブロッキング呼び出し（フレーム待機）
+            # 露出やゲイン変更などの設定操作と同時にカメラにアクセスするのを防ぐため、ロックで保護します。
+            with self._camera_lock:
+                image_data = self.camera.snap()  # ブロッキング呼び出し（フレーム待機）
             
             if image_data is None:
                 logger.error("[CAMERA] snap() returned None")

@@ -140,7 +140,7 @@ class StageController:
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=1.0, # 読み込み時にデータが来なくても1秒で諦める（無限待機防止）
+                timeout=0.1, # 読み込み時にデータが来なくても0.1秒（100ms）で諦める（通信エラー時の長時間のI/Oブロックを防ぐ）
                 xonxoff=False,
                 # 【重要】ハードウェアフロー制御 (RTS/CTS) を有効にする
                 # GSC-01は処理が追いつかない時にRTS信号を使って「待って」と合図を送ります。
