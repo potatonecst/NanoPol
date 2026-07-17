@@ -575,10 +575,19 @@ def _run_sweep_operation(operation_id: str, request_data: dict, plan: dict):
         # 1段目: 助走位置（Startより少し手前）まで絶対移動します。
         _set_sweep_state(phase="approach", phase_started_at_ms=_now_ms(), message="Moving to approach position")
         stage.move_absolute(plan["actual_start_deg"], allow_overflow=True)
+        # ========================================================================
+        # 【監視遅延対策：移動開始直後の即時ビジー化（助走開始）】
+        # 常時角度監視タスク（stage_monitor_loop）は、静止時のシリアルI/OおよびUSB競合を
+        # 低減するため 1.0秒に1回のポーリング周期に緩和されています。そのため、ここで移動開始命令
+        # を送信した直後、監視タスクが起き上がってビジー（is_busy = True）を検出してグローバル
+        # 状態に上書きするまでに最大 1.0秒のタイムラグ（遅延）が生じます。
+        # この遅延の間に、下の完了待ちチェック（app_state.is_busy）が「移動はまだ開始されていない（False）」
+        # と誤判定してすり抜けてしまう競合を防ぐため、ここで即座に is_busy = True に強制セットします。
+        # ========================================================================
+        app_state.is_busy = True
 
         # 【移動開始の検知待ち】
-        # monitor_loop (100ms) が is_busy=True を検知するまで最大 0.5秒待機します。
-        # これをしないと、移動開始前に while ループを抜けてしまう可能性があります。
+        # monitor_loop が is_busy=True を検知するまで最大 0.5秒待機します。
         wait_start = time.time()
         while not app_state.is_busy and (time.time() - wait_start < 0.5):
             time.sleep(0.02)
@@ -593,6 +602,14 @@ def _run_sweep_operation(operation_id: str, request_data: dict, plan: dict):
         # 2段目: 助走位置から終端位置までを、1回の相対移動コマンドで流し切ります。
         _set_sweep_state(phase="sweep", phase_started_at_ms=_now_ms(), message="Sweeping")
         stage.move_relative(plan["relative_total_deg"], current_angle_hint=app_state.current_angle)
+        # ========================================================================
+        # 【監視遅延対策：移動開始直後の即時ビジー化（スイープ本番）】
+        # 助走位置に到達しステージが一度静止した際、監視ポーリングは再び 1.0秒間隔に戻っています。
+        # 本番の相対移動コマンドを送信した瞬間にも、同様の検知遅れ（最大1.0秒のタイムラグ）が生じるため、
+        # 録画トリガーを判定する高速監視ループが即座に開始されずに移動完了判定がすり抜けてしまうのを
+        # 防ぐ目的で、ここでも送信と同時に is_busy = True を即時強制適用します。
+        # ========================================================================
+        app_state.is_busy = True
 
         # 移動開始の検知待ち
         wait_start = time.time()
@@ -791,8 +808,12 @@ def _run_auto_measurement(
             )
 
             stage.move_absolute(target_deg, allow_overflow=True)
-            # ステージが実際に動き出し、Busy フラグが True になるまでの猶予を
-            # 0.1s から 0.15s へわずかに延長し、監視タスクとの同期をより確実にします。
+            # 【重要】ステージが実際に動き出すより前に、ここで即座に Busy フラグを True にし、
+            # 監視ポーリング（静止時1.0秒間隔）が完了する前のタイムラグによって
+            # 移動完了待ちループがスルーされてしまう競合を確実に防止します。
+            app_state.is_busy = True
+            
+            # ステージが実際に動き出し、Busy フラグが True になるまでの猶予
             time.sleep(0.15)
             while app_state.is_busy:
                 if _get_auto_operation_snapshot().get("cancel_requested"):
@@ -1030,11 +1051,18 @@ def _run_auto_measurement(
                 logger.error(f"[AUTO] Failed to append history: {e}")
 
         # --- 自動原点復帰 (Auto Homing) ---
-        # 次の測定へのスループット向上と、物理的な脱調リセット・ケーブルねじれ防止のため、
-        # シーケンス終了時にハードウェア原点復帰を実行します。
+        # 測定エラー等によりステージがまだ移動中の場合、その完了（静止）を最大15秒待ってから
+        # 原点復帰コマンドを送信し、重複送信による NG エラーを防ぎます。
         try:
+            if app_state.is_busy:
+                logger.info("[AUTO] Stage is busy. Waiting for stop before homing...")
+                wait_start = time.time()
+                while app_state.is_busy and (time.time() - wait_start < 15.0):
+                    time.sleep(0.1)
+
             logger.info("[AUTO] Returning stage to hardware origin (Home)...")
             stage.home()
+            app_state.is_busy = True # 監視ポーリングの遅延タイムラグを防ぐため即座にビジー化
         except Exception as e:
             logger.error(f"[AUTO] Failed to return to origin: {e}")
 

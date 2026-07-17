@@ -139,9 +139,9 @@ stateDiagram-v2
 1.  **録画の事前準備 (auto_record=True の場合)**:
     *   ファイル I/O のフリーズによるメインシーケンスの遅延を防ぐため、別スレッドで `camera.prepare_recording()` を実行し、TIFF ファイルと CSV ファイルを事前に作成・オープン（スタンバイ状態）します。
 2.  **助走位置への移動 (Approach)**:
-    *   `move_absolute(actual_start_deg)` を実行し、ステージが `is_busy = True` になるのを明示的に待機した後、移動完了（`is_busy = False`）までポーリング待機します。
+    *   `move_absolute(actual_start_deg)` を実行し、監視ポーリングの遅延を回避するため、直ちに `app_state.is_busy = True` を強制設定します。その後、移動完了（`is_busy = False`）までポーリング待機します。
 3.  **スイープ本番の実行 (Sweep)**:
-    *   `move_relative(actual_end_deg - actual_start_deg)` を実行し、一気に終端位置まで移動させます。
+    *   `move_relative(actual_end_deg - actual_start_deg)` を実行し、直ちに `app_state.is_busy = True` を強制設定して、一気に終端位置まで移動させます。
     *   再び `is_busy = True` になるのを待機した後、高速な監視ループに入ります。
 4.  **高速監視と録画トリガー**:
     *   移動中、バックグラウンドのモニタータスク（100ms周期）が更新する `app_state.current_angle` を 10ms 間隔で監視します。
