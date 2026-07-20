@@ -184,6 +184,22 @@ app_state = SystemState()
 stage_command_lock = threading.Lock()
 sweep_state_lock = threading.Lock()
 
+# 【即時イベント割り込み用ブザー】
+# 静止時（1.0秒ポーリング間隔）で監視タスクがスリープしている最中に移動命令が来た際、
+# スリープを0秒で即座に中断して叩き起こすための非同期イベントオブジェクトです。
+stage_wakeup_event = asyncio.Event()
+
+def request_stage_wakeup():
+    """
+    【即時イベント割り込み通知ヘルパー】
+    ステージ移動がトリガーされた際に即座に呼び出され、以下を同時達成します:
+    1. app_state.is_busy = True を即時設定し、移動完了判定のすり抜け・重複送信を物理遮断する。
+    2. stage_wakeup_event.set() で 1.0秒スリープ中の監視タスクを0秒で即座に叩き起こし、
+       タイムラグゼロで角度の読み取りと画面表示の0.1秒高速モード追従を開始させる。
+    """
+    app_state.is_busy = True
+    stage_wakeup_event.set()
+
 
 def _now_ms() -> float:
     """現在時刻を UTC ミリ秒で返すユーティリティ関数。
@@ -576,15 +592,11 @@ def _run_sweep_operation(operation_id: str, request_data: dict, plan: dict):
         _set_sweep_state(phase="approach", phase_started_at_ms=_now_ms(), message="Moving to approach position")
         stage.move_absolute(plan["actual_start_deg"], allow_overflow=True)
         # ========================================================================
-        # 【監視遅延対策：移動開始直後の即時ビジー化（助走開始）】
-        # 常時角度監視タスク（stage_monitor_loop）は、静止時のシリアルI/OおよびUSB競合を
-        # 低減するため 1.0秒に1回のポーリング周期に緩和されています。そのため、ここで移動開始命令
-        # を送信した直後、監視タスクが起き上がってビジー（is_busy = True）を検出してグローバル
-        # 状態に上書きするまでに最大 1.0秒のタイムラグ（遅延）が生じます。
-        # この遅延の間に、下の完了待ちチェック（app_state.is_busy）が「移動はまだ開始されていない（False）」
-        # と誤判定してすり抜けてしまう競合を防ぐため、ここで即座に is_busy = True に強制セットします。
+        # 【監視遅延対策：移動開始直後の即時ビジー化 ＆ 割り込み即時起床（助走開始）】
+        # request_stage_wakeup() を呼び出し、app_state.is_busy = True を即時設定すると同時に、
+        # 1.0秒スリープ中だった監視タスクを0秒で叩き起こし、遅延ゼロで角度表示の更新を開始させます。
         # ========================================================================
-        app_state.is_busy = True
+        request_stage_wakeup()
 
         # 【移動開始の検知待ち】
         # monitor_loop が is_busy=True を検知するまで最大 0.5秒待機します。
@@ -603,13 +615,11 @@ def _run_sweep_operation(operation_id: str, request_data: dict, plan: dict):
         _set_sweep_state(phase="sweep", phase_started_at_ms=_now_ms(), message="Sweeping")
         stage.move_relative(plan["relative_total_deg"], current_angle_hint=app_state.current_angle)
         # ========================================================================
-        # 【監視遅延対策：移動開始直後の即時ビジー化（スイープ本番）】
-        # 助走位置に到達しステージが一度静止した際、監視ポーリングは再び 1.0秒間隔に戻っています。
-        # 本番の相対移動コマンドを送信した瞬間にも、同様の検知遅れ（最大1.0秒のタイムラグ）が生じるため、
-        # 録画トリガーを判定する高速監視ループが即座に開始されずに移動完了判定がすり抜けてしまうのを
-        # 防ぐ目的で、ここでも送信と同時に is_busy = True を即時強制適用します。
+        # 【監視遅延対策：移動開始直後の即時ビジー化 ＆ 割り込み即時起床（スイープ本番）】
+        # 本番の相対移動コマンド送信時にも request_stage_wakeup() を呼び出し、監視タスクを叩き起こして
+        # 高速監視および角度表示の即時更新を開始させます。
         # ========================================================================
-        app_state.is_busy = True
+        request_stage_wakeup()
 
         # 移動開始の検知待ち
         wait_start = time.time()
@@ -808,10 +818,10 @@ def _run_auto_measurement(
             )
 
             stage.move_absolute(target_deg, allow_overflow=True)
-            # 【重要】ステージが実際に動き出すより前に、ここで即座に Busy フラグを True にし、
-            # 監視ポーリング（静止時1.0秒間隔）が完了する前のタイムラグによって
-            # 移動完了待ちループがスルーされてしまう競合を確実に防止します。
-            app_state.is_busy = True
+            # 【重要】ステージが実際に動き出すより前に、ここで即座に Busy フラグを True にしつつ、
+            # request_stage_wakeup() でスリープ中だった監視タスクを0秒で即座に叩き起こし、
+            # 移動完了待ちループのすり抜け防止と、角度表示のタイムラグゼロの即時追従を両立させます。
+            request_stage_wakeup()
             
             # ステージが実際に動き出し、Busy フラグが True になるまでの猶予
             time.sleep(0.15)
@@ -1105,9 +1115,16 @@ async def stage_monitor_loop():
             #   これにより、測定中のカメラ撮影プロセスは完全に通信競合から守られます。
             # ========================================================================
             interval = 0.1 if app_state.is_busy else 1.0
-            # asyncio.sleep は非ブロッキングなスリープを指示する非同期関数であり、
-            # 指定時間の間、FastAPI のイベントループの制御権を一旦別の非同期タスクに譲る動作をします。
-            await asyncio.sleep(interval)
+            # 【即時割り込み可能な非同期待機（asyncio.wait_for）】
+            # 静止時（interval=1.0s）でスリープしている際、移動命令によって request_stage_wakeup() が
+            # 呼ばれると、stage_wakeup_event がセットされます。
+            # asyncio.wait_for を使用することで、1.0秒のタイマー満了を待たずに0秒で即座にスリープを中断して
+            # 飛び起き、タイムラグゼロで実機から最新角度を読み取って画面表示の0.1秒追従を開始させます。
+            try:
+                await asyncio.wait_for(stage_wakeup_event.wait(), timeout=interval)
+                stage_wakeup_event.clear()
+            except asyncio.TimeoutError:
+                pass
             
             if stage.is_connected:
                 # シリアル通信はI/O待ちが発生するため、try_get_status は非同期ラッパー経由で呼び出します。
@@ -1578,6 +1595,9 @@ def stage_home():
     # - その他の例外: 予期せぬサーバー/デバイスエラー -> HTTP 500
     try:
         stage.home()
+        # 原点復帰命令の送信成功直後、1.0秒スリープ中の監視タスクを0秒で叩き起こし、
+        # app_state.is_busy = True を即時設定すると同時に、画面の角度追従を0.1秒モードへ即座に引き上げます。
+        request_stage_wakeup()
     except ValueError as e:
         with stage_command_lock:
             app_state.is_busy = False
@@ -1622,6 +1642,9 @@ def stage_move_absolute(req: MoveAbsoluteRequest):
     # 危険な指示は `StageCommandError` で拒否します。
     try:
         stage.move_absolute(req.angle, allow_overflow=req.allow_overflow)
+        # 絶対移動命令の送信成功直後、1.0秒スリープ中の監視タスクを0秒で即座に叩き起こし、
+        # app_state.is_busy = True を即時設定すると同時に、画面の角度追従を0.1秒モードへ即座に引き上げます。
+        request_stage_wakeup()
     except ValueError as e:
         with stage_command_lock:
             app_state.is_busy = False
@@ -1668,6 +1691,9 @@ def stage_move_relative(req: MoveRelativeRequest):
     # 適切なユーザー指示（ホーム、再試行、ログ表示等）を行ってください。
     try:
         stage.move_relative(req.delta, current_angle_hint=app_state.current_angle)
+        # 相対移動命令の送信成功直後、1.0秒スリープ中の監視タスクを0秒で即座に叩き起こし、
+        # app_state.is_busy = True を即時設定すると同時に、画面の角度追従を0.1秒モードへ即座に引き上げます。
+        request_stage_wakeup()
     except ValueError as e:
         with stage_command_lock:
             app_state.is_busy = False
