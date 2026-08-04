@@ -173,13 +173,14 @@ class CameraController:
     # 【セッション管理】 connect / disconnect (UIがカメラ選択後に呼ぶ)
     # ============================================================================
         
-    def connect(self, camera_id: int = 0) -> bool:
+    def connect(self, camera_id: int = 0, start_loop: bool = True) -> bool:
         """
         カメラに接続し、初期化・センサー情報取得・キャプチャスレッドの起動を行います。
         uc480（Thorlabs ThorCam）バックエンドを使用します。
 
         Args:
             camera_id (int): 接続するカメラのデバイスID。デフォルトは0。
+            start_loop (bool): 接続成功時に直ちにキャプチャスレッドを起動するかどうか。デフォルトは True。
 
         Returns:
             bool: 接続および初期化が成功した場合は True、失敗した場合は False。
@@ -438,11 +439,25 @@ class CameraController:
                 self.is_connected = False
                 return False
 
-        # 接続が完了したら、別スレッドで連続取得を開始する。
-        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
-        self._capture_thread.start()
+        # 接続が完了したら、指定された場合のみ別スレッドで連続取得（キャプチャスレッド）を開始する。
+        if start_loop:
+            self.start_capture_loop()
 
         return True
+
+    def start_capture_loop(self) -> None:
+        """
+        画像取得ループ（_capture_loop）を別スレッドで起動します。
+        
+        自己修復処理時など、カメラ接続(connect)と露出・ゲインの再適用完了を
+        厳密に直列化した後に、安全に撮影スレッドを立ち上げる目的で使用します。
+        """
+        if self._capture_thread and self._capture_thread.is_alive():
+            logger.warning(f"{self.log_tag} Capture thread is already running.")
+            return
+        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._capture_thread.start()
+        logger.info(f"{self.log_tag} Capture thread started.")
 
     def disconnect(self) -> None:
         """
@@ -1139,8 +1154,14 @@ class CameraController:
             if frame_data is None:
                 if not self.is_mock_env:
                     consecutive_failures += 1
-                    # 連続 3回キャプチャ失敗した場合、接続ハングとみなして自己修復を開始します。
-                    if consecutive_failures >= 3:
+                    # ========================================================================
+                    # 【自己修復しきい値の緩和（ゾンビ・自滅防止）】
+                    # USBハブ共有環境での一時的なデータ衝突による TimeoutError は、カメラを切断せず
+                    # 単なる1コマのフレームドロップ（スキップ）として受け流します。
+                    # 10回連続（約10秒間）で失敗し、完全に通信が絶たれた場合のみ、物理抜去やハングと
+                    # みなして自動再起動（自己修復）を起動します。
+                    # ========================================================================
+                    if consecutive_failures >= 10:
                         logger.error(f"{self.log_tag} Consecutive capture failures detected ({consecutive_failures}). Triggering auto-reconnect...")
                         should_trigger_reconnect = True
                         self.is_connected = False
@@ -1307,7 +1328,9 @@ class CameraController:
             for attempt in range(5):
                 logger.info(f"{self.log_tag} Auto-reconnect attempt {attempt+1}/5...")
                 try:
-                    if self.connect(camera_id=old_camera_id):
+                    # 【重要】ここではまだ画像取得スレッド（_capture_loop）を起動しません。
+                    # 起動直後に設定変更処理と撮影処理が競合し、カメラが再自滅するのを防ぐためです。
+                    if self.connect(camera_id=old_camera_id, start_loop=False):
                         reconnect_success = True
                         break
                 except Exception as e:
@@ -1325,6 +1348,8 @@ class CameraController:
             if old_gain is not None:
                 self.set_gain(old_gain)
             
+            # 【直列化の完了】設定の再適用が100%完了したことを保証した「後」に、画像取得スレッドを安全に起動します。
+            self.start_capture_loop()
             logger.info(f"{self.log_tag} Camera self-healing process successfully completed.")
 
         except Exception as e:

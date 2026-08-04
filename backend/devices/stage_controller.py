@@ -225,8 +225,10 @@ class StageController:
         """
         logger.debug(f"{self.log_tag} Send: {cmd}")
         full_cmd = f"{cmd}\r\n"
-        self.ser.write(full_cmd.encode("ascii"))
-        response = self.ser.readline().decode("ascii").strip()
+        self.ser.write(full_cmd.encode("ascii", errors="replace"))
+        # ノイズなどの影響で 0xfc などの不正バイトが紛れ込んだ際、
+        # UnicodeDecodeError でクラッシュするのを防ぐため、errors="replace" を指定します。
+        response = self.ser.readline().decode("ascii", errors="replace").strip()
         logger.debug(f"{self.log_tag} Recv: {response} (cmd={cmd})")
         return response
     
@@ -499,16 +501,20 @@ class StageController:
         - 正常: `(angle_deg, is_busy)`
         - 解析失敗: `None`
         """
-        parts = resp.split(",")
-        if len(parts) < 4:
-            return None
+        try:
+            parts = resp.split(",")
+            if len(parts) < 4:
+                return None
 
-        pulse_str = re.sub(r"\s+", "", parts[0])
-        current_pulse = int(pulse_str)
-        ack3 = parts[3].strip()
-        is_busy = (ack3 == "B")
-        angle = self._pulse_to_deg(current_pulse)
-        return angle, is_busy
+            pulse_str = re.sub(r"\s+", "", parts[0])
+            current_pulse = int(pulse_str)
+            ack3 = parts[3].strip()
+            is_busy = (ack3 == "B")
+            angle = self._pulse_to_deg(current_pulse)
+            return angle, is_busy
+        except Exception as e:
+            logger.warning(f"{self.log_tag} Failed to parse status response: {e}, Raw: {resp}")
+            return None
 
     def get_status(self) -> Tuple[float, bool]:
         """
@@ -546,6 +552,7 @@ class StageController:
             return 0.0, False
         except Exception as e:
             logger.error(f"Status parse error: {e}, Raw: {resp}")
+            self._mark_disconnected(str(e))
             return 0.0, False
 
     def try_get_status(self) -> Tuple[float, bool] | None:
@@ -581,6 +588,7 @@ class StageController:
             return 0.0, False
         except Exception as e:
             logger.error(f"Status parse error: {e}, Raw: {resp if 'resp' in locals() else 'N/A'}")
+            self._mark_disconnected(str(e))
             return 0.0, False
         finally:
             self._io_lock.release()
