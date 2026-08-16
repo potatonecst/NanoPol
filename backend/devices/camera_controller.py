@@ -106,6 +106,8 @@ class CameraController:
         self._mock_angle = 0.0  # Mock画像生成用の内部状態
         self._pending_snapshot = None  # Snapshot時に「保存先を聞く」設定の場合、一時的に画像データを保持するメモリ
         self.active_stream_id = None  # 現在アクティブなMJPEG映像ストリームのID（ゾンビ接続破棄用）
+        self.is_healing = False  # 自動自己修復中フラグ
+        self.reconnect_attempt = 0  # 自己修復の試行回数
 
         # 起動時にカメラ実行モードの判定根拠を明示する（切り分け用）
         logger.info(
@@ -1308,6 +1310,8 @@ class CameraController:
            タイムラグなしで即座に通過し、安全かつ確実に古いカメラハンドルを破棄・再起動することができます。
         """
         logger.info(f"{self.log_tag} Auto-reconnect thread started.")
+        self.is_healing = True
+        self.reconnect_attempt = 0
         try:
             # 1. 現在適用されていた露出時間・ゲインの設定値を退避
             old_exposure = self.exposure_ms
@@ -1326,7 +1330,8 @@ class CameraController:
             # 4. 再接続を最大 5回試みます
             reconnect_success = False
             for attempt in range(5):
-                logger.info(f"{self.log_tag} Auto-reconnect attempt {attempt+1}/5...")
+                self.reconnect_attempt = attempt + 1
+                logger.info(f"{self.log_tag} Auto-reconnect attempt {self.reconnect_attempt}/5...")
                 try:
                     # 【重要】ここではまだ画像取得スレッド（_capture_loop）を起動しません。
                     # 起動直後に設定変更処理と撮影処理が競合し、カメラが再自滅するのを防ぐためです。
@@ -1334,7 +1339,7 @@ class CameraController:
                         reconnect_success = True
                         break
                 except Exception as e:
-                    logger.warning(f"{self.log_tag} Connect attempt {attempt+1} failed: {e}")
+                    logger.warning(f"{self.log_tag} Connect attempt {self.reconnect_attempt} failed: {e}")
                 time.sleep(2.0)
 
             if not reconnect_success:
@@ -1354,6 +1359,10 @@ class CameraController:
 
         except Exception as e:
             logger.exception(f"{self.log_tag} Exception occurred in auto-reconnect thread: {e}")
+        finally:
+            # いかなる場合もスレッド終了時には修復状態フラグをクリアする
+            self.is_healing = False
+            self.reconnect_attempt = 0
 
     def _grab_image_from_hardware_or_mock(self) -> Optional[np.ndarray]:
         """

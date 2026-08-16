@@ -51,6 +51,13 @@ interface AppState {
     isCameraConnected: boolean; //カメラの接続状態
     setIsCameraConnected: (connected: boolean) => void; //カメラの接続状態を設定する関数
 
+    isCameraHealing: boolean; // カメラ自動修復中フラグ
+    cameraReconnectAttempt: number; // カメラ自動再接続試行回数
+    isStageHealing: boolean; // ステージ自動修復中フラグ
+    setIsCameraHealing: (healing: boolean) => void;
+    setCameraReconnectAttempt: (attempt: number) => void;
+    setIsStageHealing: (healing: boolean) => void;
+
     //カメラの解像度
     cameraResolution: { width: number; height: number }; //カメラの解像度
     setCameraResolution: (width: number, height: number) => void; //カメラの解像度を設定する関数
@@ -163,6 +170,13 @@ export const useAppStore = create<AppState>((set) => ({
     setAvailableCameras: (cameras) => set({ availableCameras: cameras }), //set関数
     isCameraConnected: false, //初期値
     setIsCameraConnected: (connected) => set({ isCameraConnected: connected }), //set関数でisCameraConnectedを書き換え
+
+    isCameraHealing: false,
+    cameraReconnectAttempt: 0,
+    isStageHealing: false,
+    setIsCameraHealing: (healing) => set({ isCameraHealing: healing }),
+    setCameraReconnectAttempt: (attempt) => set({ cameraReconnectAttempt: attempt }),
+    setIsStageHealing: (healing) => set({ isStageHealing: healing }),
 
     cameraResolution: { width: 1280, height: 1024 }, //初期値
     setCameraResolution: (width, height) => set({ cameraResolution: { width, height } }), //set関数でcameraResolutionを書き換え
@@ -430,6 +444,9 @@ export const useAppStore = create<AppState>((set) => ({
         defaultOutputDirectory: "",
         outputPresets: [],
         activePresetId: "",
+        isCameraHealing: false,
+        cameraReconnectAttempt: 0,
+        isStageHealing: false,
         isCameraConnected: false,
         cameraId: "",
         availableCameras: [],

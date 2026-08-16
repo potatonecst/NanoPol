@@ -222,6 +222,9 @@ function App() {
           isBackendConnected: true,
           isStageConnected: data.stage_connected,
           isCameraConnected: data.camera_connected,
+          isCameraHealing: !!data.camera_is_healing,
+          cameraReconnectAttempt: data.camera_reconnect_attempt || 0,
+          isStageHealing: !!data.stage_is_healing,
         });
       } catch (error) {
         healthFailureCount += 1;
@@ -237,7 +240,12 @@ function App() {
         // オンラインから落ちた瞬間だけエラーログを出す
         if (state.isBackendConnected) {
           console.error("Backend went offline!", error);
-          useAppStore.setState({ isBackendConnected: false });
+          useAppStore.setState({
+            isBackendConnected: false,
+            isCameraHealing: false,
+            cameraReconnectAttempt: 0,
+            isStageHealing: false,
+          });
         }
       }
     };

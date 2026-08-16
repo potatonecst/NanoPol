@@ -70,6 +70,9 @@ export function DevicesView() {
         activePresetId,
         setActivePresetId,
         defaultOutputDirectory,
+        isCameraHealing,
+        cameraReconnectAttempt,
+        isStageHealing,
     } = useAppStore(
         useShallow((state) => ({
             stagePort: state.stagePort,
@@ -93,6 +96,9 @@ export function DevicesView() {
             activePresetId: state.activePresetId,
             setActivePresetId: state.setActivePresetId,
             defaultOutputDirectory: state.defaultOutputDirectory,
+            isCameraHealing: state.isCameraHealing,
+            cameraReconnectAttempt: state.cameraReconnectAttempt,
+            isStageHealing: state.isStageHealing,
         }))
     );
 
@@ -527,10 +533,10 @@ export function DevicesView() {
                                     <CardTitle>Stage Controller</CardTitle>
                                 </div>
                                 <Badge
-                                    variant={isStageConnected ? "default" : "outline"}
-                                    className={isStageConnected ? "bg-green-600 hover:bg-green-600" : ""}
+                                    variant={isStageConnected ? "default" : (isStageHealing ? "secondary" : "outline")}
+                                    className={isStageConnected ? "bg-green-600 hover:bg-green-600" : (isStageHealing ? "bg-amber-500 text-white animate-pulse" : "")}
                                 >
-                                    {isStageConnected ? "Connected" : "Disconnected"}
+                                    {isStageConnected ? "Connected" : (isStageHealing ? "Restoring..." : "Disconnected")}
                                 </Badge>
                             </div>
                             <CardDescription>OptoSigma GSC-01 (RS232C)</CardDescription>
@@ -539,7 +545,7 @@ export function DevicesView() {
                             <div className="space-y-2">
                                 <Label className="text-sm font-medium">COM Port</Label>
                                 <div className="flex gap-2 items-center">
-                                    <Select value={stagePort} onValueChange={setStagePort} disabled={isStageConnected || !isBackendConnected}>
+                                    <Select value={stagePort} onValueChange={setStagePort} disabled={isStageConnected || isStageHealing || !isBackendConnected}>
                                         <SelectTrigger className="w-full">
                                             <SelectValue placeholder="Select COM Port" />
                                         </SelectTrigger>
@@ -559,7 +565,7 @@ export function DevicesView() {
                                     {/* リフレッシュボタン（Tooltip付き） */}
                                     <RefreshButton
                                         label="Refresh Ports"
-                                        disabled={isStageConnected || !isBackendConnected}
+                                        disabled={isStageConnected || isStageHealing || !isBackendConnected}
                                         onClick={fetchPorts}
                                     />
                                 </div>
@@ -570,9 +576,9 @@ export function DevicesView() {
                             <Button
                                 variant={isStageConnected ? "destructive" : "default"}
                                 onClick={handleStageConnect}
-                                disabled={isStageLoading || (isStageConnected && isRecording) || !isBackendConnected}
+                                disabled={isStageLoading || isStageHealing || (isStageConnected && isRecording) || !isBackendConnected}
                             >
-                                {isStageLoading ? "Connecting..." : (isStageConnected ? "Disconnect" : "Connect")}
+                                {isStageLoading ? "Connecting..." : (isStageHealing ? "Restoring..." : (isStageConnected ? "Disconnect" : "Connect"))}
                             </Button>
                         </CardFooter>
                     </Card>
@@ -586,10 +592,10 @@ export function DevicesView() {
                                     <CardTitle>Camera</CardTitle>
                                 </div>
                                 <Badge
-                                    variant={isCameraConnected ? "default" : "outline"}
-                                    className={isCameraConnected ? "bg-green-600 hover:bg-green-600" : ""}
+                                    variant={isCameraConnected ? "default" : (isCameraHealing ? "secondary" : "outline")}
+                                    className={isCameraConnected ? "bg-green-600 hover:bg-green-600" : (isCameraHealing ? "bg-amber-500 text-white animate-pulse" : "")}
                                 >
-                                    {isCameraConnected ? "Connected" : "Disconnected"}
+                                    {isCameraConnected ? "Connected" : (isCameraHealing ? `Healing (${cameraReconnectAttempt}/5)` : "Disconnected")}
                                 </Badge>
                             </div>
                             <CardDescription>Thorlabs DCC1545M (uEye)</CardDescription>
@@ -598,7 +604,7 @@ export function DevicesView() {
                             <div className="space-y-2">
                                 <Label className="text-sm font-medium">Camera ID</Label>
                                 <div className="flex gap-2 items-center">
-                                    <Select value={cameraId} onValueChange={setCameraId} disabled={isCameraConnected || !isBackendConnected}>
+                                    <Select value={cameraId} onValueChange={setCameraId} disabled={isCameraConnected || isCameraHealing || !isBackendConnected}>
                                         <SelectTrigger className="w-full">
                                             <SelectValue placeholder="Select Camera" />
                                         </SelectTrigger>
@@ -616,7 +622,7 @@ export function DevicesView() {
                                     </Select>
 
                                     {/* リフレッシュボタン（Tooltip付き） */}
-                                    <RefreshButton label="Refresh List" disabled={isCameraConnected || !isBackendConnected} onClick={fetchCameras} />
+                                    <RefreshButton label="Refresh List" disabled={isCameraConnected || isCameraHealing || !isBackendConnected} onClick={fetchCameras} />
                                 </div>
                             </div>
                         </CardContent>
@@ -625,9 +631,9 @@ export function DevicesView() {
                             <Button
                                 variant={isCameraConnected ? "destructive" : "default"}
                                 onClick={handleCameraConnect}
-                                disabled={isCameraLoading || (isCameraConnected && isRecording) || !isBackendConnected}
+                                disabled={isCameraLoading || isCameraHealing || (isCameraConnected && isRecording) || !isBackendConnected}
                             >
-                                {isCameraLoading ? "Connecting..." : (isCameraConnected ? "Disconnect" : "Connect")}
+                                {isCameraLoading ? "Connecting..." : (isCameraHealing ? "Healing..." : (isCameraConnected ? "Disconnect" : "Connect"))}
                             </Button>
                         </CardFooter>
                     </Card>

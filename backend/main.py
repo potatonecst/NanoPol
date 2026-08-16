@@ -844,7 +844,16 @@ def _run_auto_measurement(
                 warning_message=warning_msg
             )
             
-            filename = f"angle_{target_deg:09.4f}.tif"
+            # ========================================================================
+            # 【自動測定時のスナップショット拡張子の動的決定】
+            # 設定画面で選択された画像フォーマット（TIFF, JPEG, PNG）を動的に読み取り、
+            # それに連動した適切な拡張子（.tif / .jpg / .png）を適用します。
+            # これにより、自動測定中も指定された形式でデータが正しく現像・保存されます。
+            # ========================================================================
+            fmt = camera.settings.get("imageFormat", "TIFF")
+            ext = ".tif" if fmt == "TIFF" else (".jpg" if fmt == "JPEG" else ".png")
+            
+            filename = f"angle_{target_deg:09.4f}{ext}"
             snapshot_result = camera.take_snapshot(filename_override=filename, save_dir_override=images_dir, force_centroid=is_prescan)
             
             if snapshot_result and snapshot_result.get("roi_stats"):
@@ -1114,12 +1123,19 @@ async def stage_monitor_loop():
             #   この監視タスクによるシリアル通信自体が自動的に完全に遮断（無効化）されます。
             #   これにより、測定中のカメラ撮影プロセスは完全に通信競合から守られます。
             # ========================================================================
-            interval = 0.1 if app_state.is_busy else 1.0
+            # ========================================================================
+            # 【動的ポーリング間隔の算出と非同期待機】
+            # - [ステージ接続かつ静止時]: 角度の変化がないため 1.0 秒（1000ms）
+            # - [ステージ接続かつ移動中]: 追従性を保つために 0.1 秒（100ms）
+            # - [ステージ切断かつ自動復帰待機中]: OSのドライバ競合防止のため 5.0 秒
+            # - [ステージ切断（初期状態等）]: 2.0 秒
+            # ========================================================================
+            if not stage.is_connected:
+                interval = 5.0 if getattr(stage, "last_connected_port", None) is not None else 2.0
+            else:
+                interval = 0.1 if app_state.is_busy else 1.0
+
             # 【即時割り込み可能な非同期待機（asyncio.wait_for）】
-            # 静止時（interval=1.0s）でスリープしている際、移動命令によって request_stage_wakeup() が
-            # 呼ばれると、stage_wakeup_event がセットされます。
-            # asyncio.wait_for を使用することで、1.0秒のタイマー満了を待たずに0秒で即座にスリープを中断して
-            # 飛び起き、タイムラグゼロで実機から最新角度を読み取って画面表示の0.1秒追従を開始させます。
             try:
                 await asyncio.wait_for(stage_wakeup_event.wait(), timeout=interval)
                 stage_wakeup_event.clear()
@@ -1163,6 +1179,29 @@ async def stage_monitor_loop():
                 # カメラのCSV記録用にも常に最新の角度を供給し続ける
                 camera.current_angle = pos
                 camera.current_angle_timestamp_ms = sampled_at_ms
+            else:
+                # ========================================================================
+                # 【ステージ自動再接続（自己修復・オートリカバリー）ロジック】
+                # 通信エラーによる自動切断時（last_connected_port が記憶されている状態）に限り、
+                # ユーザーが物理的にケーブルを挿し直したとみなして、バックグラウンド自動接続を試行します。
+                # ========================================================================
+                last_port = getattr(stage, "last_connected_port", None)
+                if last_port is not None:
+                    stage.is_healing = True
+                    try:
+                        logger.debug(f"[STAGE RECONNECT] Auto-reconnecting to {last_port}...")
+                        # to_thread で同期接続処理を別スレッドへ分離し、メインイベントループのフリーズを防ぐ
+                        success = await asyncio.to_thread(stage.connect, last_port)
+                        if success:
+                            logger.info(
+                                f"[STAGE] Stage connection auto-restored successfully on {last_port} "
+                                f"(Mode: {'Mock' if stage.is_mock_env else 'Real'})"
+                            )
+                            stage.is_healing = False
+                    except Exception as e:
+                        logger.debug(f"[STAGE RECONNECT] Auto-reconnect failed: {e}")
+                else:
+                    stage.is_healing = False
         except asyncio.CancelledError:
             break # サーバー終了時にタスクがキャンセルされたらループを抜ける
         except Exception as e:
@@ -1403,7 +1442,10 @@ def health_check(request: Request):
         "status": "OK",
         "stage_connected": stage.is_connected,
         "camera_connected": camera.is_connected,
-        "mode": "Mock" if stage.is_mock_env else "Real"
+        "mode": "Mock" if stage.is_mock_env else "Real",
+        "camera_is_healing": getattr(camera, "is_healing", False),
+        "camera_reconnect_attempt": getattr(camera, "reconnect_attempt", 0),
+        "stage_is_healing": getattr(stage, "is_healing", False)
     }
 
 @app.post("/system/reset")
@@ -2210,10 +2252,25 @@ def take_snapshot():
         camera.settings.get("imageFormat", "TIFF"),
     )
     result = camera.take_snapshot()
-    if result == "PENDING":
-        return {"status": "pending", "message": "Waiting for save path"}
-    elif result is not None:
-        return {"status": "saved", "filepath": result}
+    if result is not None:
+        # ========================================================================
+        # 【辞書オブジェクトからの値の安全な抽出（フロントエンド連動バグの解決）】
+        # camera.take_snapshot() の戻り値は単なる文字列ではなく、
+        # 撮影角度(angle)やROIの輝度統計(roi_stats)、保存パス(filepath)を含んだ「辞書(dict)」です。
+        # まずは辞書から安全にキー "filepath" を取得して判定を行います。
+        # ========================================================================
+        filepath_val = result.get("filepath")
+        
+        if filepath_val == "PENDING":
+            # 設定で「保存先を毎回尋ねる (askSavePath)」が有効な場合、
+            # 画像はメモリに一時保持されており、Tauri側の保存先決定ダイアログの起動を促すため
+            # status: "pending" をフロントエンドに返します。
+            return {"status": "pending", "message": "Waiting for save path"}
+        else:
+            # 「自動保存」が成功した、あるいは指定フォルダに直接保存された場合、
+            # 辞書内の実際のファイルパス（文字列）のみを抽出してフロントエンドに返します。
+            # これにより、UIのトースト通知やログ上で [object Object] と表示されるのを完全に防ぎます。
+            return {"status": "saved", "filepath": filepath_val}
     else:
         # camera.take_snapshot() 側で例外内容を詳細ログに残しているが、
         # API 境界でも失敗した設定値を補助的に記録しておく。

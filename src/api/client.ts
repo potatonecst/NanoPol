@@ -288,7 +288,15 @@ export const systemApi = {
      * @returns `/health` の JSON 応答。
      */
     health: () =>
-        request<{ status: string, stage_connected: boolean, camera_connected: boolean, mode: string }>("/health"),
+        request<{
+            status: string;
+            stage_connected: boolean;
+            camera_connected: boolean;
+            mode: string;
+            camera_is_healing?: boolean;
+            camera_reconnect_attempt?: number;
+            stage_is_healing?: boolean;
+        }>("/health"),
 
     // 全デバイスの接続を強制切断し、システムを初期状態に戻します
     reset: () =>

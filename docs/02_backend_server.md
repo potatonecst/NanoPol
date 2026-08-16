@@ -324,6 +324,24 @@ Sweep測定（連続回転）とは対照的に、特定の角度で「止まっ
 | `GET` | `/camera/roi_stats` | 最新統計の取得 | **[表示用]** 最新フレームの解析結果（Sum/Max/Centroid）を取得します。 |
 | `GET` | `/measurement/plot_data` | 測定データの取得 | **[測定用]** メモリに蓄積された時系列データを取得します。 |
 | `POST` | `/measurement/reset` | バッファのリセット | 測定カテゴリの切り替え時などにバッファをクリアします。 |
+| `POST` | `/camera/snapshot` | スナップショットの撮影 | メモリに最新画像を確保し、自動保存または保留します。 |
+| `POST` | `/camera/snapshot/save` | 保留画像の確定保存 | ユーザーが選択したファイルパスに保留画像を物理保存します。 |
+
+### 2.12 スナップショット撮影・保存API (`/camera/snapshot`)
+
+スナップショット機能は、手動測定・自動測定の双方でフォーマット設定（TIFF/JPEG/PNG）に整合して画像を保存するため、以下のAPI連動仕様となっています。
+
+#### 2.12.1 手動スナップショット（ダイアログ保存時）のフロー
+1.  **`/camera/snapshot` 呼び出し**:
+    *   バックエンドで `camera.take_snapshot()` が実行され、メタデータ付きの辞書オブジェクト（`dict`）を返します。
+    *   **判定仕様:** `main.py` は辞書内の `"filepath"` キーの値が `"PENDING"` であるかを確認します。
+        *   `PENDING` の場合 ➔ `{"status": "pending", "message": "Waiting for save path"}` を返却。これを受けてフロント側でTauriネイティブ保存ダイアログが起動します。
+        *   有効なパスがある場合 ➔ `{"status": "saved", "filepath": result["filepath"]}` を返却。
+2.  **`/camera/snapshot/save` 呼び出し**:
+    *   ダイアログでユーザーが決めたファイルパスを受け取り、`camera.save_pending_snapshot(filepath)` を呼び出して実際に画像をディスクに書き込みます。
+
+#### 2.12.2 自動測定（Auto Sweep等）時の画像形式の動的決定
+*   自動測定ループ内（`main.py:_run_auto_measurement`）でスナップショットを生成する際、事前にカメラの設定（`imageFormat`）を照会し、フォーマット（TIFF/JPEG/PNG）に完全に一致する拡張子（`.tif` / `.jpg` / `.png`）を動的に決定してファイル名 `angle_XXXX.ext` を生成し `take_snapshot` に引き渡します。これにより、自動測定中も設定通りの形式で、階調圧縮（8-bit等）を正しく施して保存されることを保証しています。
 
 ---
 
@@ -414,6 +432,23 @@ async def lifespan(app: FastAPI):
 # 開発サーバー起動（自動再読み込み）
 PYTHONPATH=.. uv run python -m uvicorn main:app --reload --host 127.0.0.1 --port 14201
 ```
+
+## 4. 自動再接続（オートリカバリー）タスクとヘルスチェック
+
+USB瞬断等が発生した際の信頼性を向上させるため、`/health` API および `stage_monitor_loop` タスクに以下の仕様が実装されています。
+
+### 4.1 `/health` API の応答拡張
+フロントエンドがバックエンドの状態（生存および接続状態）をポーリングで監視する `/health` エンドポイントのレスポンスオブジェクトに、以下の自動復帰ステータスを追加しました。
+*   `camera_is_healing` (bool): カメラが自動再接続処理（自己修復スレッド）を実行中であるか。
+*   `camera_reconnect_attempt` (int): 現在の再接続試行回数 (1〜5)。
+*   `stage_is_healing` (bool): ステージが自動再接続（復元待ち）を実行中であるか。
+
+### 4.2 ステージ監視ループ（`stage_monitor_loop`）での自動再接続
+ステージが切断され、かつ直近に接続が成功していたポート名（`last_connected_port`）が残っている場合、監視タスクは自動的に復元モードにシフトします。
+*   **ポーリング間隔の動的制御:** 
+    ポート再認識時におけるOSドライバの競合ロックを防ぎ、CPU負荷を最小化するため、自動復旧中はポーリング間隔を **5.0秒** に自動延長します。
+*   **バックグラウンド試行と復帰ログ:**
+    5秒おきに別スレッド経由で `stage.connect(last_port)` を試行し、再接続に成功した瞬間に `[STAGE] Stage connection auto-restored successfully on {port}` と info ログを出力して通常状態（1.0秒ポーリング）に戻ります。
 
 注意事項:
 - `--reload` は開発専用です。本番や Tauri 経由の起動では使用しないでください。

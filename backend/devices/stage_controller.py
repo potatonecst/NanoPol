@@ -81,6 +81,7 @@ class StageController:
         self._capture_thread = None
         self._mock_pulse = 0
         self._mock_is_busy = False # Mock用の移動中フラグ
+        self.is_healing = False # 自動復元（再接続）処理中フラグ
 
         # 起動時にステージ実行モードの判定根拠を残す（切り分け用）
         logger.info(
@@ -173,6 +174,7 @@ class StageController:
         
         self.ser = None
         self.is_connected = False
+        self.last_connected_port = None
 
     def disconnect(self):
         """APIから明示的に呼びやすい切断メソッド（closeの別名）。"""
