@@ -340,8 +340,8 @@ Sweep測定（連続回転）とは対照的に、特定の角度で「止まっ
 2.  **`/camera/snapshot/save` 呼び出し**:
     *   ダイアログでユーザーが決めたファイルパスを受け取り、`camera.save_pending_snapshot(filepath)` を呼び出して実際に画像をディスクに書き込みます。
 
-#### 2.12.2 自動測定（Auto Sweep等）時の画像形式の動的決定
-*   自動測定ループ内（`main.py:_run_auto_measurement`）でスナップショットを生成する際、事前にカメラの設定（`imageFormat`）を照会し、フォーマット（TIFF/JPEG/PNG）に完全に一致する拡張子（`.tif` / `.jpg` / `.png`）を動的に決定してファイル名 `angle_XXXX.ext` を生成し `take_snapshot` に引き渡します。これにより、自動測定中も設定通りの形式で、階調圧縮（8-bit等）を正しく施して保存されることを保証しています。
+#### 2.12.2 自動測定（Auto Sweep等）時の画像保存形式（16-bit TIFF固定）
+*   **仕様:** 自動測定ループ内（`main.py:_run_auto_measurement`）で取得される個別の一時画像、および測定完了後に統合されるマルチページTIFF（`images.tif`）は、設定画面のフォーマット設定（JPEG/PNG等）にかかわらず、解析の定量精度を担保するために**常に劣化のない「16-bit RAW TIFF (.tif)」形式で保存されます。**
 
 ---
 
@@ -433,7 +433,7 @@ async def lifespan(app: FastAPI):
 PYTHONPATH=.. uv run python -m uvicorn main:app --reload --host 127.0.0.1 --port 14201
 ```
 
-## 4. 自動再接続（オートリカバリー）タスクとヘルスチェック
+## 5. 自動再接続（オートリカバリー）タスクとヘルスチェック
 
 USB瞬断等が発生した際の信頼性を向上させるため、`/health` API および `stage_monitor_loop` タスクに以下の仕様が実装されています。
 

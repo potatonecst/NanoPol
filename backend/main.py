@@ -844,16 +844,7 @@ def _run_auto_measurement(
                 warning_message=warning_msg
             )
             
-            # ========================================================================
-            # 【自動測定時のスナップショット拡張子の動的決定】
-            # 設定画面で選択された画像フォーマット（TIFF, JPEG, PNG）を動的に読み取り、
-            # それに連動した適切な拡張子（.tif / .jpg / .png）を適用します。
-            # これにより、自動測定中も指定された形式でデータが正しく現像・保存されます。
-            # ========================================================================
-            fmt = camera.settings.get("imageFormat", "TIFF")
-            ext = ".tif" if fmt == "TIFF" else (".jpg" if fmt == "JPEG" else ".png")
-            
-            filename = f"angle_{target_deg:09.4f}{ext}"
+            filename = f"angle_{target_deg:09.4f}.tif"
             snapshot_result = camera.take_snapshot(filename_override=filename, save_dir_override=images_dir, force_centroid=is_prescan)
             
             if snapshot_result and snapshot_result.get("roi_stats"):
