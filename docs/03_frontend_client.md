@@ -639,3 +639,25 @@ JavaScriptに「型（Type）」のルールを追加した言語です。
 #### 1.5.3 接続画面（DevicesView.tsx）での表示制御
 *   **警告バッジの表示:** `isCameraHealing` / `isStageHealing` が `true` の間、ステータスバッジがオレンジ色の警告表示（パルス点滅アニメーション `animate-pulse`）に切り替わり、「Healing (X/5)」や「Restoring...」のように進行状況がユーザーに可視化されます。
 *   **重複操作の防止:** 修復（再接続）が走行している間は、接続ボタン（Connect）、ポート選択ドロップダウン（Select）、および接続リストのリフレッシュボタンがすべて `disabled=true` に無効化され、重複接続によるクラッシュが未然に防止されます。
+
+### 1.6 設定画面の未保存データ保護（Navigation Guard ＆ AlertDialog）
+
+ユーザーが `SettingsView` で設定を変更している途中に、誤ってサイドバーをクリックして画面を離脱し、未保存のデータが破棄される事故を防ぐため、Navigation Guard 機構が実装されています。
+
+#### 1.6.1 状態検知と同期 (`isDirty`)
+*   `SettingsView.tsx` 内で React Hook Form の `form.formState.isDirty` を監視し、`useEffect` 経由でグローバルストア（`useAppStore`）の `isSettingsDirty: boolean` へリアルタイム同期します。
+*   設定画面から離脱（アンマウント）する際、または「Save Settings」成功時（`form.reset(data)` 実行時）には、未保存フラグが自動的に `false` へ安全にリセットされます。
+
+#### 1.6.2 フッター操作ボタンの活性制御
+*   **Restore Defaults (初期設定復元ボタン):**
+    - フッターの左端に配置（誤操作防止）。クリックするとシステム標準の推奨設定（`DEFAULT_SETTINGS`）がフォームに一括適用され、`isDirty = true`（保存ボタンが点灯）となります。即時ディスク保存は行わず、画面上で初期値を確認した上で「Save Settings」を押して保存する安全設計です。
+*   **Discard Changes (変更取り消しボタン):**
+    - `disabled={!isDirty || isLoading}` を適用。未保存の変更が存在するときのみ有効化され、クリックすると最後に保存された `config.json` の状態へ瞬時に復元されます。
+*   **Save Settings (保存ボタン):**
+    - `disabled={!isDirty || isLoading}` を適用。初期状態や未編集時はグレーアウトされ、未保存の変更があるときのみ保存実行が可能となります。保存完了後は即座に無効化状態に戻り、保存完了の安心感をフィードバックします。
+
+#### 1.6.3 サイドバー遷移のインターセプト (`AppSidebar.tsx` ＆ `AlertDialog`)
+*   サイドバーのナビゲーションボタン（`handleNavClick`）がクリックされた際、現在が `settings` 画面かつ `isSettingsDirty === true` の場合、即座の画面遷移をブロックします。
+*   遷移先モードを `pendingNavigationMode` に一時退避し、shadcn/ui の **`AlertDialog`**（WAI-ARIA `role="alertdialog"` 準拠の確認ダイアログ）をポップアップ表示します。
+    *   **「Discard & Leave」選択時:** `isSettingsDirty` をリセットした上で保留先のモードへ遷移を実行。
+    *   **「Stay on Settings」選択時:** `pendingNavigationMode` をクリアしてダイアログを閉じ、設定画面での編集を継続。

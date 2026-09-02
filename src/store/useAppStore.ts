@@ -30,6 +30,10 @@ interface AppState {
     //基本
     currentMode: AppMode; //今開いている画面
     setMode: (mode: AppMode) => void; //画面を切り替える関数
+    isSettingsDirty: boolean; // 設定画面で未保存の変更があるかどうかのフラグ
+    setIsSettingsDirty: (isDirty: boolean) => void; // 未保存フラグを更新する関数
+    pendingNavigationMode: AppMode | null; // 未保存確認ダイアログ中に遷移しようとしている保留先モード
+    setPendingNavigationMode: (mode: AppMode | null) => void; // 保留先モードを設定する関数
 
     //バックエンド接続状態
     isBackendConnected: boolean; //バックエンド（Pythonサーバー）が起動しているか
@@ -150,8 +154,12 @@ interface AppState {
 
 //ストアの作成: 実際にデータを保管する場所（フック）を作成
 export const useAppStore = create<AppState>((set) => ({
-    currentMode: "devices", //初期値は「デバイス接続画面」
-    setMode: (mode) => set({ currentMode: mode }), //set関数でcurrentModeを書き換え
+    currentMode: "devices", //初期画面
+    setMode: (mode) => set({ currentMode: mode }), //画面を切り替える関数
+    isSettingsDirty: false, // 設定画面の未保存フラグ
+    setIsSettingsDirty: (isDirty) => set({ isSettingsDirty: isDirty }),
+    pendingNavigationMode: null, // 未保存確認ダイアログ中に遷移しようとしている保留先モード
+    setPendingNavigationMode: (mode) => set({ pendingNavigationMode: mode }),
 
     isBackendConnected: false, // 初期値
     setIsBackendConnected: (connected) => set({ isBackendConnected: connected }),

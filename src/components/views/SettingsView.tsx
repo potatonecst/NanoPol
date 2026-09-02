@@ -51,6 +51,7 @@ import {
   Activity,
   Plus,
   Trash2,
+  Undo2,
 } from "lucide-react";
 import { Switch } from "../ui/switch";
 import { toast } from "sonner";
@@ -123,7 +124,7 @@ export const SettingsView: React.FC = () => {
   // 現在選択されている画像フォーマットを監視し、対応する拡張子を決定する
   const currentFormat = form.watch("imageFormat");
 
-  // ストアからカメラのキャッシュされたレンジ、およびプロファイル連動アクションを購読
+  // ストアからカメラのキャッシュされたレンジ、およびプロファイル連動アクション・未保存状態セッターを購読
   const { 
     cameraExposureRange, 
     cameraGainRange,
@@ -132,6 +133,7 @@ export const SettingsView: React.FC = () => {
     setOutputPresets,
     syncActivePresetIdFromPath,
     defaultOutputDirectory,
+    setIsSettingsDirty,
   } = useAppStore(
     useShallow((s) => ({ 
       cameraExposureRange: s.cameraExposureRange, 
@@ -141,8 +143,20 @@ export const SettingsView: React.FC = () => {
       setOutputPresets: s.setOutputPresets,
       syncActivePresetIdFromPath: s.syncActivePresetIdFromPath,
       defaultOutputDirectory: s.defaultOutputDirectory,
+      setIsSettingsDirty: s.setIsSettingsDirty,
     }))
   );
+
+  // 【未保存状態のグローバル同期】
+  // フォームの isDirty（変更があるか）を監視し、別画面への遷移ガードのために Zustand ストアへ同期します
+  const isDirty = form.formState.isDirty;
+  useEffect(() => {
+    setIsSettingsDirty(isDirty);
+    return () => {
+      // SettingsView がアンマウントされる際に未保存フラグを安全にリセット
+      setIsSettingsDirty(false);
+    };
+  }, [isDirty, setIsSettingsDirty]);
 
   /**
    * 【個別プロファイルの保存先選択ダイアログ起動処理】
@@ -335,6 +349,9 @@ export const SettingsView: React.FC = () => {
       // ファイル保存の成功をログに記録
       systemApi.postLogs("INFO", "Settings saved to config.json successfully.");
 
+      // フォームのベースラインを保存された最新値で再同期し、isDirty をクリア
+      form.reset(data);
+
       setOutputPresets(data.outputPresets || []);
       setOutputDirectory(data.outputDirectory || "");
       syncActivePresetIdFromPath(data.outputDirectory || "");
@@ -363,6 +380,26 @@ export const SettingsView: React.FC = () => {
       // 成功・失敗に関わらず、処理が終わったらローディングを解除
       setIsLoading(false);
     }
+  };
+
+  /**
+   * 【初期設定への一括復元処理】
+   * フォーム全体の入力値を、システム標準の推奨初期設定（DEFAULT_SETTINGS）に一括置換します。
+   * ディスクへの即時保存は行わず、画面上で初期値を確認した上で「Save Settings」を押せるようにします。
+   */
+  const handleRestoreDefaults = () => {
+    const defaultVals = {
+      ...(DEFAULT_SETTINGS as any),
+      outputDirectory: defaultOutputDirectory || "",
+      outputPresets: [],
+    };
+    
+    // フォームの各項目に初期値をセットし、isDirty を有効化して Save ボタンを点灯させます
+    Object.entries(defaultVals).forEach(([key, val]) => {
+      form.setValue(key as any, val, { shouldValidate: true, shouldDirty: true });
+    });
+
+    toast.info("設定を初期値に戻しました。保存するには「Save Settings」を押してください。");
   };
 
   /**
@@ -982,24 +1019,44 @@ export const SettingsView: React.FC = () => {
       </div>
 
       {/* Footer (Fixed) */}
-      {/* 画面下部のフッター領域。保存ボタンなどを配置し、常に画面下に固定表示されます。 */}
+      {/* 画面下部のフッター領域。未保存の変更がある場合のみ保存・破棄ボタンが有効化されます。 */}
       <div className="p-4 border-t bg-card shrink-0 z-20">
-        <div className="max-w-6xl mx-auto flex justify-end gap-4">
+        <div className="max-w-6xl mx-auto flex items-center justify-between gap-4">
+          {/* 左端: 初期設定復元ボタン（誤操作防止のため左側に離して配置） */}
           <Button
             type="button"
             variant="ghost"
-            onClick={() => form.reset()} // リセット処理（最後に保存された値に戻す）
+            disabled={isLoading}
+            onClick={handleRestoreDefaults}
+            className="text-muted-foreground hover:text-foreground"
           >
-            <RotateCcw className="w-4 h-4 mr-2" />
-            Reset Changes
+            <Undo2 className="w-4 h-4 mr-2" />
+            Restore Defaults
           </Button>
-          {/* 保存ボタン: form="settings-form" を指定することで、フォームの外にあっても送信ボタンとして機能します */}
-          {/* disabled={isLoading}: 保存処理中はボタンを押せないようにします */}
-          <Button type="submit" form="settings-form" disabled={isLoading}>
-            {isLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-            <Save className="w-4 h-4 mr-2" />
-            Save Settings
-          </Button>
+
+          {/* 右端: 日常的な破棄・保存ボタングループ */}
+          <div className="flex items-center gap-3">
+            {/* 変更取り消しボタン: フォームを最後に保存された状態に復元します */}
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!isDirty || isLoading}
+              onClick={() => form.reset()} // リセット処理（最後に保存された値に戻す）
+            >
+              <RotateCcw className="w-4 h-4 mr-2" />
+              Discard Changes
+            </Button>
+            {/* 保存ボタン: 未保存の変更（isDirty）がある場合のみ有効化されます */}
+            <Button 
+              type="submit" 
+              form="settings-form" 
+              disabled={!isDirty || isLoading}
+            >
+              {isLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              <Save className="w-4 h-4 mr-2" />
+              Save Settings
+            </Button>
+          </div>
         </div>
       </div>
     </div>

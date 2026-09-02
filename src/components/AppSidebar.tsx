@@ -1,65 +1,118 @@
-import { Cable, HandMetal, Activity, Settings, HelpCircle } from "lucide-react";
+import { Cable, HandMetal, Activity, Settings, HelpCircle, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/store/useAppStore";
 import { AppMode } from "@/types";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
     Tooltip,
     TooltipContent,
     TooltipProvider,
     TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useShallow } from "zustand/react/shallow";
 
 export function AppSidebar() {
     // Zustandストアから必要な状態と関数を取り出す
-    // useShallow: パフォーマンス最適化フック。
-    // ストア全体の状態(state)のうち、ここで使用する { currentMode, setMode, isSystemBusy } の
-    // いずれかが変更された場合のみ、このコンポーネントを再レンダリングします。
-    const { currentMode, setMode, isSystemBusy } = useAppStore(
+    const { 
+        currentMode, 
+        setMode, 
+        isSystemBusy,
+        isSettingsDirty,
+        setIsSettingsDirty,
+        pendingNavigationMode,
+        setPendingNavigationMode
+    } = useAppStore(
         useShallow((state) => ({
             currentMode: state.currentMode, // 現在選択されているモード
             setMode: state.setMode,         // モードを変更する関数
             isSystemBusy: state.isSystemBusy, // システムが処理中かどうか（ロック用）
+            isSettingsDirty: state.isSettingsDirty, // 設定画面の未保存変更フラグ
+            setIsSettingsDirty: state.setIsSettingsDirty,
+            pendingNavigationMode: state.pendingNavigationMode, // 遷移保留先のモード
+            setPendingNavigationMode: state.setPendingNavigationMode,
         }))
     );
 
+    /**
+     * ナビゲーションクリック時のインターセプト（割り込み）処理
+     * 
+     * 【技術的解説】
+     * 設定画面（SettingsView）で未保存の変更（`isSettingsDirty === true`）が存在する状態で
+     * 別のモードへ移動しようとした場合、即座の遷移をブロックし、`pendingNavigationMode` に
+     * 遷移先を一時保存した上で確認用 AlertDialog を開きます。
+     */
+    const handleNavClick = (targetMode: AppMode) => {
+        if (currentMode === targetMode) return; // 同じ画面なら何もしない
+
+        if (currentMode === "settings" && isSettingsDirty) {
+            // 未保存の変更がある場合は、画面遷移を保留して確認ダイアログを開く
+            setPendingNavigationMode(targetMode);
+            return;
+        }
+
+        // 通常の画面遷移
+        setMode(targetMode);
+    };
+
+    /**
+     * 未保存変更を破棄して目的の画面へ移動する処理
+     */
+    const handleConfirmDiscard = () => {
+        if (pendingNavigationMode) {
+            setIsSettingsDirty(false); // 未保存フラグをリセット
+            setMode(pendingNavigationMode); // 保留していた画面へ遷移
+            setPendingNavigationMode(null); // 保留状態をクリア
+        }
+    };
+
+    /**
+     * 遷移をキャンセルして設定画面に留まる処理
+     */
+    const handleCancelDiscard = () => {
+        setPendingNavigationMode(null); // 保留状態をクリアしてダイアログを閉じる
+    };
+
     // 内部コンポーネント: ナビゲーションボタン
-    // 繰り返し使用されるボタンのロジックとデザインを共通化しています。
     const NavButton = ({ mode, icon: Icon, label }: { mode: AppMode, icon: any, label: string }) => {
-        // 現在のモードとこのボタンのモードが一致するか判定
         const isActive = currentMode === mode;
 
         return (
             <Tooltip>
                 <TooltipTrigger asChild>
                     <Button
-                        variant={isActive ? "default" : "ghost"} // アクティブなら塗りつぶし(default)、非アクティブなら背景なし(ghost)
+                        variant={isActive ? "default" : "ghost"}
                         size="icon-lg"
                         className={cn(
                             "size-12 rounded-md transition-all my-1",
                             isActive
-                                ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90" // アクティブ時のスタイル
-                                : "text-muted-foreground hover:bg-muted hover:text-foreground"       // 非アクティブ時のスタイル
+                                ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
+                                : "text-muted-foreground hover:bg-muted hover:text-foreground"
                         )}
-                        onClick={() => setMode(mode)} // クリック時にモードを切り替え
+                        onClick={() => handleNavClick(mode)}
                         title={label}
-                        disabled={isSystemBusy} // システム処理中はボタンを無効化（誤操作防止）
+                        disabled={isSystemBusy}
                     >
                         <Icon className="size-6" />
                     </Button>
                 </TooltipTrigger>
-                {/* マウスホバー時に右側にラベルを表示 */}
                 <TooltipContent side="right" sideOffset={5} className="font-semibold">
                     {label}
                 </TooltipContent>
             </Tooltip>
-        )
-    }
+        );
+    };
 
     return (
-        // TooltipProvider: アプリケーション内でツールチップを表示するためのコンテキストを提供
-        // delayDuration={0}: ホバーした瞬間に表示（遅延なし）
         <TooltipProvider delayDuration={0}>
             {/* 左端に幅16（64px）のサイドバーコンテナ */}
             <div className="flex w-16 flex-col items-center border-r bg-card py-4 h-full">
@@ -71,11 +124,10 @@ export function AppSidebar() {
                 </div>
 
                 {/* Bottom Actions: 下部の設定・ヘルプボタン群 */}
-                {/* mt-auto を使うことで、このブロックを親コンテナの一番下に押し下げています */}
                 <div className="mt-auto flex flex-col gap-3">
                     <NavButton mode="settings" icon={Settings} label="Settings" />
 
-                    {/* ヘルプボタン（モード切り替えではないためNavButtonを使わず個別に実装） */}
+                    {/* ヘルプボタン */}
                     <Tooltip>
                         <TooltipTrigger>
                             <Button
@@ -91,6 +143,32 @@ export function AppSidebar() {
                     </Tooltip>
                 </div>
             </div>
+
+            {/* 未保存変更がある場合の確認ダイアログ (AlertDialog) */}
+            <AlertDialog open={pendingNavigationMode !== null} onOpenChange={(open) => { if (!open) handleCancelDiscard(); }}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <div className="flex items-center gap-2 text-destructive">
+                            <AlertTriangle className="size-5" />
+                            <AlertDialogTitle>Unsaved Changes</AlertDialogTitle>
+                        </div>
+                        <AlertDialogDescription className="text-sm pt-2">
+                            You have unsaved changes in Settings. Leaving this page will discard all your modifications. Are you sure you want to proceed?
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter className="mt-4">
+                        <AlertDialogCancel onClick={handleCancelDiscard}>
+                            Stay on Settings
+                        </AlertDialogCancel>
+                        <AlertDialogAction 
+                            onClick={handleConfirmDiscard}
+                            className={cn(buttonVariants({ variant: "destructive" }), "text-white font-medium")}
+                        >
+                            Discard & Leave
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </TooltipProvider>
-    )
+    );
 }
