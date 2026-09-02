@@ -99,3 +99,71 @@ export const ROI_COLORS = [
  * この両者の座標系の原点のズレ（0.5ピクセル分）を埋めるためのオフセット値です。
  */
 export const PIXEL_CENTER_OFFSET = 0.5;
+
+/**
+ * 自動測定（Auto Mode）における角度範囲プリセットの型定義
+ */
+export interface AngleRangePreset {
+    id: string;          // プリセットの一意識別子
+    name: string;        // UI上のボタグラベル（例: "Standard (5°)"）
+    startAngle: number;  // 測定開始角度 (deg)
+    endAngle: number;    // 測定終了角度 (deg)
+    stepAngle: number;   // 測定ステップ角度 (deg)
+    points: number;      // 総測定点数
+    description: string; // ツールチップ等に表示する用途・補足説明
+}
+
+/**
+ * 自動測定（Auto Mode）の標準角度範囲プリセット一覧
+ * 
+ * 【解説】
+ * 偏光散乱光測定（QWP回転）において頻出する測定パターンをあらかじめ定義したマスターデータです。
+ * ユーザーはボタンを1クリックするだけで、Start/End/Step の3つのパラメータを一括でセットできます。
+ */
+export const DEFAULT_ANGLE_PRESETS: AngleRangePreset[] = [
+    {
+        id: "std_5deg",
+        name: "Standard (5°)",
+        startAngle: 0,
+        endAngle: 360,
+        stepAngle: 5,
+        points: 73,
+        description: "標準測定: 0°〜360° を 5° 刻みで走査 (計 73 点)。全体的な偏光プロファイルを素早く取得します。"
+    },
+    {
+        id: "fine_1deg",
+        name: "High-Res (1°)",
+        startAngle: 0,
+        endAngle: 360,
+        stepAngle: 1,
+        points: 361,
+        description: "高解像度測定: 0°〜360° を 1° 刻みで精密走査 (計 361 点)。鋭いピークや消光比の精密解析に最適です。"
+    },
+    {
+        id: "half_2deg",
+        name: "Half (2°)",
+        startAngle: 0,
+        endAngle: 180,
+        stepAngle: 2,
+        points: 91,
+        description: "半周測定: 0°〜180° を 2° 刻みで走査 (計 91 点)。サンプルの半波長対称性を利用して測定時間を短縮します。"
+    },
+    {
+        id: "quarter_1deg",
+        name: "Quarter (1°)",
+        startAngle: 0,
+        endAngle: 90,
+        stepAngle: 1,
+        points: 91,
+        description: "1/4周測定: 0°〜90° を 1° 刻みで走査 (計 91 点)。QWPの基本周期における異方性の確認に適しています。"
+    },
+    {
+        id: "quick_15deg",
+        name: "Quick (15°)",
+        startAngle: 0,
+        endAngle: 360,
+        stepAngle: 15,
+        points: 25,
+        description: "粗スキャン: 0°〜360° を 15° 刻みで高速走査 (計 25 点)。アライメントやシグナル強度の簡易チェック用です。"
+    }
+];

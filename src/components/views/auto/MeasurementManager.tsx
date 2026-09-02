@@ -6,6 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field, FieldLabel, FieldError, FieldDescription } from "@/components/ui/field";
+import { cn } from "@/lib/utils";
 import { 
     Play, 
     Scan, 
@@ -20,7 +21,9 @@ import {
     House, 
     FolderOpen, 
     Square,
-    AlertTriangle
+    AlertTriangle,
+    SlidersHorizontal,
+    Info
 } from 'lucide-react';
 import { autoApi } from '@/api/client';
 import { toast } from 'sonner';
@@ -37,6 +40,7 @@ import {
     PopoverContent,
     PopoverTrigger,
 } from "@/components/ui/popover";
+import { DEFAULT_ANGLE_PRESETS, AngleRangePreset } from '@/constants/constants';
 
 /**
  * 測定管理 (Measurement Manager) コンポーネント
@@ -131,6 +135,45 @@ export function MeasurementManager() {
     const handleBack = () => {
         if (isMeasuring || prescanStatus === "running") return;
         setAutoPhase('select_category');
+    };
+
+    // --- 角度範囲プリセットの連動ロジック ---
+    // ホバー中のプリセットID（インライン説明バーでリアルタイム表示するため）
+    const [hoveredPresetId, setHoveredPresetId] = useState<string | null>(null);
+
+    // 現在の入力値をリアルタイムに監視し、いずれかの標準プリセットと一致しているかを判定します
+    const watchedStartAngle = form.watch("startAngle");
+    const watchedEndAngle = form.watch("endAngle");
+    const watchedStepAngle = form.watch("stepAngle");
+
+    // 入力値がプリセットと完全一致すればそのプリセットIDを返し、手動編集中であれば null (Custom) となります
+    const activePresetId = DEFAULT_ANGLE_PRESETS.find(
+        (p) =>
+            Number(watchedStartAngle) === p.startAngle &&
+            Number(watchedEndAngle) === p.endAngle &&
+            Number(watchedStepAngle) === p.stepAngle
+    )?.id ?? null;
+
+    // インライン情報バーに表示するプリセット（ホバー中のものを最優先し、なければ現在選択中のプリセットを表示）
+    const displayedPreset = DEFAULT_ANGLE_PRESETS.find(
+        (p) => p.id === (hoveredPresetId ?? activePresetId)
+    ) ?? null;
+
+    /**
+     * 角度範囲プリセットをフォームに適用する関数
+     * 
+     * 【技術的解説】
+     * `form.setValue` を使用して、Start / End / Step の3つの値を一括で更新します。
+     * `shouldValidate: true` を指定することで、値更新と同時にZodスキーマによるバリデーション（範囲チェック）を
+     * 即座にトリガーし、エラー表示の更新やフォームの妥当性を最新状態に保ちます。
+     * 
+     * @param preset 適用する角度範囲プリセットオブジェクト
+     */
+    const applyPreset = (preset: AngleRangePreset) => {
+        if (isMeasuring || prescanStatus === "running") return; // 測定中は操作をブロック
+        form.setValue("startAngle", preset.startAngle, { shouldValidate: true, shouldDirty: true });
+        form.setValue("endAngle", preset.endAngle, { shouldValidate: true, shouldDirty: true });
+        form.setValue("stepAngle", preset.stepAngle, { shouldValidate: true, shouldDirty: true });
     };
 
     // ============================================================================
@@ -547,7 +590,7 @@ export function MeasurementManager() {
                     </div>
                 </div>
 
-                {/* 2. 角度範囲セクション */}
+                {/* 2. 角度範囲セクション: 測定の開始角・終了角・ステップ角の設定 */}
                 <div className="space-y-4">
                     <div className="flex items-center justify-between">
                         <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
@@ -555,40 +598,171 @@ export function MeasurementManager() {
                         </h4>
                         <Badge variant="default" className="text-[8px] h-4 px-1.5 uppercase font-bold">Required</Badge>
                     </div>
-                    <div className="grid grid-cols-2 gap-4 p-4 border rounded-lg bg-card">
-                        <Field>
-                            <FieldLabel>Start (°)</FieldLabel>
-                            <Input
-                                type="number"
-                                step="1"
-                                disabled={isFormDisabled}
-                                {...form.register("startAngle")}
-                            />
-                            <FieldError errors={[form.formState.errors.startAngle as any]} />
-                        </Field>
 
-                        <Field>
-                            <FieldLabel>End (°)</FieldLabel>
-                            <Input
-                                type="number"
-                                step="1"
-                                disabled={isFormDisabled}
-                                {...form.register("endAngle")}
-                            />
-                            <FieldError errors={[form.formState.errors.endAngle as any]} />
-                        </Field>
+                    <div className="space-y-4 p-4 border rounded-lg bg-card">
+                        {/* 角度範囲プリセット選択エリア: よく使う測定条件を1クリックで一括入力 */}
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                                <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-tight flex items-center gap-1.5">
+                                    <SlidersHorizontal className="w-3 h-3 text-primary" />
+                                    Quick Presets
+                                </Label>
+                                {activePresetId ? (
+                                    <Badge variant="secondary" className="text-[9px] h-4 px-1.5 font-mono font-normal">
+                                        {DEFAULT_ANGLE_PRESETS.find(p => p.id === activePresetId)?.points} points
+                                    </Badge>
+                                ) : (
+                                    <Badge variant="outline" className="text-[9px] h-4 px-1.5 font-mono font-normal text-muted-foreground">
+                                        Custom
+                                    </Badge>
+                                )}
+                            </div>
 
-                        <Field className="col-span-2">
-                            <FieldLabel>Step (°)</FieldLabel>
-                            <Input
-                                type="number"
-                                step="0.1"
-                                disabled={isFormDisabled}
-                                {...form.register("stepAngle")}
-                            />
-                            <FieldDescription>Minimum resolution is 0.0025°</FieldDescription>
-                            <FieldError errors={[form.formState.errors.stepAngle as any]} />
-                        </Field>
+                            {/* プリセットボタングループ: ツールチップを廃止し、クリック＆ホバーで即時連動 */}
+                            <div className="flex flex-wrap gap-1.5">
+                                {DEFAULT_ANGLE_PRESETS.map((preset) => {
+                                    const isActive = activePresetId === preset.id;
+                                    {/* 
+                                        レスポンシブ余白設定:
+                                        - `px-3`: 左右に最低 12px (計 24px) の美しい余白を確保。
+                                        - `min-w-fit`: パネル幅が狭くなった際、文字幅＋余白を下回って押し潰されるのを防止し、次の行へ自然に折り返します。
+                                        - `flex-1`: 横幅に余裕があるときは等幅に美しく広がります。
+                                    */}
+                                    return (
+                                        <Button
+                                            key={preset.id}
+                                            type="button"
+                                            variant={isActive ? "default" : "outline"}
+                                            size="sm"
+                                            disabled={isFormDisabled}
+                                            onClick={() => applyPreset(preset)}
+                                            onMouseEnter={() => setHoveredPresetId(preset.id)}
+                                            onMouseLeave={() => setHoveredPresetId(null)}
+                                            className={`h-7 px-3 text-[11px] font-medium whitespace-nowrap transition-all flex-1 min-w-fit ${
+                                                isActive 
+                                                    ? "shadow-sm font-bold bg-primary text-primary-foreground" 
+                                                    : "hover:bg-muted/80 text-muted-foreground hover:text-foreground"
+                                            }`}
+                                        >
+                                            {preset.name}
+                                        </Button>
+                                    );
+                                })}
+                            </div>
+
+                            {/* インライン動的説明バー: プリセット時・カスタム時ともに完全同一の高さ（2行分説明）を保証 */}
+                            {(() => {
+                                const isCurrentActive = displayedPreset && activePresetId === displayedPreset.id;
+                                const isPreviewingOther = hoveredPresetId !== null && hoveredPresetId !== activePresetId;
+
+                                return (
+                                    <div className={cn(
+                                        "min-h-[72px] p-2.5 rounded-md border text-xs flex items-start gap-2.5 transition-colors",
+                                        isPreviewingOther 
+                                            ? "bg-primary/5 border-primary/40 shadow-xs" 
+                                            : "bg-muted/40 border-border/50"
+                                    )}>
+                                        <Info className={cn(
+                                            "w-4 h-4 shrink-0 mt-0.5 transition-colors", 
+                                            isPreviewingOther ? "text-primary" : isCurrentActive ? "text-emerald-500" : "text-muted-foreground"
+                                        )} />
+                                        
+                                        <div className="flex-1 space-y-1 min-w-0">
+                                            {displayedPreset ? (
+                                                <>
+                                                    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-foreground font-semibold text-xs">
+                                                                {displayedPreset.name}
+                                                            </span>
+                                                            {/* ステータスバッジ: 選択中のものはホバーしてもActiveのまま維持 */}
+                                                            {isCurrentActive ? (
+                                                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 shrink-0">
+                                                                    Active
+                                                                </Badge>
+                                                            ) : isPreviewingOther ? (
+                                                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-medium text-primary border-primary/40 bg-primary/10 shrink-0">
+                                                                    Preview
+                                                                </Badge>
+                                                            ) : null}
+                                                        </div>
+
+                                                        <span className="text-primary font-mono text-[11px] font-medium shrink-0">
+                                                            {displayedPreset.startAngle}° → {displayedPreset.endAngle}° ({displayedPreset.points} pts)
+                                                        </span>
+                                                    </div>
+                                                    <p className="text-muted-foreground text-[11px] leading-relaxed break-words min-h-[32px]">
+                                                        {displayedPreset.description}
+                                                    </p>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-foreground font-semibold text-xs">
+                                                                Custom Range
+                                                            </span>
+                                                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-medium text-muted-foreground shrink-0">
+                                                                Custom
+                                                            </Badge>
+                                                        </div>
+
+                                                        <span className="text-muted-foreground font-mono text-[11px] font-medium shrink-0">
+                                                            {watchedStartAngle}° → {watchedEndAngle}° (Step {watchedStepAngle}°)
+                                                        </span>
+                                                    </div>
+                                                    <p className="text-muted-foreground text-[11px] leading-relaxed break-words min-h-[32px]">
+                                                        手動入力されたカスタム設定です。開始・終了・ステップ角度を下の各フィールドで自由に微調整して測定できます。
+                                                    </p>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+                        </div>
+
+                        <Separator className="opacity-50" />
+
+                        {/* 手動入力フィールド: Start, End, Step */}
+                        <div className="grid grid-cols-2 gap-4">
+                            {/* 開始角度 */}
+                            <Field>
+                                <FieldLabel>Start (°)</FieldLabel>
+                                <Input
+                                    type="number"
+                                    step="1"
+                                    disabled={isFormDisabled}
+                                    {...form.register("startAngle")}
+                                />
+                                <FieldError errors={[form.formState.errors.startAngle as any]} />
+                            </Field>
+
+                            {/* 終了角度 */}
+                            <Field>
+                                <FieldLabel>End (°)</FieldLabel>
+                                <Input
+                                    type="number"
+                                    step="1"
+                                    disabled={isFormDisabled}
+                                    {...form.register("endAngle")}
+                                />
+                                <FieldError errors={[form.formState.errors.endAngle as any]} />
+                            </Field>
+
+                            {/* ステップ角度 */}
+                            <Field className="col-span-2">
+                                <FieldLabel>Step (°)</FieldLabel>
+                                <Input
+                                    type="number"
+                                    step="0.1"
+                                    disabled={isFormDisabled}
+                                    {...form.register("stepAngle")}
+                                />
+                                <FieldDescription>Minimum resolution is 0.0025°</FieldDescription>
+                                <FieldError errors={[form.formState.errors.stepAngle as any]} />
+                            </Field>
+                        </div>
                     </div>
                 </div>
 
