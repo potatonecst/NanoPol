@@ -67,7 +67,8 @@ export function MeasurementManager() {
         currentAngle,       // ステージの現在角度（ポーリングで更新される）
         setPlotData,        // グラフデータを更新するアクション
         clearPlotData,      // グラフデータをクリアするアクション
-        fetchRois           // 最新のROIリストをバックエンドから取得するアクション
+        fetchRois,          // 最新のROIリストをバックエンドから取得するアクション
+        defaultAngleRangePresetId, // 設定されたデフォルトの角度範囲プリセットID
     } = useAppStore(useShallow((state) => ({
         isMeasuring: state.isMeasuring,
         setIsMeasuring: state.setIsMeasuring,
@@ -79,8 +80,15 @@ export function MeasurementManager() {
         currentAngle: state.currentAngle,
         setPlotData: state.setPlotData,
         clearPlotData: state.clearPlotData,
-        fetchRois: state.fetchRois
+        fetchRois: state.fetchRois,
+        defaultAngleRangePresetId: state.defaultAngleRangePresetId,
     })));
+
+    // --- デフォルト角度範囲プリセットの解決 ---
+    // Zustandストア（または設定ファイル）に保存されたデフォルトプリセットIDから、初期パラメータを取得
+    const initialPreset = DEFAULT_ANGLE_PRESETS.find(
+        (p) => p.id === defaultAngleRangePresetId
+    ) ?? DEFAULT_ANGLE_PRESETS[0];
 
     // --- ステージ操作ロジックの取得 (Custom Hook) ---
     const {
@@ -125,9 +133,9 @@ export function MeasurementManager() {
             laserPower: "" as any,
             fiberX: "" as any,
             fiberY: "" as any,
-            startAngle: 0,
-            endAngle: 360,
-            stepAngle: 5,
+            startAngle: initialPreset.startAngle,
+            endAngle: initialPreset.endAngle,
+            stepAngle: initialPreset.stepAngle,
         },
     });
 
@@ -136,6 +144,15 @@ export function MeasurementManager() {
         if (isMeasuring || prescanStatus === "running") return;
         setAutoPhase('select_category');
     };
+
+    // 設定画面でデフォルトプリセットが変更された場合、フォームが未編集であれば最新のプリセット値を即時反映
+    useEffect(() => {
+        if (!form.formState.isDirty) {
+            form.setValue("startAngle", initialPreset.startAngle);
+            form.setValue("endAngle", initialPreset.endAngle);
+            form.setValue("stepAngle", initialPreset.stepAngle);
+        }
+    }, [defaultAngleRangePresetId, initialPreset, form]);
 
     // --- 角度範囲プリセットの連動ロジック ---
     // ホバー中のプリセットID（インライン説明バーでリアルタイム表示するため）

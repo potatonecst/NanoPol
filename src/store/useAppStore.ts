@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { AppMode, StageSettings, AutoMeasurementPhase, MeasurementSession, ROIData, PlotData } from '@/types';
-import { MAX_ROIS, ROI_COLORS } from '@/constants/constants';
+import { MAX_ROIS, ROI_COLORS, DEFAULT_SETTINGS } from '@/constants/constants';
 import { cameraApi } from '@/api/client';
 
 // バックエンドへ現在のROIリストを同期するヘルパー
@@ -88,6 +88,10 @@ interface AppState {
     activePresetId: string; // 現在選択中のプロファイルID
     setActivePresetId: (id: string) => void; // 選択プロファイルIDを設定しパスを同期する関数
     syncActivePresetIdFromPath: (path: string) => void; // パス値から対応するプロファイルIDを逆引き同期する関数
+
+    // 自動測定デフォルト設定
+    defaultAngleRangePresetId: string; // 自動測定初期選択の角度範囲プリセットID
+    setDefaultAngleRangePresetId: (id: string) => void; // 自動測定初期選択のプリセットIDを設定する関数
 
     //ステージコントローラーマニュアル操作
     currentAngle: number; //QWPの回転角度
@@ -256,12 +260,15 @@ export const useAppStore = create<AppState>((set) => ({
             return { activePresetId: "" };
         }
         
-        // 3. 上記のいずれとも一致しない（ユーザーが設定画面等で独自に手動指定した別パスである）場合
-        // プロファイル外のカスタムパスが適用されているため、ドロップダウンの表示を Custom に自動切り替えします
+        // 3. 一致するものが一切ない場合は、ユーザーが個別にフォルダ選択した状態（Custom）として扱います
         return { activePresetId: "__custom__" };
     }),
 
-    currentAngle: 0, //初期値
+    // 自動測定初期選択プリセットID
+    defaultAngleRangePresetId: DEFAULT_SETTINGS.defaultAngleRangePresetId,
+    setDefaultAngleRangePresetId: (id) => set({ defaultAngleRangePresetId: id }),
+
+    currentAngle: 0.0, //初期値
     setCurrentAngle: (angle) => set({ currentAngle: angle }), //set関数でcurrentAngleを書き換え
 
     isSystemBusy: false, //初期値

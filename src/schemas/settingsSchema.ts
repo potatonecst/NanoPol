@@ -81,6 +81,10 @@ export const settingsSchema = z.object({
     // 初期デフォルト値は空文字列（`""`：未指定）となります。
     defaultStagePort: z.string().default(DEFAULT_SETTINGS.defaultStagePort),
 
+    // --- Measurement Defaults (自動測定デフォルト設定) ---
+    // 自動測定画面（Auto Mode）を開いた際に初期適用される角度範囲プリセットのID
+    defaultAngleRangePresetId: z.string().default(DEFAULT_SETTINGS.defaultAngleRangePresetId),
+
     // --- Output Folder Presets (保存先プロファイル) ---
     outputPresets: z.array(
         z.object({

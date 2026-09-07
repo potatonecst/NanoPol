@@ -15,6 +15,7 @@
   - [x] `recharts` を使用した散乱強度リアルタイムグラフの実装。
   - [x] `Measurement Manager` パネル（パラメータ入力、Pre-Scan、実行）。
   - [x] **角度範囲プリセット (Angle Range Presets)**: Standard, High-Res, Half, Quarter, Quick Check の1クリック適用と、レイアウトシフトゼロのインライン動的説明バー（Preview/Active/Custom連動・レスポンシブ余白保証）の実装。
+  - [x] **デフォルト角度範囲プリセットの永続化 (Default Angle Range Preset)**: `SettingsView` の Measurement タブでの初期プリセット設定および `MeasurementManager` との双方向同期。
 - [x] **測定ロジック・アルゴリズム (Logic / Algorithms)**
   - [x] **オートセンタリング (重み付き平均重心法)**: Pre-Scan時のROI自動補正とロック。
   - [x] **Step & Shoot 自動測定シーケンス**: ステージ回転 → 整定待機 → スナップショット → 輝度算出 → CSV/TIFF逐次保存。

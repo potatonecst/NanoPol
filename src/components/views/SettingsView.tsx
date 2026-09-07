@@ -48,7 +48,6 @@ import {
   Save,
   RotateCcw,
   TriangleAlert,
-  Activity,
   Plus,
   Trash2,
   Undo2,
@@ -57,8 +56,18 @@ import { Switch } from "../ui/switch";
 import { toast } from "sonner";
 import { systemApi } from "@/api/client";
 
-// 共通の定数ファイルから設定ファイル名をインポート
-import { CONFIG_FILENAME, DEFAULT_SETTINGS, getDefaultOutputDirectory, DEFAULT_EXPOSURE_MIN_MS, DEFAULT_EXPOSURE_MAX_MS, DEFAULT_EXPOSURE_STEP_MS, DEFAULT_GAIN_MIN, DEFAULT_GAIN_MAX } from "../../constants/constants";
+// 共通の定数ファイルから設定ファイル名やデフォルト値をインポート
+import { 
+  CONFIG_FILENAME, 
+  DEFAULT_SETTINGS, 
+  getDefaultOutputDirectory, 
+  DEFAULT_EXPOSURE_MIN_MS, 
+  DEFAULT_EXPOSURE_MAX_MS, 
+  DEFAULT_EXPOSURE_STEP_MS, 
+  DEFAULT_GAIN_MIN, 
+  DEFAULT_GAIN_MAX,
+  DEFAULT_ANGLE_PRESETS,
+} from "../../constants/constants";
 
 /**
  * 設定画面 (Settings View) コンポーネント
@@ -134,6 +143,7 @@ export const SettingsView: React.FC = () => {
     syncActivePresetIdFromPath,
     defaultOutputDirectory,
     setIsSettingsDirty,
+    setDefaultAngleRangePresetId,
   } = useAppStore(
     useShallow((s) => ({ 
       cameraExposureRange: s.cameraExposureRange, 
@@ -144,6 +154,7 @@ export const SettingsView: React.FC = () => {
       syncActivePresetIdFromPath: s.syncActivePresetIdFromPath,
       defaultOutputDirectory: s.defaultOutputDirectory,
       setIsSettingsDirty: s.setIsSettingsDirty,
+      setDefaultAngleRangePresetId: s.setDefaultAngleRangePresetId,
     }))
   );
 
@@ -256,6 +267,9 @@ export const SettingsView: React.FC = () => {
         setDefaultOutputDirectory(defaultPathForFallback || "");
         setOutputDirectory(freshSettings.outputDirectory || "");
         syncActivePresetIdFromPath(freshSettings.outputDirectory || "");
+        if (freshSettings.defaultAngleRangePresetId) {
+          setDefaultAngleRangePresetId(freshSettings.defaultAngleRangePresetId);
+        }
       } catch (error) {
         console.error("Failed to load settings:", error);
         toast.error("設定の読み込みに失敗しました");
@@ -355,6 +369,9 @@ export const SettingsView: React.FC = () => {
       setOutputPresets(data.outputPresets || []);
       setOutputDirectory(data.outputDirectory || "");
       syncActivePresetIdFromPath(data.outputDirectory || "");
+      if (data.defaultAngleRangePresetId) {
+        setDefaultAngleRangePresetId(data.defaultAngleRangePresetId);
+      }
 
       // 4. バックエンド(FastAPI)に設定変更を通知して即時反映させる
       try {
@@ -999,17 +1016,72 @@ export const SettingsView: React.FC = () => {
               </Card>
             </div>
 
-            {/* --- Category: Measurement (Future) --- */}
+            {/* --- Category: Measurement (自動測定設定) --- */}
             <div className={activeCategory === "measurement" ? "block space-y-6" : "hidden"}>
               <div className="mb-6">
-                <h3 className="text-lg font-semibold tracking-tight mb-1">Measurement</h3>
-                <p className="text-sm text-muted-foreground">Configure profiles and presets for automated measurements.</p>
+                <h3 className="text-lg font-semibold tracking-tight mb-1">Measurement Defaults</h3>
+                <p className="text-sm text-muted-foreground">
+                  Configure default parameters and presets for automated polarization scattering measurements.
+                </p>
               </div>
-              <Card className="border-dashed bg-muted/10">
-                <CardContent className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                  <Activity className="w-8 h-8 mb-4 opacity-50" />
-                  <p className="font-medium">Presets feature is coming soon.</p>
-                  <p className="text-sm mt-1">You will be able to manage Start/End/Step angle presets here.</p>
+
+              {/* 角度範囲プリセット設定カード */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Angle Range Presets</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  {/* デフォルトプリセット選択ドロップダウン */}
+                  <Controller
+                    control={form.control}
+                    name="defaultAngleRangePresetId"
+                    render={({ field, fieldState }) => {
+                      // 現在選択されているプリセットオブジェクトを特定
+                      const currentSelectedPreset = DEFAULT_ANGLE_PRESETS.find(
+                        (p) => p.id === field.value
+                      ) ?? DEFAULT_ANGLE_PRESETS[0];
+
+                      return (
+                        <Field data-invalid={fieldState.invalid}>
+                          <FieldLabel htmlFor="defaultAngleRangePresetId">
+                            Default Angle Range Preset
+                          </FieldLabel>
+                          <Select
+                            onValueChange={field.onChange}
+                            value={field.value || DEFAULT_SETTINGS.defaultAngleRangePresetId}
+                          >
+                            <SelectTrigger id="defaultAngleRangePresetId" className="w-full">
+                              <SelectValue placeholder="Select default angle range preset" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {DEFAULT_ANGLE_PRESETS.map((preset) => (
+                                <SelectItem key={preset.id} value={preset.id}>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-medium">{preset.name}</span>
+                                    <span className="text-xs text-muted-foreground">
+                                      ({preset.startAngle}° → {preset.endAngle}°, Step: {preset.stepAngle}°, {preset.points} pts)
+                                    </span>
+                                  </div>
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <FieldDescription>
+                            Select the preset automatically loaded when opening the Automated Measurement view or resetting the measurement setup form.
+                          </FieldDescription>
+                          {fieldState.invalid && <FieldError>{fieldState.error?.message}</FieldError>}
+
+                          {/* 選択中プリセットの用途説明 (Usage Note) */}
+                          {currentSelectedPreset && (
+                            <div className="mt-3 p-3 rounded-lg border bg-muted/30 text-xs text-muted-foreground leading-relaxed">
+                              <span className="font-medium text-foreground">Usage Note: </span>
+                              {currentSelectedPreset.description}
+                            </div>
+                          )}
+                        </Field>
+                      );
+                    }}
+                  />
                 </CardContent>
               </Card>
             </div>

@@ -406,6 +406,13 @@ function App() {
           useAppStore.getState().setStagePort(settings.defaultStagePort);
         }
 
+        // 【自動測定デフォルト角度範囲プリセットの初期同期】
+        // config.json に保存されている初期プリセットIDをストアに反映し、
+        // 自動測定画面（MeasurementManager）を開いた際に該当する測定範囲が初期適用されるようにします。
+        if (settings.defaultAngleRangePresetId) {
+          useAppStore.getState().setDefaultAngleRangePresetId(settings.defaultAngleRangePresetId);
+        }
+
         // ============================================================================
         // 【起動時の保存先プロファイル・基準パスの初期同期と復元制御】
         // 1. ファイルからロードされた `outputPresets`（プロファイルリスト）をストアに同期します。

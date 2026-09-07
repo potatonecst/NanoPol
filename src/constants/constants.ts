@@ -31,6 +31,7 @@ export const DEFAULT_SETTINGS = {
     defaultExposure: 0.06675,
     defaultGain: 1.0,
     defaultStagePort: "", // デフォルトのステージCOMポート（初期値は空文字列）
+    defaultAngleRangePresetId: "std_5deg", // 自動測定時の初期選択角度範囲プリセットID（初期値: Standard 5°）
     outputPresets: [] as Array<{ id: string; name: string; path: string }>, // 保存先プロファイルプリセットの初期リスト
     activePresetId: "", // 現在選択中のプロファイルID（初期値は空文字列）
     rememberLastProfile: false, // 起動時に前回のプロファイル選択を復元するか（デフォルトは安全のためfalse）
