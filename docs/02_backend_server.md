@@ -252,9 +252,9 @@ backend の終了確認では、次のログを順に確認する。
 
 これにより、どれだけ高速に画面往復やリサイズを繰り返しても、不要なバックグラウンドスレッドが即座に回収され、スレッド枯渇やデバイスロックによる `Capture failed` エラーが発生しなくなります。
 
-### 2.10 動画変換進捗ステータス API (`/camera/video_conversion_status`)
+### 2.10 動画変換進捗・サマリー取得エンドポイント (`/camera/video_conversion_status`)
 
-録画完了後にバックグラウンドのワーカースレッド（貨物レーン）で非同期実行される MP4 変換タスクの進行状況をポーリング取得するためのエンドポイントです。
+録画完了後にバックグラウンドのワーカースレッド（貨物レーン）で非同期実行される MP4 変換タスクの進行状況および完了サマリーをポーリング取得するためのエンドポイントです。
 
 ```http
 GET /camera/video_conversion_status
@@ -263,20 +263,35 @@ GET /camera/video_conversion_status
 #### レスポンス形式
 ```json
 {
-  "is_converting": true,
-  "progress_percent": 65,
-  "current_frame": 390,
+  "is_converting": false,
+  "progress_percent": 100,
+  "current_frame": 600,
   "total_frames": 600,
   "source_file": "record_20260908_175000.tif",
   "target_file": "record_20260908_175000.mp4",
-  "status_message": "Processing frame 390 / 600 (65%)...",
-  "error": null
+  "status_message": "Conversion completed successfully.",
+  "error": null,
+  "summary": {
+    "source_frames": 600,
+    "interpolated_frames": 0,
+    "output_mp4_frames": 600,
+    "drop_events_count": 0,
+    "drop_details": [],
+    "target_fps": 30.0,
+    "real_duration_sec": 20.0,
+    "video_duration_sec": 20.0,
+    "duration_diff_sec": 0.0,
+    "raw_tiff_kept": false,
+    "converted_at": "2026-09-08T17:50:10.123456"
+  }
 }
 ```
 
 *   **`is_converting`**: 現在変換タスクが走行中かどうかの真偽値。
 *   **`progress_percent`**: 全体の進捗率（0〜100%）。初期化（0-5%）、フレーム変換（5-95%）、ファイル確定（95-100%）の3フェーズを配分。
 *   **`error`**: 変換中にエラーが発生した場合はエラー文字列（正常時は `null`）。
+*   **`summary`**: 変換完了時に格納される統計情報（元フレーム数、補完数、ドロップ発生箇所リスト、実測時間と動画時間の比較など）。変換中やエラー時は `null`。
+
 
 ### 2.11 自動測定セッション管理 API (Auto Measurement Sessions)
 

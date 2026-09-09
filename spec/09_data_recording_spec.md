@@ -22,14 +22,14 @@ PCからのソフトウェアトリガーでカメラを制御する都合上、
 
 > **Note:** 本システムはハードウェアトリガー同期ではないため、角度値は frame-exact な真値ではなく近傍観測値として扱う。
 
-### 2.3 保存先の分離
+### 2.3 保存先の分離と日付別整理
 
-保存生成物は `outputDirectory` 直下を汚さないように分離して保存する。
+保存生成物は `outputDirectory` 直下を汚さず、また日々の実験データを整然と管理できるよう、**日付ごとのサブフォルダ（`YYYYMMDD`）** に集約して保存する。
 
-- スナップショット: `outputDirectory/snapshots/`
-- 録画: `outputDirectory/videos/`
+- スナップショット: `outputDirectory/snapshots/YYYYMMDD/`
+- 録画・動画: `outputDirectory/videos/YYYYMMDD/`
 
-これにより、測定ごとの出力をまとめて管理しやすくし、`outputDirectory` 直下のファイル衝突を避ける。
+これにより、Auto Mode（`outputDirectory/YYYYMMDD/`）も含めてアプリ全体の保存形式が 8 桁の日付（`YYYYMMDD`）で完全に統一され、ファイル一覧の乱雑化を防ぎ、データのアーカイブ・バックアップ・Pythonスクリプトによる事後解析が容易になる。
 
 ### 2.4 録画の開始・停止ログ
 
@@ -49,7 +49,7 @@ PCからのソフトウェアトリガーでカメラを制御する都合上、
 1. `Recording started` が出ているか。
 2. `Recording stopped` が出ているか。
 3. `Error writing frame to TIFF/CSV` が停止直後の1回だけか。
-4. 実ファイル（TIFF/CSV）が `videos/` に残っているか。
+4. 実ファイル（TIFF/CSV）が `videos/YYYYMMDD/` に残っているか。
 
 この条件を満たす場合、測定データは保存済みとみなしてよい。
 
@@ -82,13 +82,33 @@ PCからのソフトウェアトリガーでカメラを制御する都合上、
 *   **カラー処理**: カラーカメラの場合は Bayer パターン（RGGB等）を OpenCV で BGR にデモザイクし、モノクロの場合は 3 チャンネル BGR に複製して出力する。
 *   **コーデック**: クロスプラットフォーム互換性の高い `mp4v` (MPEG-4 Part 2) を採用。
 
-### 4.4 設定連動とフェイルセーフ
+### 4.4 変換サマリーとトレーサビリティ（JSONメタデータ出力）
+MP4変換完了時、同名（拡張子 `.json`）のメタデータファイルを生成し、実験データのトレーサビリティを保証する。
+
+- **ファイル名例**: `outputDirectory/videos/20260909/record_20260909_153000.json`
+- **出力内容**:
+  - `source_frames`: カメラから取得した元フレーム数
+  - `interpolated_frames`: 補完（水増し挿入）したフレーム数
+  - `output_mp4_frames`: 生成された動画の総フレーム数（`source_frames + interpolated_frames`）
+  - `drop_events_count`: コマ落ち検知回数
+  - `drop_details`: 各コマ落ち発生箇所の詳細リスト（`frame_index`, `gap_ms`, `added_frames`）
+  - `target_fps`: 30.0
+  - `real_duration_sec`: 実際の撮影時間（CSVの開始〜終了タイムスタンプ差）
+  - `video_duration_sec`: 動画の再生時間
+  - `raw_tiff_kept`: 元TIFFを保持したか（`keepRawTiff` 設定）
+  - `converted_at`: 変換完了日時（ISO 8601 形式）
+
+### 4.5 設定連動とフェイルセーフ
 *   `autoConvertMp4: true` の場合のみ変換を非同期実行。
 *   `keepRawTiff: false` の場合、MP4変換が**正常に完了した場合のみ**元 TIFF を削除。変換エラー時は元 TIFF を 100% 保護し、不完全な MP4 のみ削除する。
 
-### 4.5 進捗通知とUI連携
-*   バックエンドは `GET /camera/video_conversion_status` により進捗率（`progress_percent`）およびステータスを提供。
+### 4.6 進捗通知とUI連携
+*   バックエンドは `GET /camera/video_conversion_status` により進捗率（`progress_percent`）およびサマリー情報を提供。
 *   フロントエンドは `sonner` トースト内に `shadcn/ui` の `Progress` コンポーネントを配置し、変換完了までリアルタイムに進捗を表示する。
+*   トースト内のメッセージは絵文字テキストを使用せず、トースト標準スタイルおよび Lucide アイコンを活用する：
+    - **ドロップなし**: `toast.success("動画変換が完了しました", { description: "... (300フレーム / ドロップなし)" })`
+    - **ドロップあり**: `toast.warning("動画変換が完了しました（補完あり）", { description: "... (300 + 5フレーム補完)" })`
 
 ---
-*Last Updated: 2026-09-08*
+*Last Updated: 2026-09-09*
+

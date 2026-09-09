@@ -426,6 +426,20 @@ Thorlabs/IDS製カメラの制御に加え、取得した画像のリアルタ�
 #### `set_rois(rois: list)`
 解析対象となる ROI リスト（中心座標とサイズ）を更新します。この設定は、リアルタイム表示と Snapshot 解析の両方に即座に反映されます。
 
+#### `prepare_recording() -> bool` / `stop_recording() -> Optional[str]`
+*   **日付サブディレクトリへの自動集約**: `outputDirectory/videos/YYYYMMDD/` に日別のサブフォルダを自動生成して保存します（スナップショットも同様に `outputDirectory/snapshots/YYYYMMDD/`）。Auto Mode の `outputDirectory/YYYYMMDD/` と完全統一されています。
+*   **非同期後処理（貨物レーン）**: 録画停止後、`autoConvertMp4: true` 設定時に別スレッドで `convert_tiff_to_mp4_with_interpolation` を呼び出し、MP4動画と変換サマリーJSON（`同名.json`）を生成します。
+
+### 5.3. 動画変換モジュール (`backend/utils/video_converter.py`)
+*   **ドロップフレーム補完 (Drop-frame Interpolation)**: 連続フレーム間のタイムスタンプ差分 $\Delta t > 1.5 \times \text{FRAME\_INTERVAL\_MS}$ を検知した際、直前フレームを複製挿入し、動画再生時間と実測時間を完全に一致させます。
+*   **サマリーとトレーサビリティ (JSON出力)**: 元フレーム数、補完フレーム数、コマ落ち検知回数、各ドロップ箇所の詳細情報、実測時間と動画再生時間の差を `.json` に保存します。
+*   **メモリ保護**: `tifffile.TiffFile` による1ページずつのストリーミング読み込みで RAM 枯渇を防止します。
+*   **階調スケーリング**: 16-bit 画像は最大階調に基づく固定ビットシフトで 8-bit に変換し、チラつき（フリッカー）を防止します。
+
+---
+
+## 6. プログラミング用語・パターンの解説（学習用）
+
 ### クラス (`class`) と インスタンス (`self`)
 *   **クラス:** 設計図です。「ステージコントローラーとはこういう機能を持つものだ」という定義です。
 *   **インスタンス:** 実体です。`stage = StageController()` と書くと、メモリ上に1つの「制御装置」が生まれます。
@@ -455,4 +469,6 @@ except Exception as e:
 `get_status` の戻り値 `Tuple[float, bool]` などで使われています。
 *   リスト `[1, 2]` と似ていますが、タプル `(1, 2)` は**中身を変更できません**。
 *   関数の戻り値として「複数の値をセットで返したい」ときによく使われます。ここでは「角度」と「Busy状態」という2つの情報をセットにして返しています。
-*Last Updated: 2026-06-16*
+
+---
+*Last Updated: 2026-09-09*

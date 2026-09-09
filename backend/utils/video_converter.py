@@ -1,27 +1,32 @@
 import os
 import csv
+import json
+import datetime
 import cv2
 import numpy as np
 import tifffile
-from typing import Callable, Optional, Dict, Any
+from typing import Callable, Optional, Dict, Any, Tuple
 from utils.logger import logger
 
 # ============================================================================
 # 動画変換ユーティリティ (Video Converter Module)
 # 
 # 録画された RAW マルチページ TIFF と タイムスタンプ CSV から、
-# プレビュー・共有用の MP4 動画を生成するモジュールです。
+# プレビュー・共有用の MP4 動画および変換サマリー JSON を生成するモジュールです。
 # 
 # 【主要機能】
 # 1. ドロップフレーム補完 (Drop-frame Interpolation):
 #    コマ落ち（遅延）が発生した区間に直前フレームを水増し挿入し、
 #    動画の再生時間と現実の測定時間を 100% 一致させます。
-# 2. ストリーミング処理 (省メモリ設計):
+# 2. 変換サマリー・トレーサビリティ記録 (JSON出力):
+#    コマ落ち発生箇所、補完フレーム数、実測時間と動画再生時間の差分を
+#    同名の .json ファイルに完全記録します。
+# 3. ストリーミング処理 (省メモリ設計):
 #    巨大な TIFF ファイルでも RAM を圧迫しないよう、1ページずつ順次処理します。
-# 3. 階調安定化 (フリッカー防止):
+# 4. 階調安定化 (フリッカー防止):
 #    16-bit 画像はカメラの最大階調に基づく固定スケールで 8-bit に変換し、
 #    フレームごとの明滅（チラつき）を防ぎます。
-# 4. フェイルセーフ設計:
+# 5. フェイルセーフ設計:
 #    変換成功時のみ keepRawTiff 設定に応じて元 TIFF を削除し、
 #    エラー時は元データを 100% 保護します。
 # ============================================================================
@@ -115,33 +120,37 @@ def convert_tiff_to_mp4_with_interpolation(
     tiff_path: str,
     csv_path: Optional[str] = None,
     output_mp4_path: Optional[str] = None,
+    output_json_path: Optional[str] = None,
     is_color: bool = False,
     bayer_pattern: Optional[str] = None,
     keep_raw: bool = True,
     progress_callback: Optional[Callable[[int, int, int, str], None]] = None
-) -> str:
+) -> Tuple[str, Dict[str, Any]]:
     """
-    マルチページ TIFF と CSV からドロップフレーム補完を適用した MP4 動画を生成します。
+    マルチページ TIFF と CSV からドロップフレーム補完を適用した MP4 動画およびサマリー JSON を生成します。
 
     引数:
         tiff_path: 入力マルチページ TIFF ファイルパス
         csv_path: タイムスタンプ CSV パス（None の場合は tiff と同名の .csv を自動探索）
         output_mp4_path: 出力 MP4 ファイルパス（None の場合は tiff と同名の .mp4）
+        output_json_path: 出力 JSON パス（None の場合は tiff と同名の .json）
         is_color: カラーモードかどうか
         bayer_pattern: Bayer パターン文字列 ('RG', 'BG' 等)
         keep_raw: 変換成功時に元 TIFF を保持するか（False なら削除）
         progress_callback: 進捗コールバック (percent: int, current_frame: int, total_frames: int, message: str)
 
     戻り値:
-        str: 生成された MP4 ファイルの絶対パス
+        Tuple[str, Dict[str, Any]]: (生成された MP4 ファイルの絶対パス, 変換サマリー辞書)
     """
     if not os.path.exists(tiff_path):
         raise FileNotFoundError(f"Input TIFF file not found: {tiff_path}")
 
-    # 出力パスと CSV パスの解決
+    # 出力パス、CSV パス、JSON パスの解決
     base_no_ext = os.path.splitext(tiff_path)[0]
     if output_mp4_path is None:
         output_mp4_path = f"{base_no_ext}.mp4"
+    if output_json_path is None:
+        output_json_path = f"{base_no_ext}.json"
     if csv_path is None:
         candidate_csv = f"{base_no_ext}.csv"
         csv_path = candidate_csv if os.path.exists(candidate_csv) else None
@@ -156,6 +165,11 @@ def convert_tiff_to_mp4_with_interpolation(
 
     video_writer: Optional[cv2.VideoWriter] = None
     converted_successfully = False
+
+    # 変換統計サマリーの初期化
+    interpolated_frames_count = 0
+    drop_events_count = 0
+    drop_details: list[dict[str, Any]] = []
 
     try:
         with tifffile.TiffFile(tiff_path) as tif:
@@ -195,6 +209,13 @@ def convert_tiff_to_mp4_with_interpolation(
                             extra_frames = min(extra_frames, MAX_INTERPOLATION_FRAMES)
                             if extra_frames > 0:
                                 repeat_count = 1 + extra_frames
+                                interpolated_frames_count += extra_frames
+                                drop_events_count += 1
+                                drop_details.append({
+                                    "frame_index": i,
+                                    "gap_ms": round(delta_ms, 2),
+                                    "added_frames": extra_frames
+                                })
                                 logger.debug(
                                     f"[VideoConverter] Dropped frame detected at index {i} "
                                     f"(delta={delta_ms:.1f}ms): repeating {extra_frames} frames."
@@ -216,16 +237,68 @@ def convert_tiff_to_mp4_with_interpolation(
 
         # 6. ファイナライズ（ファイルクローズ・確定）
         if progress_callback:
-            progress_callback(95, total_source_frames, total_source_frames, "Finalizing MP4 video...")
+            progress_callback(95, total_source_frames, total_source_frames, "Finalizing MP4 video & metadata...")
 
         if video_writer is not None:
             video_writer.release()
             video_writer = None
 
         converted_successfully = True
-        logger.info(f"[VideoConverter] Successfully generated MP4: {output_mp4_path}")
+        total_output_frames = total_source_frames + interpolated_frames_count
 
-        # 7. keepRawTiff 設定に基づく元 TIFF の削除
+        # 撮影時間および動画再生時間の計算
+        if has_valid_timestamps:
+            real_duration_sec = round((timestamps[-1] - timestamps[0]) / 1000.0, 3)
+        else:
+            real_duration_sec = round(total_source_frames / TARGET_FPS, 3)
+        video_duration_sec = round(total_output_frames / TARGET_FPS, 3)
+        duration_diff_sec = round(abs(real_duration_sec - video_duration_sec), 3)
+
+        # 変換サマリー辞書の構築
+        summary: Dict[str, Any] = {
+            "source_frames": total_source_frames,
+            "interpolated_frames": interpolated_frames_count,
+            "output_mp4_frames": total_output_frames,
+            "drop_events_count": drop_events_count,
+            "drop_details": drop_details,
+            "target_fps": TARGET_FPS,
+            "real_duration_sec": real_duration_sec,
+            "video_duration_sec": video_duration_sec,
+            "duration_diff_sec": duration_diff_sec,
+            "raw_tiff_kept": keep_raw,
+            "converted_at": datetime.datetime.now().isoformat(),
+            "source_tiff_path": tiff_path,
+            "output_mp4_path": output_mp4_path,
+        }
+
+        # 7. 変換サマリー JSON ファイルの保存
+        try:
+            # 既存の JSON があれば読み込んでマージ、なければ新規作成
+            existing_data: Dict[str, Any] = {}
+            if os.path.exists(output_json_path):
+                try:
+                    with open(output_json_path, mode='r', encoding='utf-8') as jf:
+                        existing_data = json.load(jf)
+                except Exception:
+                    existing_data = {}
+
+            existing_data["conversion_summary"] = summary
+            with open(output_json_path, mode='w', encoding='utf-8') as jf:
+                json.dump(existing_data, jf, indent=2, ensure_ascii=False)
+            logger.info(f"[VideoConverter] Saved conversion summary JSON: {output_json_path}")
+        except Exception as e:
+            logger.warning(f"[VideoConverter] Failed to save conversion summary JSON: {e}")
+
+        # 8. ログへの変換サマリー出力
+        base_name = os.path.basename(output_mp4_path)
+        logger.info(f"[VideoConverter] ===== Conversion Summary: {base_name} =====")
+        logger.info(f"[VideoConverter] - Source Frames     : {total_source_frames}")
+        logger.info(f"[VideoConverter] - Interpolated Frames : {interpolated_frames_count} (Drop events: {drop_events_count})")
+        logger.info(f"[VideoConverter] - Total Output Frames: {total_output_frames} ({TARGET_FPS} fps, {video_duration_sec}s)")
+        logger.info(f"[VideoConverter] - Duration Sync      : Real {real_duration_sec}s vs Video {video_duration_sec}s (diff: {duration_diff_sec}s)")
+        logger.info(f"[VideoConverter] =================================================")
+
+        # 9. keepRawTiff 設定に基づく元 TIFF の削除
         if not keep_raw:
             try:
                 os.remove(tiff_path)
@@ -236,7 +309,7 @@ def convert_tiff_to_mp4_with_interpolation(
         if progress_callback:
             progress_callback(100, total_source_frames, total_source_frames, "Video Conversion Completed!")
 
-        return output_mp4_path
+        return output_mp4_path, summary
 
     except Exception as e:
         logger.exception(f"[VideoConverter] Error converting TIFF to MP4: {e}")
@@ -249,3 +322,4 @@ def convert_tiff_to_mp4_with_interpolation(
             except Exception:
                 pass
         raise e
+

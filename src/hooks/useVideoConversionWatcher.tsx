@@ -45,7 +45,7 @@ export const useVideoConversionWatcher = () => {
                 <div className="flex items-center justify-between text-sm">
                   <div className="font-semibold flex items-center gap-2">
                     <Loader2 className="w-4 h-4 animate-spin text-primary shrink-0" />
-                    <span>Converting Video to MP4</span>
+                    <span>MP4動画へ変換中</span>
                   </div>
                   <span className="font-mono text-xs font-bold text-primary bg-primary/10 px-2 py-0.5 rounded">
                     {data.progress_percent}%
@@ -58,7 +58,7 @@ export const useVideoConversionWatcher = () => {
                 {/* フッター: 詳細メッセージ & ファイル名 */}
                 <div className="flex items-center justify-between text-xs text-muted-foreground pt-0.5">
                   <span className="truncate max-w-[220px]" title={data.status_message}>
-                    {data.status_message || `Frame ${data.current_frame} / ${data.total_frames}`}
+                    {data.status_message || `フレーム ${data.current_frame} / ${data.total_frames}`}
                   </span>
                   {data.target_file && (
                     <span className="font-mono text-[11px] opacity-75 shrink-0 ml-2">
@@ -81,18 +81,31 @@ export const useVideoConversionWatcher = () => {
 
             if (data.error) {
               // エラー通知（元TIFFが保護されていることを明記して安心感を与える）
-              toast.error("Video Conversion Failed", {
-                description: `Error: ${data.error}. Raw TIFF is preserved safely in videos/ folder.`,
+              toast.error("動画変換に失敗しました", {
+                description: `エラー: ${data.error}。元TIFFファイルは安全に保護されています。`,
                 duration: 8000,
                 icon: <AlertTriangle className="w-4 h-4 text-destructive" />
               });
             } else if (data.progress_percent === 100 || data.target_file) {
-              // 成功通知
-              toast.success("Video Conversion Completed", {
-                description: `Saved as ${data.target_file || "MP4 video"} (Drop-frame interpolated).`,
-                duration: 5000,
-                icon: <CheckCircle2 className="w-4 h-4 text-green-500" />
-              });
+              const summary = data.summary;
+              const targetFileName = data.target_file || "MP4動画";
+
+              if (summary && summary.interpolated_frames > 0) {
+                // ドロップフレーム補完（水増し）が行われた場合
+                toast.warning("動画変換が完了しました（補完あり）", {
+                  description: `${targetFileName} (${summary.source_frames} + ${summary.interpolated_frames}フレーム補完)`,
+                  duration: 6000,
+                  icon: <AlertTriangle className="w-4 h-4 text-amber-500" />
+                });
+              } else {
+                // ドロップフレームなし（完全な1:1変換）の場合
+                const totalFrames = summary?.output_mp4_frames ?? data.total_frames;
+                toast.success("動画変換が完了しました", {
+                  description: `${targetFileName} (${totalFrames}フレーム / ドロップなし)`,
+                  duration: 5000,
+                  icon: <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                });
+              }
             }
           }
         }

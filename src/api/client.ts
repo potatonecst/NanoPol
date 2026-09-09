@@ -189,6 +189,44 @@ export const stageApi = {
 // ==========================================
 // Thorlabs/uEyeカメラの接続、設定、スナップショット撮影、録画を行うAPI群です。
 
+/**
+ * 動画変換サマリー（ドロップフレーム補完・時間統計）情報
+ */
+export interface VideoConversionSummary {
+    source_frames: number;
+    interpolated_frames: number;
+    output_mp4_frames: number;
+    drop_events_count: number;
+    drop_details: Array<{
+        frame_index: number;
+        gap_ms: number;
+        added_frames: number;
+    }>;
+    target_fps: number;
+    real_duration_sec: number;
+    video_duration_sec: number;
+    duration_diff_sec: number;
+    raw_tiff_kept: boolean;
+    converted_at: string;
+    source_tiff_path: string;
+    output_mp4_path: string;
+}
+
+/**
+ * 動画変換ステータス情報
+ */
+export interface VideoConversionStatus {
+    is_converting: boolean;
+    progress_percent: number;
+    current_frame: number;
+    total_frames: number;
+    source_file: string | null;
+    target_file: string | null;
+    status_message: string;
+    error: string | null;
+    summary?: VideoConversionSummary | null;
+}
+
 export const cameraApi = {
     // 接続可能なカメラの一覧を取得します
     listCameras: () =>
@@ -272,16 +310,7 @@ export const cameraApi = {
 
     // バックグラウンドで実行中の動画変換（MP4化）の進捗ステータスを取得します
     getVideoConversionStatus: () =>
-        request<{
-            is_converting: boolean,
-            progress_percent: number,
-            current_frame: number,
-            total_frames: number,
-            source_file: string | null,
-            target_file: string | null,
-            status_message: string,
-            error: string | null,
-        }>("/camera/video_conversion_status", { method: "GET" }),
+        request<VideoConversionStatus>("/camera/video_conversion_status", { method: "GET" }),
 
     // 【特殊なエンドポイント】
     // このURLはJSONを返すAPIではなく、MJPEG形式の画像ストリームを無限に送信し続けるURLです。

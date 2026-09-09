@@ -944,8 +944,9 @@ class CameraController:
                 
             # 「自動保存」設定の場合、設定画面で指定された出力ディレクトリを使用します。
             out_dir = self.settings.get("outputDirectory", os.getcwd())
-            # スナップショット専用のサブディレクトリ "snapshots" を作成します。
-            target_dir = os.path.join(out_dir, "snapshots")
+            # スナップショット専用の日付サブディレクトリ "snapshots/YYYYMMDD" を作成します。
+            today_str = datetime.datetime.now().strftime("%Y%m%d")
+            target_dir = os.path.join(out_dir, "snapshots", today_str)
             try:
                 os.makedirs(target_dir, exist_ok=True)
             except Exception:
@@ -1005,8 +1006,9 @@ class CameraController:
 
         out_dir = self.settings.get("outputDirectory", os.getcwd())
         prefix = self.settings.get("recordPrefix", "record_")
-        # 直下にファイルをばら撒かず、録画専用のサブフォルダへ集約する。
-        record_dir = os.path.join(out_dir, "videos")
+        # 直下にファイルをばら撒かず、録画専用の日付サブフォルダ "videos/YYYYMMDD" へ集約する。
+        today_str = datetime.datetime.now().strftime("%Y%m%d")
+        record_dir = os.path.join(out_dir, "videos", today_str)
         logger.info(
             f"{self.log_tag} Recording prepare requested: out_dir={out_dir}, record_dir={record_dir}, prefix={prefix}, keepRawTiff={self.settings.get('keepRawTiff', True)}"
         )
@@ -1557,6 +1559,7 @@ class CameraController:
                 "target_file": mp4_name,
                 "status_message": "Initializing conversion...",
                 "error": None,
+                "summary": None,
             }
 
         def on_progress(percent: int, curr_frame: int, total_frames: int, message: str):
@@ -1567,7 +1570,7 @@ class CameraController:
                 self._conversion_status["status_message"] = message
 
         try:
-            mp4_path = convert_tiff_to_mp4_with_interpolation(
+            mp4_path, summary = convert_tiff_to_mp4_with_interpolation(
                 tiff_path=tiff_path,
                 is_color=is_color,
                 bayer_pattern=self.bayer_pattern,
@@ -1578,6 +1581,7 @@ class CameraController:
                 self._conversion_status["is_converting"] = False
                 self._conversion_status["progress_percent"] = 100
                 self._conversion_status["status_message"] = "Conversion completed successfully."
+                self._conversion_status["summary"] = summary
                 self._conversion_status["error"] = None
             logger.info(f"{self.log_tag} [Post-Process] Successfully converted to {mp4_path}")
         except Exception as e:
@@ -1585,6 +1589,7 @@ class CameraController:
                 self._conversion_status["is_converting"] = False
                 self._conversion_status["error"] = str(e)
                 self._conversion_status["status_message"] = f"Conversion failed: {e}"
+                self._conversion_status["summary"] = None
             logger.exception(f"{self.log_tag} [Post-Process] Video conversion failed for {tiff_path}: {e}")
 
     # ============================================================================
