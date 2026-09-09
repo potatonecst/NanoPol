@@ -343,8 +343,25 @@ return image_data
 *   **注意:** 録画停止直後に `Error writing frame to TIFF/CSV` が1回だけ出ても、`Recording stopped` と `videos/` 内の実ファイルが残っていれば、停止と書き込みの競合ログである可能性があります。
 
 #### `stop_recording() -> Optional[str]`
-*   **役割:** TIFF書き込みを終了し、必要に応じて16-bit待機モードへ復帰します。自動MP4変換がONの場合は非同期の「貨物レーン」スレッドを起動します。
+*   **役割:** TIFF書き込みを終了し、必要に応じて16-bit待機モードへ復帰します。自動MP4変換がONの場合は非同期の「貨物レーン」スレッド（`_post_process_video`）を起動します。
 *   **実装補足:** writer 参照はロックで保護され、停止中にキャプチャループが `NoneType` の writer を触らないようにしています。
+
+#### `_post_process_video(tiff_path: str, is_color: bool, keep_raw: bool)`
+*   **役割:** 録画完了後にバックグラウンドのワーカースレッドで呼び出され、`backend/utils/video_converter.py` を用いてマルチページTIFFをMP4へ変換します。
+*   **進捗管理:** `_conversion_status`（辞書）に現在の進捗率（0〜100%）、処理フレーム数、対象ファイル名、エラー情報をスレッドセーフに保持し、フロントエンドのポーリングAPI（`/camera/video_conversion_status`）に提供します。
+
+#### 動画自動変換モジュール (`backend/utils/video_converter.py`)
+*   **ドロップフレーム補完（Drop-frame Interpolation）**:
+    *   同名の CSV に記録された `Frame_Timestamp_ms` を解析し、目標FPS（30.0 FPS、約33.33ms間隔）を基準としたタイムラインを構成。
+    *   コマ落ち等でフレーム間隔が空いた区間（$\Delta t > 33.33\text{ ms}$）には、直前のフレーム画像を必要な枚数分リピートして水増し挿入することで、**「動画の再生時間」と「現実の測定時間」を 100% 完全同期**させます。
+    *   長時間の停止に伴うファイル肥大化を防ぐため、1区間最大 10秒（300フレーム）の安全リミットを内蔵。
+*   **ストリーミング読み込み (省メモリ設計)**:
+    *   巨大なマルチページTIFFでも RAM を圧迫しないよう、`tifffile.TiffFile` で 1 ページずつ順次読み込んで即座に OpenCV `VideoWriter` に書き出します。
+*   **階調スケーリングとフリッカー防止**:
+    *   16-bit画像（uint16）は固定スケール（上位8ビット抽出）で 8-bit に変換し、フレームごとのオートスケールによる明滅（フリッカー）を防止。
+    *   カラーモード時は Bayer パターン（RGGB等）をデモザイクし、モノクロ時は 3ch BGR に複製して出力。
+*   **フェイルセーフな生データ保護**:
+    *   変換成功時のみ `keepRawTiff: false` 設定に応じて元 TIFF を削除。変換エラー時は元 TIFF を 100% 安全に保護し、不完全な MP4 のみ削除。
 
 ## 4. ROIProcessor (解析エンジン)
 

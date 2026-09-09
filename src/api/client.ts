@@ -270,6 +270,19 @@ export const cameraApi = {
     stopRecording: () =>
         request<{ status: string, filepath: string }>("/camera/record/stop", { method: "POST" }),
 
+    // バックグラウンドで実行中の動画変換（MP4化）の進捗ステータスを取得します
+    getVideoConversionStatus: () =>
+        request<{
+            is_converting: boolean,
+            progress_percent: number,
+            current_frame: number,
+            total_frames: number,
+            source_file: string | null,
+            target_file: string | null,
+            status_message: string,
+            error: string | null,
+        }>("/camera/video_conversion_status", { method: "GET" }),
+
     // 【特殊なエンドポイント】
     // このURLはJSONを返すAPIではなく、MJPEG形式の画像ストリームを無限に送信し続けるURLです。
     // そのため fetch() は使わず、そのまま <img> タグの src 属性にセットするための文字列を返します。

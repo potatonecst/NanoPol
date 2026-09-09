@@ -2329,6 +2329,14 @@ def stop_recording():
         return {"status": "stopped", "filepath": filepath}
     raise HTTPException(status_code=400, detail="Not currently recording")
 
+@app.get("/camera/video_conversion_status")
+def get_video_conversion_status():
+    """
+    【動画変換進捗ステータス取得】
+    バックグラウンドスレッド（貨物レーン）で実行中の MP4 変換タスクの進行状況（進捗率・フレーム数・エラー）を返します。
+    """
+    return camera.get_video_conversion_status()
+
 # ==========================================
 # ログ関連 API
 # ==========================================

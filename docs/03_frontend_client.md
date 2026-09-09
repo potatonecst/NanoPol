@@ -674,3 +674,22 @@ JavaScriptに「型（Type）」のルールを追加した言語です。
 *   遷移先モードを `pendingNavigationMode` に一時退避し、shadcn/ui の **`AlertDialog`**（WAI-ARIA `role="alertdialog"` 準拠の確認ダイアログ）をポップアップ表示します。
     *   **「Discard & Leave」選択時:** `isSettingsDirty` をリセットした上で保留先のモードへ遷移を実行。
     *   **「Stay on Settings」選択時:** `pendingNavigationMode` をクリアしてダイアログを閉じ、設定画面での編集を継続。
+
+### 1.7 動画変換プログレス通知（Toast ＆ shadcn/ui Progress）
+
+録画停止後、バックグラウンド（貨物レーン）で非同期実行される MP4 変換タスクの進行度をリアルタイムに可視化するため、`useVideoConversionWatcher` フックを導入しています。
+
+#### 1.7.1 常時監視と動的ポーリング (`useVideoConversionWatcher.tsx`)
+*   `App.tsx` のルートレベルでマウントされ、バックエンドの `/camera/video_conversion_status` をポーリング監視します。
+*   **動的インターバル切り替え:**
+    *   **待機時（アイドル時）:** 通信負荷を抑えるため 2000ms（2秒）周期で低頻度ポーリング。
+    *   **変換実行中 (`is_converting === true`):** 滑らかなプログレスアニメーションを維持するため 500ms（0.5秒）周期に自動加速。
+
+#### 1.7.2 トースト内 UI 設計（`Sonner` + `shadcn/ui/progress`）
+*   **`toast.custom` によるリッチプログレス表示**:
+    *   変換中は自動消去されないトースト（`duration: Infinity`, ID固定）を画面右下にポップアップ。
+    *   `shadcn/ui` の **`Progress`** コンポーネント（Radix UI プリミティブ + Tailwind CSS）を組み込み、パーセント更新時に `transition-all` による滑らかに伸びるアニメーションを実現。
+    *   進捗パーセント（`%`）、処理フレーム数（`Frame X / Total`）、現在のフェーズメッセージ、および対象ファイル名をリアルタイム表示。
+*   **完了・異常検知と自動差し替え**:
+    *   変換完了時: プログレスバーから自動で緑のチェックマーク付き完了トースト（`toast.success`）へ切り替え（5秒後に自動消滅）。
+    *   変換失敗時: 警告トースト（`toast.error`）を表示し、「`Raw TIFF is preserved safely in videos/ folder.`」と元データの安全を明記。

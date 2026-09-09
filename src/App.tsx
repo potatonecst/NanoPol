@@ -31,6 +31,7 @@ import { readTextFile, writeTextFile, mkdir, BaseDirectory, exists } from "@taur
 import { join } from "@tauri-apps/api/path";
 import { LogPanel } from "./components/shared/LogPanel";
 import { useStagePolling } from "./hooks/useStagePolling";
+import { useVideoConversionWatcher } from "./hooks/useVideoConversionWatcher";
 
 // 共通の定数ファイルから設定ファイル名をインポート
 import { CONFIG_FILENAME, DEFAULT_SETTINGS, getDefaultOutputDirectory } from "./constants/constants";
@@ -46,6 +47,10 @@ function App() {
   const [startupSettings, setStartupSettings] = useState<Settings | null>(null);
   const [startupSettingsSynced, setStartupSettingsSynced] = useState(false);
   const [startupSyncRetryToken, setStartupSyncRetryToken] = useState(0);
+
+  // 【動画変換進捗トースト監視】
+  // バックグラウンドで非同期実行される MP4 変換の進行度を監視し、トースト内プログレスバーを表示します
+  useVideoConversionWatcher();
 
   const {
     currentMode,

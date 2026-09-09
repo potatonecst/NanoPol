@@ -7,7 +7,7 @@ import csv
 import os
 import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # pylablib ライブラリのインポート（uc480 バックエンド用）
 try:
@@ -61,6 +61,19 @@ class CameraController:
         self.MAX_FRAMES = 10000  # 安全装置（Fail-safe）としての最大録画フレーム数
         self._recording_lock = threading.Lock()  # writer の生成/破棄/書き込みを守るロック
         
+        # 動画変換（MP4化）のステータス管理
+        self._conversion_lock = threading.Lock()
+        self._conversion_status: Dict[str, Any] = {
+            "is_converting": False,
+            "progress_percent": 0,
+            "current_frame": 0,
+            "total_frames": 0,
+            "source_file": None,
+            "target_file": None,
+            "status_message": "",
+            "error": None,
+        }
+
         # ステージの現在角度。撮像フレームと角度を後段で対応付けるために保持する。
         self.current_angle = 0.0
         # current_angle を取得した時刻（UNIX epoch milliseconds）。CSV同期情報に使用する。
@@ -1521,12 +1534,58 @@ class CameraController:
             )
             return False
 
+    def get_video_conversion_status(self) -> Dict[str, Any]:
+        """【Recording】現在の動画変換ステータスをスレッドセーフに取得します。"""
+        with self._conversion_lock:
+            return dict(self._conversion_status)
+
     def _post_process_video(self, tiff_path: str, is_color: bool, keep_raw: bool):
         """【貨物レーン】録画完了後に巨大なTIFFをMP4等に変換する"""
         logger.info(f"{self.log_tag} [Post-Process] Started for {tiff_path}")
-        # TODO: tifffileで各フレームを読み込み、OpenCVのVideoWriter等でMP4を生成する処理を実装する
-        time.sleep(2)
-        logger.info(f"{self.log_tag} [Post-Process] Completed.")
+        from utils.video_converter import convert_tiff_to_mp4_with_interpolation
+
+        base_name = os.path.basename(tiff_path)
+        mp4_name = f"{os.path.splitext(base_name)[0]}.mp4"
+
+        with self._conversion_lock:
+            self._conversion_status = {
+                "is_converting": True,
+                "progress_percent": 0,
+                "current_frame": 0,
+                "total_frames": 0,
+                "source_file": base_name,
+                "target_file": mp4_name,
+                "status_message": "Initializing conversion...",
+                "error": None,
+            }
+
+        def on_progress(percent: int, curr_frame: int, total_frames: int, message: str):
+            with self._conversion_lock:
+                self._conversion_status["progress_percent"] = percent
+                self._conversion_status["current_frame"] = curr_frame
+                self._conversion_status["total_frames"] = total_frames
+                self._conversion_status["status_message"] = message
+
+        try:
+            mp4_path = convert_tiff_to_mp4_with_interpolation(
+                tiff_path=tiff_path,
+                is_color=is_color,
+                bayer_pattern=self.bayer_pattern,
+                keep_raw=keep_raw,
+                progress_callback=on_progress
+            )
+            with self._conversion_lock:
+                self._conversion_status["is_converting"] = False
+                self._conversion_status["progress_percent"] = 100
+                self._conversion_status["status_message"] = "Conversion completed successfully."
+                self._conversion_status["error"] = None
+            logger.info(f"{self.log_tag} [Post-Process] Successfully converted to {mp4_path}")
+        except Exception as e:
+            with self._conversion_lock:
+                self._conversion_status["is_converting"] = False
+                self._conversion_status["error"] = str(e)
+                self._conversion_status["status_message"] = f"Conversion failed: {e}"
+            logger.exception(f"{self.log_tag} [Post-Process] Video conversion failed for {tiff_path}: {e}")
 
     # ============================================================================
     # 【配信】 generate_frames

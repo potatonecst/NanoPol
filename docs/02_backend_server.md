@@ -252,7 +252,33 @@ backend の終了確認では、次のログを順に確認する。
 
 これにより、どれだけ高速に画面往復やリサイズを繰り返しても、不要なバックグラウンドスレッドが即座に回収され、スレッド枯渇やデバイスロックによる `Capture failed` エラーが発生しなくなります。
 
-### 2.10 自動測定セッション管理 API (Auto Measurement Sessions)
+### 2.10 動画変換進捗ステータス API (`/camera/video_conversion_status`)
+
+録画完了後にバックグラウンドのワーカースレッド（貨物レーン）で非同期実行される MP4 変換タスクの進行状況をポーリング取得するためのエンドポイントです。
+
+```http
+GET /camera/video_conversion_status
+```
+
+#### レスポンス形式
+```json
+{
+  "is_converting": true,
+  "progress_percent": 65,
+  "current_frame": 390,
+  "total_frames": 600,
+  "source_file": "record_20260908_175000.tif",
+  "target_file": "record_20260908_175000.mp4",
+  "status_message": "Processing frame 390 / 600 (65%)...",
+  "error": null
+}
+```
+
+*   **`is_converting`**: 現在変換タスクが走行中かどうかの真偽値。
+*   **`progress_percent`**: 全体の進捗率（0〜100%）。初期化（0-5%）、フレーム変換（5-95%）、ファイル確定（95-100%）の3フェーズを配分。
+*   **`error`**: 変換中にエラーが発生した場合はエラー文字列（正常時は `null`）。
+
+### 2.11 自動測定セッション管理 API (Auto Measurement Sessions)
 
 自動測定（Auto Mode）の進行管理を行うための API です。`backend/utils/data_saver.py` と連携し、ファイルシステム上のディレクトリ構造を管理します。
 
