@@ -102,7 +102,30 @@ export function useStageActions() {
      * @param actionName - トーストやログに表示するアクションの名称
      * @param moveFn - 実際のAPI呼び出し（移動開始命令）を行う非同期関数
      */
-    const performMove = async (actionName: string, moveFn: () => Promise<void>) => {
+    /**
+     * トースト通知用の固定ID
+     */
+    const STAGE_TOAST_ID = "stage-action-toast";
+
+    /**
+     * 各種移動操作の共通ラッパー関数。
+     * 
+     * 「UIロック -> ローディングトースト表示 -> コマンド送信 -> 完了待機 -> 完了トーストへその場昇格 -> ロック解除」
+     * という一連のライフサイクルをカプセル化し、呼び出し元（各画面）をシンプルにします。
+     * 
+     * @param options - アクション名、および各フェーズ（実行中・完了・停止・失敗）のメッセージ
+     * @param moveFn - 実際のAPI呼び出し（移動開始命令）を行う非同期関数
+     */
+    const performMove = async (
+        options: {
+            actionName: string;
+            loadingMessage: string;
+            successMessage: string;
+            stoppedMessage?: string;
+            errorMessage?: string;
+        },
+        moveFn: () => Promise<void>
+    ) => {
         // すでに別の処理が動いている、または接続されていない場合は何もしない
         if (isSystemBusy || !isStageConnected) return;
         
@@ -110,27 +133,45 @@ export function useStageActions() {
         setStagePollingInterval(100); // 【動的ポーリング】移動開始の直前にポーリング間隔を 100ms（高頻度）に引き上げます。
         stopSignal.current = false; // 停止フラグをリセット
 
+        // 1. ローディングトーストを表示（同一IDで維持）
+        toast.loading(options.loadingMessage, {
+            id: STAGE_TOAST_ID,
+            duration: Infinity,
+        });
+
         try {
-            await moveFn();      // 1. 移動開始コマンドを送る
-            await waitForIdle(); // 2. 実際に止まるまで待つ
+            await moveFn();      // 2. 移動開始コマンドを送る
+            await waitForIdle(); // 3. 実際に止まるまで待つ
 
             // 待機が終わったあとの処理
             if (stopSignal.current) {
-                // ユーザーによって途中で止められた場合
-                toast.warning(`${actionName} Stopped`);
-                systemApi.postLogs("WARNING", `${actionName} Stopped by user`).catch(() => {});
+                // ユーザーによって途中で止められた場合: 同一IDで warning へ昇格
+                const stoppedText = options.stoppedMessage || `${options.actionName}を停止しました`;
+                toast.warning(stoppedText, {
+                    id: STAGE_TOAST_ID,
+                    duration: 5000,
+                });
+                systemApi.postLogs("WARNING", `${options.actionName} Stopped by user`).catch(() => {});
             } else {
-                // 最後まで正常に動ききった場合
-                toast.success(`${actionName} Complete`);
-                systemApi.postLogs("INFO", `${actionName} Complete`).catch(() => {});
+                // 最後まで正常に動ききった場合: 同一IDで success へ昇格
+                toast.success(options.successMessage, {
+                    id: STAGE_TOAST_ID,
+                    duration: 4000,
+                });
+                systemApi.postLogs("INFO", `${options.actionName} Complete`).catch(() => {});
             }
         } catch (e: any) {
-            // エラーが発生した場合（バックエンド異常、タイムアウトなど）
+            // エラーが発生した場合: 同一IDで error へ昇格
             console.error(e);
-            toast.error(`${actionName} Failed: ${e.message || "Unknown error"}`);
-            systemApi.postLogs("ERROR", `${actionName} Failed: ${e}`).catch(() => {});
+            const errText = options.errorMessage || `${options.actionName}に失敗しました`;
+            toast.error(errText, {
+                id: STAGE_TOAST_ID,
+                description: e.message || "通信エラーまたはタイムアウトが発生しました",
+                duration: 6000,
+            });
+            systemApi.postLogs("ERROR", `${options.actionName} Failed: ${e}`).catch(() => {});
         } finally {
-            setStagePollingInterval(1000); // 【動的ポーリング】移動完了（またはエラー終了）直後にポーリング間隔を 1000ms（低頻度）に戻します。
+            setStagePollingInterval(1000); // 【動的ポーリング】移動完了直後にポーリング間隔を 1000ms（低頻度）に戻します。
             setIsSystemBusy(false); // 何があっても最後にはUIロックを解除する
         }
     };
@@ -140,9 +181,19 @@ export function useStageActions() {
      * @param target - 移動量（度）
      */
     const moveRelative = (target: number) => {
-        performMove("Step Move", async () => {
-            await stageApi.moveRelative(target);
-        });
+        const sign = target > 0 ? "+" : "";
+        performMove(
+            {
+                actionName: "Step Move",
+                loadingMessage: `${sign}${target}° 相対移動中...`,
+                successMessage: `${sign}${target}° の移動が完了しました`,
+                stoppedMessage: "相対移動を停止しました",
+                errorMessage: "相対移動に失敗しました",
+            },
+            async () => {
+                await stageApi.moveRelative(target);
+            }
+        );
     };
 
     /**
@@ -150,20 +201,36 @@ export function useStageActions() {
      * @param target - 目標角度（度）
      */
     const moveAbsolute = (target: number) => {
-        performMove("Absolute Move", async () => {
-            toast.info(`Moving to ${target}°...`);
-            await stageApi.moveAbsolute(target);
-        });
+        performMove(
+            {
+                actionName: "Absolute Move",
+                loadingMessage: `${target}° へ移動中...`,
+                successMessage: `${target}° への移動が完了しました`,
+                stoppedMessage: `${target}° への移動を停止しました`,
+                errorMessage: `${target}° への移動に失敗しました`,
+            },
+            async () => {
+                await stageApi.moveAbsolute(target);
+            }
+        );
     };
 
     /**
      * 機械的原点復帰（Homing）を実行します。
      */
     const homeStage = () => {
-        performMove("Homing", async () => {
-            toast.info("Homing...");
-            await stageApi.home();
-        });
+        performMove(
+            {
+                actionName: "Homing",
+                loadingMessage: "原点復帰中...",
+                successMessage: "原点復帰が完了しました",
+                stoppedMessage: "原点復帰を停止しました",
+                errorMessage: "原点復帰に失敗しました",
+            },
+            async () => {
+                await stageApi.home();
+            }
+        );
     };
 
     /**
@@ -177,17 +244,25 @@ export function useStageActions() {
             await stageApi.stop(immediate);
             
             if (immediate) {
-                toast.info("EMERGENCY STOP EXECUTED");
+                toast.error("非常停止を実行しました", {
+                    id: STAGE_TOAST_ID,
+                    description: "ステージを再度操作する前に、原点復帰（Homing）を実行してください。",
+                    duration: 8000,
+                });
                 systemApi.postLogs("WARNING", "EMERGENCY STOP EXECUTED").catch(() => {});
-                // 1秒後に再Homingを促すメッセージを出す
-                setTimeout(() => toast.warning("Please re-home the stage."), 1000);
             } else {
-                toast.info("Stopping...");
+                toast.info("減速停止を実行しました", {
+                    id: STAGE_TOAST_ID,
+                    duration: 4000,
+                });
                 systemApi.postLogs("INFO", "Manual deceleration stop executed").catch(() => {});
             }
         } catch (e) {
             console.error(e);
-            toast.error("Stop Command Failed");
+            toast.error("停止コマンドの送信に失敗しました", {
+                id: STAGE_TOAST_ID,
+                duration: 6000,
+            });
             systemApi.postLogs("ERROR", `Stop Command Failed: ${e}`).catch(() => {});
         }
     };
