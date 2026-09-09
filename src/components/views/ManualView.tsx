@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store/useAppStore";
 import { stageApi, systemApi } from "@/api/client";
-import { manualControlSchema, angleInputSchema, sweepParamsSchema } from "@/schemas/manualControlSchema";
+import { manualControlSchema, angleInputSchema, absoluteAngleInputSchema, sweepParamsSchema } from "@/schemas/manualControlSchema";
 import { z } from "zod";
 import { useStageActions } from "@/hooks/useStageActions";
 
@@ -81,7 +81,7 @@ export function ManualView() {
 
     // Zodによるバリデーション
     const stepVal = angleInputSchema.safeParse(moveStep);
-    const targetVal = angleInputSchema.safeParse(targetAngle);
+    const targetVal = absoluteAngleInputSchema.safeParse(targetAngle);
     const sweepStartVal = angleInputSchema.safeParse(sweepStart);
     const sweepEndVal = angleInputSchema.safeParse(sweepEnd);
     const sweepSpeedVal = manualControlSchema.shape.sweepSpeed.safeParse(sweepSpeed);
@@ -137,7 +137,7 @@ export function ManualView() {
                     setIsSystemBusy(true);
                     await waitForIdle();
                     setIsSystemBusy(false);
-                    toast.success("Operation Finished (Recovered)");
+                    toast.success("ステージの動作が完了しました（復帰）");
                     systemApi.postLogs("INFO", "Operation Finished (Recovered)").catch((e) => console.debug("※ログ送信も失敗しました:", e));
                 }
             } catch (e) {
@@ -198,7 +198,7 @@ export function ManualView() {
         const speedResult = speedSchema.safeParse(sweepSpeed);
 
         if (!sweepStartVal.success || !sweepEndVal.success || !speedResult.success) {
-            toast.error("Invalid input values");
+            toast.error("入力値が正しくありません");
             systemApi.postLogs("ERROR", "Sweep validation failed: Invalid input values").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             return;
         }
@@ -212,7 +212,7 @@ export function ManualView() {
         // 手動録画（ヘッダーからの操作など）が既に進行中の場合は、
         // スイープに伴う自動録画やファイル書き込みの競合を防ぐため、スイープ開始をブロックします。
         if (isRecording) {
-            toast.error("Please stop manual recording before starting a sweep.");
+            toast.error("スイープ測定を開始する前に、手動録画を停止してください");
             systemApi.postLogs("WARNING", "Sweep rejected: Manual recording is already in progress.").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             return;
         }
@@ -226,13 +226,13 @@ export function ManualView() {
         try {
             // 速度が丸められた場合は、実際に使われる速度をユーザーへ明示する。
             if (isAdjusted) {
-                toast.warning(`Speed adjusted to ${rawPPS} PPS to match 100PPS unit.`);
+                toast.warning(`速度を100PPS単位（${rawPPS} PPS）に補正しました`);
                 systemApi.postLogs("WARNING", `Sweep speed adjusted to ${rawPPS} PPS to match 100PPS unit.`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             }
 
             // フロントはもはや sweep を自前で走らせず、バックエンドへ計画(start/end/speed/autoRecord)を渡して委譲する。
             // ここで返る operation_id が、その後の progress ポーリングのキーになる。
-            toast.info(`Starting sweep from ${start}° to ${end}°...`);
+            toast.info(`スイープ測定を開始します (${start}° → ${end}°)...`);
             systemApi.postLogs("INFO", `Sweep requested from ${start}° to ${end}°`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
 
             const response = await stageApi.sweepRun(start, end, requestedSpeedDeg, autoRecord);
@@ -273,11 +273,11 @@ export function ManualView() {
                         // backend が running 以外を返したら、その時点で sweep セッションの片付けへ進む。
                         // ここで finishSweepSession を通すと、タイマー・録画・UI ロックが一括で戻る。
                         if (progress.status === "succeeded") {
-                            void finishSweepSession("Sweep All Finished", "success");
+                            void finishSweepSession("スイープ測定が完了しました", "success");
                         } else if (progress.status === "cancelled") {
-                            void finishSweepSession("Sweep Cancelled", "warning");
+                            void finishSweepSession("スイープ測定を中止しました", "warning");
                         } else {
-                            void finishSweepSession(progress.message || "Sweep interrupted or failed", "error");
+                            void finishSweepSession(progress.message || "スイープ測定が中断または失敗しました", "error");
                         }
                     }
                 } catch (e) {
@@ -291,7 +291,7 @@ export function ManualView() {
                         sweepOperationId.current = null;
                         setIsSweeping(false);
                         setIsSystemBusy(false);
-                        toast.error("Lost progress updates from backend.");
+                        toast.error("バックエンドからの進捗更新が途絶えました");
                         systemApi.postLogs("ERROR", "Sweep progress polling failed repeatedly").catch((logErr) => console.debug("※ログ送信も失敗しました:", logErr));
                     }
                 }
@@ -304,7 +304,7 @@ export function ManualView() {
             setSweepProgress(null);
             setIsSweeping(false);
             setIsSystemBusy(false);
-            toast.error("Sweep interrupted or failed");
+            toast.error("スイープ測定の開始に失敗しました");
             systemApi.postLogs("ERROR", `Sweep interrupted or failed: ${e}`).catch((logErr) => console.debug("※ログ送信も失敗しました:", logErr));
         }
     }

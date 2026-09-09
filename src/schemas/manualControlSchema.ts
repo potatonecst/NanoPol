@@ -37,6 +37,15 @@ export const angleInputSchema = z
         message: `値は ${STEP_RESOLUTION} の倍数である必要があります`,
     });
 
+/**
+ * 絶対移動専用の角度入力スキーマ
+ * 0.0° 〜 360.0°（1周範囲内）の入力のみを許可します。
+ */
+export const absoluteAngleInputSchema = angleInputSchema
+    .refine((val) => val >= 0.0 && val <= 360.0, {
+        message: "0.0° 〜 360.0° の範囲内で入力してください",
+    });
+
 // スイープ操作専用のスキーマ（相関バリデーション用）
 export const sweepParamsSchema = z
     .object({

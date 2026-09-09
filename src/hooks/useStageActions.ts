@@ -133,9 +133,10 @@ export function useStageActions() {
         setStagePollingInterval(100); // 【動的ポーリング】移動開始の直前にポーリング間隔を 100ms（高頻度）に引き上げます。
         stopSignal.current = false; // 停止フラグをリセット
 
-        // 1. ローディングトーストを表示（同一IDで維持）
+        // 1. ローディングトーストを表示（同一IDで維持・前回のdescriptionを空文字で確実にリセット）
         toast.loading(options.loadingMessage, {
             id: STAGE_TOAST_ID,
+            description: "",
             duration: Infinity,
         });
 
@@ -149,6 +150,7 @@ export function useStageActions() {
                 const stoppedText = options.stoppedMessage || `${options.actionName}を停止しました`;
                 toast.warning(stoppedText, {
                     id: STAGE_TOAST_ID,
+                    description: "",
                     duration: 5000,
                 });
                 systemApi.postLogs("WARNING", `${options.actionName} Stopped by user`).catch(() => {});
@@ -156,6 +158,7 @@ export function useStageActions() {
                 // 最後まで正常に動ききった場合: 同一IDで success へ昇格
                 toast.success(options.successMessage, {
                     id: STAGE_TOAST_ID,
+                    description: "",
                     duration: 4000,
                 });
                 systemApi.postLogs("INFO", `${options.actionName} Complete`).catch(() => {});
@@ -164,9 +167,16 @@ export function useStageActions() {
             // エラーが発生した場合: 同一IDで error へ昇格
             console.error(e);
             const errText = options.errorMessage || `${options.actionName}に失敗しました`;
+            
+            // バックエンドからの 0-360 範囲外エラー等のメッセージを検出し、親切な日本語に整形
+            let detailMessage = e.message || "通信エラーまたはタイムアウトが発生しました";
+            if (typeof detailMessage === "string" && (detailMessage.includes("0-360") || detailMessage.includes("out of bounds"))) {
+                detailMessage = "指定可能な角度は 0.0° 〜 360.0° の範囲内です";
+            }
+
             toast.error(errText, {
                 id: STAGE_TOAST_ID,
-                description: e.message || "通信エラーまたはタイムアウトが発生しました",
+                description: detailMessage,
                 duration: 6000,
             });
             systemApi.postLogs("ERROR", `${options.actionName} Failed: ${e}`).catch(() => {});
@@ -185,10 +195,10 @@ export function useStageActions() {
         performMove(
             {
                 actionName: "Step Move",
-                loadingMessage: `${sign}${target}° 相対移動中...`,
-                successMessage: `${sign}${target}° の移動が完了しました`,
-                stoppedMessage: "相対移動を停止しました",
-                errorMessage: "相対移動に失敗しました",
+                loadingMessage: `相対移動: ${sign}${target}° 実行中...`,
+                successMessage: `相対移動: ${sign}${target}° 完了`,
+                stoppedMessage: "相対移動: 停止しました",
+                errorMessage: "相対移動: 失敗しました",
             },
             async () => {
                 await stageApi.moveRelative(target);
@@ -204,10 +214,10 @@ export function useStageActions() {
         performMove(
             {
                 actionName: "Absolute Move",
-                loadingMessage: `${target}° へ移動中...`,
-                successMessage: `${target}° への移動が完了しました`,
-                stoppedMessage: `${target}° への移動を停止しました`,
-                errorMessage: `${target}° への移動に失敗しました`,
+                loadingMessage: `絶対移動: ${target}° へ移動中...`,
+                successMessage: `絶対移動: ${target}° への移動完了`,
+                stoppedMessage: "絶対移動: 停止しました",
+                errorMessage: "絶対移動: 失敗しました",
             },
             async () => {
                 await stageApi.moveAbsolute(target);
@@ -222,10 +232,10 @@ export function useStageActions() {
         performMove(
             {
                 actionName: "Homing",
-                loadingMessage: "原点復帰中...",
-                successMessage: "原点復帰が完了しました",
-                stoppedMessage: "原点復帰を停止しました",
-                errorMessage: "原点復帰に失敗しました",
+                loadingMessage: "原点復帰: 実行中...",
+                successMessage: "原点復帰: 完了",
+                stoppedMessage: "原点復帰: 停止しました",
+                errorMessage: "原点復帰: 失敗しました",
             },
             async () => {
                 await stageApi.home();

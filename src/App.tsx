@@ -497,7 +497,7 @@ function App() {
     if (!isCameraConnected && isRecording) {
       console.warn("Camera disconnected during recording. Stopping recording.");
       setIsRecording(false);
-      toast.error("Recording stopped due to disconnection.");
+      toast.error("カメラが切断されたため、録画を停止しました");
     }
     // 依存配列: これらの変数のいずれかが変化するたびに、上記のチェックが走ります。
   }, [isCameraConnected, isRecording, setIsRecording]);
@@ -511,7 +511,7 @@ function App() {
 
         // 成功したら状態をOFFにする
         setIsRecording(false);
-        toast.success(`Recording stopped: ${res.filepath}`);
+        toast.success(`録画を停止しました: ${res.filepath}`);
         systemApi.postLogs("INFO", `Recording stopped: ${res.filepath}`).catch(() => { });
       } else {
         // 録画開始リクエスト
@@ -519,15 +519,15 @@ function App() {
 
         // 成功したら状態をONにする
         setIsRecording(true);
-        toast.success(`Recording started: ${res.filepath}`);
+        toast.success(`録画を開始しました: ${res.filepath}`);
         systemApi.postLogs("INFO", `Recording started: ${res.filepath}`).catch(() => { });
       }
     } catch (error) {
       console.error("Recording error:", error);
       // エラーが起きた場合は状態を反転させず、警告を出す
-      const action = isRecording ? "stop" : "start";
-      toast.error(`Failed to ${action} recording`);
-      systemApi.postLogs("ERROR", `Failed to ${action} recording: ${error}`).catch(() => { });
+      const actionText = isRecording ? "停止" : "開始";
+      toast.error(`録画の${actionText}に失敗しました`);
+      systemApi.postLogs("ERROR", `Failed to toggle recording: ${error}`).catch(() => { });
     }
   };
 
@@ -547,7 +547,7 @@ function App() {
       const res = await cameraApi.takeSnapshot();
 
       if (res.status === "saved") {
-        toast.success(`Snapshot saved: ${res.filepath}`);
+        toast.success(`スナップショットを保存しました: ${res.filepath}`);
         systemApi.postLogs("INFO", `Snapshot saved automatically to ${res.filepath}`).catch(() => { });
       } else if (res.status === "pending") {
         // 1. 設定ファイル(config.json)から現在の設定を読み込む
@@ -600,17 +600,17 @@ function App() {
         if (filePath) {
           // ユーザーがパスを選択したら、バックエンドに送って保存を実行
           const saveRes = await cameraApi.saveSnapshot(filePath);
-          toast.success("Snapshot saved successfully");
+          toast.success("スナップショットを保存しました");
           systemApi.postLogs("INFO", `Snapshot saved to ${saveRes.filepath} via dialog`).catch(() => { });
         } else {
           // ユーザーがダイアログで「キャンセル」を押した場合
-          toast.info("Snapshot saving cancelled");
+          toast.info("スナップショットの保存をキャンセルしました");
           systemApi.postLogs("INFO", "User cancelled snapshot save dialog").catch(() => { });
         }
       }
     } catch (error) {
       console.error("Snapshot error:", error);
-      toast.error("Failed to take snapshot");
+      toast.error("スナップショットの撮影に失敗しました");
       systemApi.postLogs("ERROR", `Failed to take snapshot: ${error}`).catch(() => { });
     }
   };

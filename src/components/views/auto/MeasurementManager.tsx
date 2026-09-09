@@ -252,14 +252,14 @@ export function MeasurementManager() {
                             // ============================================================================
                             await fetchRois();
                             if (res.has_warning) {
-                                toast.warning("Pre-Scan completed with saturation warnings. Check exposure levels.");
+                                toast.warning("事前スキャンが完了しました（露光過多の警告があります。露光設定を確認してください）");
                                 setPrescanStatus("saturated");
                             } else {
-                                toast.success("Pre-Scan completed successfully.");
+                                toast.success("事前スキャン（Pre-Scan）が完了しました");
                                 setPrescanStatus("success");
                             }
                         } else {
-                            toast.success("Measurement complete. Returning to category selection.");
+                            toast.success("本測定が完了しました。カテゴリ選択に戻ります");
                             // 測定完了後は、履歴をリフレッシュしてからカテゴリ選択画面へ戻る
                             if (currentSession?.folderPath) {
                                 try {
@@ -275,10 +275,10 @@ export function MeasurementManager() {
                             setAutoPhase('select_category');
                         }
                     } else if (res.status === "cancelled") {
-                        toast.info("Operation was cancelled.");
+                        toast.info("測定を中止しました");
                         if (prescanStatus === "running") setPrescanStatus("idle");
                     } else {
-                        toast.error(`Operation failed: ${res.message}`);
+                        toast.error(`測定に失敗しました: ${res.message}`);
                         if (prescanStatus === "running") setPrescanStatus("failed");
                     }
                 }
@@ -371,7 +371,7 @@ export function MeasurementManager() {
             });
 
             setOperationId(runRes.operation_id); // 監視を開始
-            toast.success("Pre-Scan started.");
+            toast.success("事前スキャン（Pre-Scan）を開始しました");
         } catch (error: any) {
             // ============================================================================
             // 【例外ハンドリングとUI状態のクリーンアップ】
@@ -380,7 +380,7 @@ export function MeasurementManager() {
             // 以下のフラグを即座に初期状態へ戻し、入力フォームやナビゲーションを再開放します。
             // ============================================================================
             console.error("Pre-Scan start failed", error);
-            toast.error(error.message || "Failed to start Pre-Scan");
+            toast.error(error.message || "事前スキャンの開始に失敗しました");
             setIsMeasuring(false); // UIのナビゲーションロックを解除（サイドバー等のディセーブル解除）
             setIsPrescan(false);   // Pre-Scanモードフラグをリセット
             setPrescanStatus("idle"); // 進捗ステータスを待機状態へ
@@ -397,7 +397,7 @@ export function MeasurementManager() {
      */
     const handleForceUnlock = () => {
         setForceStartUnlocked(true);
-        toast.info("Force Start unlocked. Proceed with caution.");
+        toast.info("強制開始のロックを解除しました。注意して実行してください");
     };
 
     /**
@@ -458,10 +458,10 @@ export function MeasurementManager() {
             });
 
             setOperationId(runRes.operation_id);
-            toast.success("Measurement started.");
+            toast.success("本測定を開始しました");
         } catch (error: any) {
             console.error("Measurement start failed", error);
-            toast.error(error.message || "Failed to start measurement");
+            toast.error(error.message || "本測定の開始に失敗しました");
             setIsMeasuring(false);
         }
     };
@@ -483,10 +483,10 @@ export function MeasurementManager() {
             // バックグラウンドで稼働している測定ループの状態が "cancelled" に移行します。
             await autoApi.cancelAutoMeasurement();
             setProgressMessage("Cancelling operation...");
-            toast.info("Cancellation signal sent.");
+            toast.info("中止リクエストを送信しました");
         } catch (error: any) {
             // 通信障害等でキャンセルAPIの呼び出し自体が失敗した場合のエラーハンドリング。
-            toast.error("Failed to cancel: " + (error.message || "Unknown error"));
+            toast.error("中止処理に失敗しました: " + (error.message || "不明なエラー"));
         } finally {
             // ============================================================================
             // 【堅牢な状態管理とエラー復帰（クリーンアップ & 強制フォールバック）】

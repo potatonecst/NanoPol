@@ -83,7 +83,7 @@ export function SessionManager() {
             setBaseDir(res.base_dir);
         } catch (error) {
             console.error('Failed to fetch sessions:', error);
-            toast.error('Failed to load session list');
+            toast.error('セッション一覧の読み込みに失敗しました');
         } finally {
             setIsLoading(false);
         }
@@ -114,13 +114,13 @@ export function SessionManager() {
                 settings: settings
             });
             
-            toast.success(`Session created: ${res.sample_name}`);
+            toast.success(`セッションを作成しました: ${res.sample_name}`);
             systemApi.postLogs('INFO', `New session created: ${res.sample_name}`);
             // UIフェーズを「測定カテゴリ選択」に進める
             setAutoPhase('select_category');
         } catch (error) {
             console.error('Failed to create session:', error);
-            toast.error('Failed to create new session');
+            toast.error('新規セッションの作成に失敗しました');
         } finally {
             setIsSystemBusy(false);
         }
@@ -146,12 +146,12 @@ export function SessionManager() {
                 settings: settings
             });
 
-            toast.success(`Session loaded: ${folderName}`);
+            toast.success(`セッションを読み込みました: ${folderName}`);
             // UIフェーズを「測定カテゴリ選択」に進める
             setAutoPhase('select_category');
         } catch (error) {
             console.error('Failed to resume session:', error);
-            toast.error('Failed to load session settings');
+            toast.error('セッション設定の読み込みに失敗しました');
         } finally {
             setIsSystemBusy(false);
         }
@@ -177,12 +177,12 @@ export function SessionManager() {
                     sampleName: settings.sample_name || 'Unknown',
                     settings: settings
                 });
-                toast.success('Session loaded from folder');
+                toast.success('フォルダからセッションを読み込みました');
                 setAutoPhase('select_category');
             }
         } catch (error) {
             console.error('Browse error:', error);
-            toast.error('Could not load from selected folder');
+            toast.error('選択されたフォルダから読み込めませんでした');
         }
     };
 

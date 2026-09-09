@@ -153,7 +153,7 @@ export function DevicesView() {
             // 6. バックエンド(FastAPI)にも即時反映を通知
             await systemApi.updateSettings(updatedSettings);
 
-            toast.success(`Storage Profile Applied: ${presetId ? "Selected Profile" : "Default Folder"}`);
+            toast.success(`ストレージプロファイルを適用しました: ${presetId ? "選択されたプロファイル" : "デフォルトフォルダ"}`);
         } catch (e) {
             console.error("Failed to auto-save profile change:", e);
             toast.error("プロファイルの適用保存に失敗しました");
@@ -194,7 +194,7 @@ export function DevicesView() {
             }
         } catch (error) {
             console.error("Failed to fetch ports", error);
-            toast.error("Failed to list COM ports");
+            toast.error("COMポート一覧の取得に失敗しました");
             systemApi.postLogs("ERROR", `Failed to fetch COM ports: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         }
     }
@@ -212,7 +212,7 @@ export function DevicesView() {
             }
         } catch (error) {
             console.error("Failed to fetch cameras", error);
-            toast.error("Failed to list cameras");
+            toast.error("カメラ一覧の取得に失敗しました");
             systemApi.postLogs("ERROR", `Failed to fetch cameras: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         }
     }
@@ -245,11 +245,11 @@ export function DevicesView() {
                 setIsStageLoading(true);
                 await stageApi.disconnect();
                 setIsStageConnected(false);
-                toast.info("Disconnected Stage");
+                toast.info("ステージの接続を切断しました");
                 systemApi.postLogs("INFO", "Disconnected Stage successfully").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             } catch (error) {
                 console.error(error);
-                toast.error("Failed to disconnect stage.");
+                toast.error("ステージの切断に失敗しました");
                 systemApi.postLogs("ERROR", `Failed to disconnect stage: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             } finally {
                 setIsStageLoading(false);
@@ -258,7 +258,7 @@ export function DevicesView() {
         }
 
         if (!stagePort) {
-            toast.error("Please select a COM port."); //簡易アラート
+            toast.error("COMポートを選択してください"); //簡易アラート
             systemApi.postLogs("WARNING", "Stage connection failed: No COM port selected").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             return;
         }
@@ -271,11 +271,11 @@ export function DevicesView() {
 
             // 成功したらストアの状態を更新（これにより画面上のバッジなどが緑色に変わる）
             setIsStageConnected(true);
-            toast.success(`Connected to ${stagePort}`);
+            toast.success(`${stagePort} に接続しました`);
             systemApi.postLogs("INFO", `Stage connected successfully to ${stagePort}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (error) {
             console.error(error);
-            toast.error("Failed to connect stage.");
+            toast.error("ステージへの接続に失敗しました");
             systemApi.postLogs("ERROR", `Failed to connect stage on ${stagePort}: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
             setIsStageLoading(false);
@@ -297,11 +297,11 @@ export function DevicesView() {
                 setIsCameraConnected(false);
                 setCameraGainRange(null);
                 setCameraExposureRange(null);
-                toast.info("Disconnected Camera");
+                toast.info("カメラの接続を切断しました");
                 systemApi.postLogs("INFO", "Disconnected Camera successfully").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             } catch (error) {
                 console.error(error);
-                toast.error("Failed to disconnect camera.");
+                toast.error("カメラの切断に失敗しました");
                 systemApi.postLogs("ERROR", `Failed to disconnect camera: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             } finally {
                 setIsCameraLoading(false);
@@ -310,7 +310,7 @@ export function DevicesView() {
         }
 
         if (!cameraId) {
-            toast.error("Please select a Camera ID."); //簡易アラート
+            toast.error("カメラIDを選択してください"); //簡易アラート
             systemApi.postLogs("WARNING", "Camera connection failed: No Camera ID selected").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             return;
         }
@@ -361,11 +361,11 @@ export function DevicesView() {
                     console.debug("Failed to parse exposure_range from connect response", e);
                 }
             }
-            toast.success(`Connected to Camera ${cameraId}`);
+            toast.success(`カメラ (ID: ${cameraId}) に接続しました`);
             systemApi.postLogs("INFO", `Camera ${cameraId} connected successfully`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (error) {
             console.error(error);
-            toast.error("Failed to connect camera.");
+            toast.error("カメラへの接続に失敗しました");
             systemApi.postLogs("ERROR", `Failed to connect camera ${cameraId}: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
             setIsCameraLoading(false);
@@ -395,16 +395,16 @@ export function DevicesView() {
             // HTTP API経由ではなく、TauriのIPC（Rust）を直接叩き、バックエンドのPythonプロセスを強制終了＆再起動させます。
             // これにより、通信デッドロック時にも確実にOSレベルでプロセスがリセットされます。
             await invoke("force_restart_backend");
-            toast.success("Backend process restarted by OS.");
+            toast.success("バックエンドプロセスを再起動しました");
             systemApi.postLogs("INFO", "Force backend process restart executed successfully via Rust core").catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (error) {
             console.error("Force reset failed:", error);
-            toast.error("Failed to restart backend process.");
+            toast.error("バックエンドプロセスの再起動に失敗しました");
             systemApi.postLogs("ERROR", `Force reset failed via Tauri: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
             // フロントエンド（Zustandストア）の接続フラグを「未接続」状態にリセット
             resetAllConnections();
-            toast.info("Frontend connection states reset.");
+            toast.info("フロントエンドの接続状態をリセットしました");
             
             // バックエンドプロセスが再起動し、FastAPIのWebサーバーがポートを再確保して
             // リクエストの受付を開始するまでに約1.5〜2秒のオーバーヘッドがあるため、
@@ -412,7 +412,7 @@ export function DevicesView() {
             setTimeout(async () => {
                 await fetchPorts();
                 await fetchCameras();
-                toast.info("Available ports and cameras refreshed.");
+                toast.info("利用可能なポートとカメラを再検出しました");
             }, 2000);
         }
     }
