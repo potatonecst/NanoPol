@@ -450,15 +450,12 @@ export const useAppStore = create<AppState>((set) => ({
         plotData: {}, // グラフデータもリセット
     }),
 
-    //アプリ側の状態を強制的に「未接続・初期状態」に戻す
+    // アプリ側のハードウェア接続および測定状態を強制的に「未接続・初期状態」に戻す
+    // ※ ユーザーが設定した保存先パス（outputDirectory）やプロファイル一覧（outputPresets）は保持します
     resetAllConnections: () => set({
         isStageConnected: false,
         stagePort: "",
         stagePollingInterval: 1000,
-        outputDirectory: "",
-        defaultOutputDirectory: "",
-        outputPresets: [],
-        activePresetId: "",
         isCameraHealing: false,
         cameraReconnectAttempt: 0,
         isStageHealing: false,

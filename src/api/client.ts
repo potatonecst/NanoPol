@@ -329,7 +329,7 @@ export const systemApi = {
      *
      * @returns `/health` の JSON 応答。
      */
-    health: () =>
+    health: (timeoutMs: number = 1500) =>
         request<{
             status: string;
             stage_connected: boolean;
@@ -338,7 +338,7 @@ export const systemApi = {
             camera_is_healing?: boolean;
             camera_reconnect_attempt?: number;
             stage_is_healing?: boolean;
-        }>("/health"),
+        }>("/health", { method: "GET" }, timeoutMs),
 
     // 全デバイスの接続を強制切断し、システムを初期状態に戻します
     reset: () =>

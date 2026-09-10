@@ -406,29 +406,47 @@ export function DevicesView() {
         console.log("Executing Force Reset...");
         systemApi.postLogs("WARNING", "User initiated Force Reset sequence").catch((e) => console.debug("※ログ送信も失敗しました:", e));
 
+        const resetToastId = toast.loading("バックエンドを再起動しています...");
+
         try {
             // HTTP API経由ではなく、TauriのIPC（Rust）を直接叩き、バックエンドのPythonプロセスを強制終了＆再起動させます。
             // これにより、通信デッドロック時にも確実にOSレベルでプロセスがリセットされます。
             await invoke("force_restart_backend");
-            toast.success("バックエンドプロセスを再起動しました");
             systemApi.postLogs("INFO", "Force backend process restart executed successfully via Rust core").catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (error) {
             console.error("Force reset failed:", error);
-            toast.error("バックエンドプロセスの再起動に失敗しました");
             systemApi.postLogs("ERROR", `Force reset failed via Tauri: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
-            // フロントエンド（Zustandストア）の接続フラグを「未接続」状態にリセット
+            // フロントエンド（Zustandストア）の接続フラグを「未接続」状態にリセット（設定情報は保持）
             resetAllConnections();
-            toast.info("フロントエンドの接続状態をリセットしました");
-            
-            // バックエンドプロセスが再起動し、FastAPIのWebサーバーがポートを再確保して
-            // リクエストの受付を開始するまでに約1.5〜2秒のオーバーヘッドがあるため、
-            // 2秒待ってからCOMポートおよびカメラ一覧の再スキャンを実行します。
-            setTimeout(async () => {
+
+            // バックエンドプロセスが再起動し、FastAPIがポートを開放して疎通可能になるまで
+            // 最大10秒間、短時間タイムアウト（800ms）でアクティブにポーリング待機します。
+            let isOnline = false;
+            const startTime = Date.now();
+            const maxWaitMs = 10000;
+
+            while (Date.now() - startTime < maxWaitMs) {
+                await new Promise((resolve) => setTimeout(resolve, 400));
+                try {
+                    const health = await systemApi.health(800);
+                    if (health && health.status === "ok") {
+                        isOnline = true;
+                        break;
+                    }
+                } catch {
+                    // まだ起動中のためリトライを継続
+                }
+            }
+
+            if (isOnline) {
+                toast.success("バックエンドプロセスが正常に再起動しました", { id: resetToastId });
+                // バックエンドの復帰を確認後、最新のポートとカメラ一覧を安全に再取得
                 await fetchPorts();
                 await fetchCameras();
-                toast.info("利用可能なポートとカメラを再検出しました");
-            }, 2000);
+            } else {
+                toast.warning("バックエンドの再起動待機がタイムアウトしました。開発環境の場合はターミナルで手動再起動してください。", { id: resetToastId, duration: 6000 });
+            }
         }
     }
 
