@@ -34,7 +34,7 @@ import { useStagePolling } from "./hooks/useStagePolling";
 import { useVideoConversionWatcher } from "./hooks/useVideoConversionWatcher";
 
 // 共通の定数ファイルから設定ファイル名をインポート
-import { CONFIG_FILENAME, DEFAULT_SETTINGS, getDefaultOutputDirectory } from "./constants/constants";
+import { CONFIG_FILENAME, DEFAULT_SETTINGS, getDefaultOutputDirectory, APP_VERSION } from "./constants/constants";
 
 /**
  * ルートコンポーネントです。
@@ -721,7 +721,7 @@ function App() {
             <div className="flex items-baseline gap-2">
               <h1 className="font-bold text-lg tracking-tight hidden md:inline">NanoPol Controller</h1>
               <h1 className="font-bold text-lg tracking-tight md:hidden">NanoPol</h1>
-              <span className="text-xs text-muted-foreground">v0.1</span>
+              <span className="text-xs text-muted-foreground">v{APP_VERSION}</span>
             </div>
 
             {/* Status Badge: システムの状態を表示するバッジ（点滅アニメーション付き） */}

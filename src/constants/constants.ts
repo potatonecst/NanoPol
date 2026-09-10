@@ -1,8 +1,14 @@
 import { documentDir, join } from "@tauri-apps/api/path";
+import pkg from "../../package.json";
 
 /**
  * アプリケーション全体で共有される定数定義ファイル
  */
+
+/**
+ * アプリケーションのバージョン（package.json と自動連動）
+ */
+export const APP_VERSION = pkg.version;
 
 /**
  * アプリの全体設定を保存するファイル名

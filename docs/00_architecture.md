@@ -98,19 +98,44 @@ uv pip install -r pyproject.toml
 uv run main.py
 ```
 
-### Frontend (Node.js)
+### Frontend & App (Tauri / React)
 ```bash
 # 依存関係インストール
-pnpm install
+npm install
+
 # 開発サーバー起動
-pnpm tauri dev
+npm run tauri dev
 ```
 
-## 5. ビルドと配布 (Build and Distribution)
+## 5. バージョン管理と一括同期 (`npm run bump`)
+
+本プロジェクトは React (npm), Rust (Cargo), Python (uv) の3つのエコシステムが共存するマルチ言語構成です。手動によるバージョン更新漏れ（例: フロントは 0.2.0 なのに生成データは 0.1.0 と記録される等）を防ぐため、**ワンコマンドで全設定ファイルおよびデータ仕様書のバージョンを一括同期するスクリプト** (`scripts/bump_version.js`) を備えています。
+
+```bash
+# バージョン一括更新コマンド
+npm run bump <新バージョン番号>
+
+# 実行例
+npm run bump 0.2.1   # パッチリリース（バグ修正等）
+npm run bump 0.3.0   # マイナーリリース（新機能追加等）
+npm run bump 1.0.0   # メジャーリリース（正式版等）
+```
+
+* **自動同期される対象ファイル:**
+  1. `package.json` (`"version"`)
+  2. `src-tauri/Cargo.toml` (`version = "..."`)
+  3. `backend/pyproject.toml` (`version = "..."`)
+  4. `backend/main.py` (`FastAPI(..., version="...")`)
+  5. `backend/utils/data_saver.py` (`"app_version": "..."`)
+  6. `spec/05_data_management.md` (`"app_version": "..."`)
+  7. `docs/08_auto_measurement_data_guide.md` (`app_version`)
+  *(※ `src-tauri/tauri.conf.json` は `package.json` を自動参照)*
+
+## 6. ビルドと配布 (Build and Distribution)
 
 開発環境ではフロントエンドとバックエンドを別々のターミナルで起動しますが、最終的にユーザーへ配布する際は、これらを1つのデスクトップアプリケーションとしてパッケージングします。
 
-### 5.1 バックエンドの実行ファイル化
+### 6.1 バックエンドの実行ファイル化
 
 まず、`backend/` ディレクトリにあるPythonプロジェクトを、PyInstallerやNuitkaなどのツールを使って単一の実行ファイル（Windowsなら `.exe`）に変換（バンドル）します。
 この実行ファイルには、Pythonインタープリタとすべての依存ライブラリ（FastAPI, pyserialなど）が含まれており、ユーザーのPCにPythonがインストールされていなくても動作します。
