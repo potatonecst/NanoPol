@@ -200,6 +200,17 @@ export function DevicesView() {
     }
 
     /**
+     * カメラ情報オブジェクトから、UI表示用の整形ラベル（型番・シリアル番号）を生成します。
+     * 内部管理用のIDはUIに表示せず、実機識別に必要な型番とシリアル番号のみを返します。
+     * 例: "DCC1645C (S/N: 4103829102)"
+     */
+    const formatCameraLabel = (cam: { id: number; name?: string; model?: string; serial?: string }) => {
+        const modelName = cam.model && cam.model.trim() !== "" ? cam.model.trim() : (cam.name || `Camera ${cam.id}`);
+        const serialInfo = cam.serial && cam.serial.trim() !== "" ? ` (S/N: ${cam.serial.trim()})` : "";
+        return `${modelName}${serialInfo}`;
+    };
+
+    /**
      * 接続可能なカメラ一覧を取得する非同期関数
      */
     const fetchCameras = async () => {
@@ -297,8 +308,10 @@ export function DevicesView() {
                 setIsCameraConnected(false);
                 setCameraGainRange(null);
                 setCameraExposureRange(null);
-                toast.info("カメラの接続を切断しました");
-                systemApi.postLogs("INFO", "Disconnected Camera successfully").catch((e) => console.debug("※ログ送信も失敗しました:", e));
+                const currentCam = availableCameras.find((c) => c.id.toString() === cameraId);
+                const currentLabel = currentCam ? formatCameraLabel(currentCam) : (cameraId ? `ID: ${cameraId}` : "");
+                toast.info(`カメラの接続を切断しました${currentLabel ? `: ${currentLabel}` : ""}`);
+                systemApi.postLogs("INFO", `Disconnected Camera successfully: ${currentLabel || `ID: ${cameraId}`}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
             } catch (error) {
                 console.error(error);
                 toast.error("カメラの切断に失敗しました");
@@ -310,8 +323,8 @@ export function DevicesView() {
         }
 
         if (!cameraId) {
-            toast.error("カメラIDを選択してください"); //簡易アラート
-            systemApi.postLogs("WARNING", "Camera connection failed: No Camera ID selected").catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            toast.error("カメラを選択してください"); //簡易アラート
+            systemApi.postLogs("WARNING", "Camera connection failed: No Camera selected").catch((e) => console.debug("※ログ送信も失敗しました:", e));
             return;
         }
 
@@ -361,12 +374,14 @@ export function DevicesView() {
                     console.debug("Failed to parse exposure_range from connect response", e);
                 }
             }
-            toast.success(`カメラ (ID: ${cameraId}) に接続しました`);
-            systemApi.postLogs("INFO", `Camera ${cameraId} connected successfully`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            const selectedCam = availableCameras.find((c) => c.id.toString() === cameraId);
+            const camLabel = selectedCam ? formatCameraLabel(selectedCam) : `ID: ${cameraId}`;
+            toast.success(`カメラに接続しました: ${camLabel}`);
+            systemApi.postLogs("INFO", `Camera connected successfully: ${camLabel} [ID: ${cameraId}]`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } catch (error) {
             console.error(error);
             toast.error("カメラへの接続に失敗しました");
-            systemApi.postLogs("ERROR", `Failed to connect camera ${cameraId}: ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
+            systemApi.postLogs("ERROR", `Failed to connect camera (ID: ${cameraId}): ${error}`).catch((e) => console.debug("※ログ送信も失敗しました:", e));
         } finally {
             setIsCameraLoading(false);
         }
@@ -598,11 +613,11 @@ export function DevicesView() {
                                     {isCameraConnected ? "Connected" : (isCameraHealing ? `Healing (${cameraReconnectAttempt}/5)` : "Disconnected")}
                                 </Badge>
                             </div>
-                            <CardDescription>Thorlabs DCC1545M (uEye)</CardDescription>
+                            <CardDescription>Thorlabs CMOS Camera (uc480)</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
                             <div className="space-y-2">
-                                <Label className="text-sm font-medium">Camera ID</Label>
+                                <Label className="text-sm font-medium">Camera</Label>
                                 <div className="flex gap-2 items-center">
                                     <Select value={cameraId} onValueChange={setCameraId} disabled={isCameraConnected || isCameraHealing || !isBackendConnected}>
                                         <SelectTrigger className="w-full">
@@ -614,7 +629,7 @@ export function DevicesView() {
                                             ) : (
                                                 availableCameras.map((cam) => (
                                                     <SelectItem key={cam.id} value={cam.id.toString()}>
-                                                        {cam.name} ({cam.id})
+                                                        {formatCameraLabel(cam)}
                                                     </SelectItem>
                                                 ))
                                             )}

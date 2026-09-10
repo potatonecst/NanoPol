@@ -54,7 +54,7 @@
 
 ```json
 {
-  "app_version": "0.2.0",
+  "app_version": "0.2.1",
   "sample_name": "Sample_1",
   "created_at": "2026-06-01T10:00:00Z",
   "measurements": [

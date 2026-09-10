@@ -295,11 +295,16 @@ return image_data
     1.  ドライバ初期化 (`pylablib.devices.uc480` の初期化関数を呼びます)。
     2.  実機接続時は `uc480.list_cameras()` で候補を列挙し、対象 `cam_id` を選択します。
     3.  `self.camera = uc480.UC480Camera(cam_id=target_camera.cam_id)` として接続ハンドルを生成します（実装では `from pylablib.devices import uc480` でインポート済み）。
-    4.  画像モード（RAW16 / 8-bit 等）やカラーモードを設定して、取得フォーマットを決定します。
-    5.  画像バッファの確保と初期化を行います。
-    6.  接続直後に露光/ゲイン範囲をキャッシュし、`set_exposure()` / `set_gain()` を初期適用します。
-    7.  `start_loop` が `True` の場合、`start_capture_loop()` を呼び出してバックグラウンド画像取得スレッドを起動します。
+    4.  接続されたカメラの型番（`self.model`）とシリアル番号（`self.serial`）をプロパティに保持します（Mock環境の場合は `"Virtual Camera"` / `"MOCK-001"`）。
+    5.  画像モード（RAW16 / 8-bit 等）やカラーモードを設定して、取得フォーマットを決定します。
+    6.  画像バッファの確保と初期化を行います。
+    7.  接続直後に露光/ゲイン範囲をキャッシュし、`set_exposure()` / `set_gain()` を初期適用します。
+    8.  接続完了ログに型番・シリアル番号・解像度・センサー種別・ビット深度を明記して出力します（例: `[CAMERA] Connected to DCC1645C (S/N: 4103829102) [ID: 1]: ...`）。
+    9.  `start_loop` が `True` の場合、`start_capture_loop()` を呼び出してバックグラウンド画像取得スレッドを起動します。
 *   **注意:** 接続直後のログで `Camera not connected, cannot set exposure/gain` が出る場合は、接続フラグの立て順または初期同期の失敗を疑います。
+
+#### `disconnect() -> None`
+カメラから切断し、キャプチャスレッドの停止とリソース解放を安全に行います。切断完了時には接続されていたカメラ型番・シリアル番号をログに出力した上で、`model` および `serial` プロパティを初期化（空文字）します。
 
 #### `start_capture_loop() -> None`
 *   **役割:** キャプチャ専用のバックグラウンドスレッド（`_capture_loop`）を安全に起動します。

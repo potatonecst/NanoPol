@@ -177,7 +177,7 @@ def create_new_session(output_dir: str, requested_name: str = "") -> dict:
     
     # settings.json の初期データを作成（実験ノートの真っ白な1ページ目）
     settings_data = {
-        "app_version": "0.2.0",
+        "app_version": "0.2.1",
         "sample_name": sample_name,
         # ISO 8601 形式のUTC時間（Z付き）で記録するのが最も安全なタイムスタンプの作法です。
         # どの国の解析者が開いても時間が狂わない、国際的な標準形式です。

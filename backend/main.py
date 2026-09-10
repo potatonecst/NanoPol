@@ -1253,7 +1253,7 @@ async def lifespan(app: FastAPI):
     
     logger.info("[SYSTEM] Cleanup Complete.")
 
-app = FastAPI(title="NanoPol Backend", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="NanoPol Backend", version="0.2.1", lifespan=lifespan)
 
 # ==========================================
 # CORS (Cross-Origin Resource Sharing) の設定
@@ -2046,13 +2046,16 @@ def connect_camera(req: CameraConnectRequest):
     指定されたカメラIDでデバイスを初期化し、メモリを確保して、
     画像を超高速で取得し続けるバックグラウンドスレッド（特急レーン）を起動します。
     """
-    logger.info(f"[CMD] Connect Camera ID {req.camera_id}")
+    logger.info(f"[CMD] Connect Camera [ID: {req.camera_id}]")
     
     success = camera.connect(req.camera_id)
     if not success:
         raise HTTPException(status_code=500, detail="Camera connection failed")
         
     mode = "Mock" if camera.is_mock_env else "Real"
+    cam_label = f"{camera.model} (S/N: {camera.serial})" if camera.model or camera.serial else f"Camera ID {req.camera_id}"
+    logger.info(f"[CAMERA CONNECTED] {cam_label} [ID: {req.camera_id}] ({mode})")
+
     # 接続直後に、デバイスが実際に報告できるゲイン範囲をできるだけ返します。
     # ここで返す値は UI 側のスライダー初期値・最小値・最大値の決定に使います。
     # 取得できない場合は None のままにして、既存のフォールバック値を壊さないようにします。
@@ -2070,7 +2073,9 @@ def connect_camera(req: CameraConnectRequest):
     resp = {
         "status": "success",
         "mode": mode,
-        "message": f"Connected to Camera {req.camera_id} ({mode})",
+        "message": f"Connected to {cam_label} ({mode})",
+        "model": camera.model,
+        "serial": camera.serial,
         "resolution": {"width": camera.width, "height": camera.height}
     }
     if gain_range is not None:
@@ -2098,8 +2103,10 @@ def disconnect_camera():
     """
     カメラの接続を安全に切断し、メモリ解放とスレッドの停止を行います。
     """
+    cam_desc = f"{camera.model} (S/N: {camera.serial})" if camera.model or camera.serial else "Camera"
+    logger.info(f"[CMD] Disconnect Camera: {cam_desc}")
     camera.disconnect()
-    return {"status": "success"}
+    return {"status": "success", "message": f"Disconnected from {cam_desc}"}
 
 @app.post("/camera/config")
 def config_camera(req: CameraConfigRequest):

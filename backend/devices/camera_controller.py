@@ -80,6 +80,8 @@ class CameraController:
         self.current_angle_timestamp_ms = 0.0
 
         # Camera settings
+        self.model = ""  # 接続中のカメラ型番 (例: DCC1645C, Virtual Camera)
+        self.serial = ""  # 接続中のカメラシリアル番号 (例: 4103829102, MOCK-001)
         self.exposure_ms = 0.06675  # 露出時間（ミリ秒）
         # Mock 環境での既定ゲインを現実的な値に合わせる（多くのカメラで1.0〜13.0が妥当）
         self.gain = 1.0  # センサーのハードウェアゲイン（デフォルト: 1.0）
@@ -209,12 +211,14 @@ class CameraController:
         # Mock環境では実機に触らず、後続処理が動く最小状態だけ作る。
         if self.is_mock_env:
             # Mockモード（uc480非対応環境）の初期化
+            self.model = "Virtual Camera"
+            self.serial = "MOCK-001"
             self.width = 1280
             self.height = 1024
             self.sensor_type = "monochrome"
             self.bayer_pattern = None
             self.input_bpp = 8
-            logger.info(f"{self.log_tag} Connected to Virtual Camera (ID: {camera_id})")
+            logger.info(f"{self.log_tag} Connected to {self.model} (S/N: {self.serial}) [ID: {camera_id}]")
             self.is_connected = True
             # Mockでも exposure range をキャッシュしておく
             try:
@@ -412,9 +416,14 @@ class CameraController:
                     except Exception:
                         logger.exception("[CAMERA] Failed to fix RGB gains")
 
-                # 接続成功時の診断ログ（bpp が確定か推定かを含める）
+                # 接続されたカメラの型番とシリアル番号を保持
+                self.model = str(getattr(target_camera, "model", "") or "").strip()
+                self.serial = str(getattr(target_camera, "serial_number", "") or "").strip()
+
+                # 接続成功時の診断ログ（型番、シリアル、解像度、bppなどを詳細に記録）
+                cam_desc = f"{self.model} (S/N: {self.serial})" if self.model or self.serial else f"Camera ID {camera_id}"
                 logger.info(
-                    f"[CAMERA] Connected to Camera ID {camera_id}: model={target_camera.model}, resolution={self.width}x{self.height}, "
+                    f"[CAMERA] Connected to {cam_desc} [ID: {camera_id}]: resolution={self.width}x{self.height}, "
                     f"sensor_type={self.sensor_type}, bayer_pattern={self.bayer_pattern}, input_bpp={self.input_bpp} (exact={exact_bpp})"
                 )
 
@@ -517,11 +526,13 @@ class CameraController:
                     self.camera.close()
                 except Exception:
                     logger.exception("[CAMERA] Error closing camera")
-                    return
                 finally:
                     self.camera = None
 
-        logger.info(f"{self.log_tag} Disconnected")
+        cam_desc = f"{self.model} (S/N: {self.serial})" if self.model or self.serial else "Camera"
+        logger.info(f"{self.log_tag} Disconnected successfully: {cam_desc}")
+        self.model = ""
+        self.serial = ""
 
     # ============================================================================
     # 【カメラ制御】 set_exposure / set_gain / set_color_mode / update_settings

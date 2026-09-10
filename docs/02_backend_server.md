@@ -290,7 +290,41 @@ GET /camera/video_conversion_status
 *   **`is_converting`**: 現在変換タスクが走行中かどうかの真偽値。
 *   **`progress_percent`**: 全体の進捗率（0〜100%）。初期化（0-5%）、フレーム変換（5-95%）、ファイル確定（95-100%）の3フェーズを配分。
 *   **`error`**: 変換中にエラーが発生した場合はエラー文字列（正常時は `null`）。
-*   **`summary`**: 変換完了時に格納される統計情報（元フレーム数、補完数、ドロップ発生箇所リスト、実測時間と動画時間の比較など）。変換中やエラー時は `null`。
+### 2.11 カメラ接続・切断エンドポイント (`/camera/connect`, `/camera/disconnect`)
+
+カメラデバイスとの接続確立および切断を行うエンドポイントです。
+
+#### `POST /camera/connect`
+```json
+// リクエスト (CameraConnectRequest)
+{
+  "camera_id": 1
+}
+
+// レスポンス例
+{
+  "status": "success",
+  "mode": "Real",
+  "message": "Connected to DCC1645C (S/N: 4103829102) (Real)",
+  "model": "DCC1645C",
+  "serial": "4103829102",
+  "resolution": { "width": 1280, "height": 1024 },
+  "gain_range": { "min": 1.0, "max": 13.0 },
+  "exposure_range": { "min_ms": 0.06675, "max_ms": 1000.0, "step_ms": 0.01 }
+}
+```
+*   **型番・シリアル番号の返却**: 接続された実機カメラの `model` と `serial` をレスポンスに含めます。フロントエンドはこの情報を用いてUI上のバッジやトースト通知を自動更新します。
+*   **解像度・ゲイン・露光範囲の動的同期**: 接続直後にデバイスの物理解像度および対応する設定値のレンジを返却し、フロントエンドのROI座標系やUIスライダーの初期化をサポートします。
+
+#### `POST /camera/disconnect`
+```json
+// レスポンス例
+{
+  "status": "success",
+  "message": "Disconnected from DCC1645C (S/N: 4103829102)"
+}
+```
+*   安全にキャプチャスレッドを停止し、デバイスハンドルをクローズしてメモリを解放します。
 
 
 ### 2.11 自動測定セッション管理 API (Auto Measurement Sessions)
