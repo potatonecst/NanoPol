@@ -249,15 +249,87 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         return { x: rx, y: ry };
     }, [zoomLevel, imageScale, fitSize]);
 
-    // --- イベントハンドラ ---
+    // --- ズーム・パン計算ロジック ---
 
-    // マウスホイールでのズーム処理
+    /**
+     * 【重要: アンカー（ピン留め）ズーム計算関数】
+     * 
+     * 指定された基準点（ビューポート中心からの相対座標 originViewRelativeX, originViewRelativeY）を
+     * 画面上で固定したまま、ズーム倍率を変更し、対応する新しい panOffset を幾何学的に計算・更新します。
+     * 
+     * 【計算原理】
+     * ビューポート中心 (0,0) に対し、基準点 V = (vx, vy) の下にある画像上の相対位置 P は:
+     *   P = (V - pan_old) / Z_old
+     * ズーム後 Z_new において、同じ画像位置 P が再び同じ画面位置 V に留まるための新パンオフセットは:
+     *   V = P * Z_new + pan_new
+     *   pan_new = pan_old * (Z_new / Z_old) + V * (1 - Z_new / Z_old)
+     * 
+     * @param newZoom 新しいズーム倍率
+     * @param originViewRelativeX ビューポート中心からのXオフセット（0 で現在ビューポート中央）
+     * @param originViewRelativeY ビューポート中心からのYオフセット（0 で現在ビューポート中央）
+     */
+    const applyZoomAtPoint = (
+        newZoom: number,
+        originViewRelativeX: number = 0,
+        originViewRelativeY: number = 0
+    ) => {
+        // 下限0.5倍、上限50.0倍にクランプ
+        const clampedZoom = Math.min(Math.max(newZoom, 0.5), 50);
+        if (Math.abs(clampedZoom - zoomLevel) < 0.0001) return;
+
+        const scaleRatio = clampedZoom / zoomLevel;
+        const newPanX = panOffset.x * scaleRatio + originViewRelativeX * (1 - scaleRatio);
+        const newPanY = panOffset.y * scaleRatio + originViewRelativeY * (1 - scaleRatio);
+
+        setZoomLevel(clampedZoom);
+        setPanOffset({ x: newPanX, y: newPanY });
+    };
+
+    /**
+     * マウスホイールおよびトラックパッドによる等比ズーム処理（Zoom to Cursor）
+     * 
+     * 【トラックパッド / 物理マウスの最適化】
+     * - 物理マウスホイール（1ノッチあたり deltaY ≈ ±100）: 約 15% の等比拡縮
+     * - Mac トラックパッド（高頻度で微小な deltaY ≈ ±3〜10）: deltaY に比例した滑らかな連続指数スケーリング
+     * 
+     * マウスカーソルが指している画像のピクセル位置を画面上で完全にピン留め（固定）し、
+     * 滑らかにズームします。
+     */
     const handleWheel = (e: React.WheelEvent) => {
-        const scaleAmount = -e.deltaY * 0.001;
-        // 研究用途に合わせて、上限を50倍まで引き上げ（ピクセル単位の観察が可能に）
-        const newZoom = Math.min(Math.max(zoomLevel + scaleAmount, 0.5), 50);
-        setZoomLevel(newZoom);
-    }
+        if (!containerRef.current) return;
+        const rect = containerRef.current.getBoundingClientRect();
+
+        // ビューポート中心 (cx, cy) からのマウスカーソル相対位置 (vx, vy) を算出
+        const cursorVx = e.clientX - (rect.left + rect.width / 2);
+        const cursorVy = e.clientY - (rect.top + rect.height / 2);
+
+        // deltaY の大きさに比例した指数スケール計算
+        // 感度係数 k = 0.0015:
+        //  - deltaY = -100 (マウス1ノッチ上)  -> exp(0.15) ≈ 1.16倍 (+16%)
+        //  - deltaY = -5   (トラックパッド微小) -> exp(0.0075) ≈ 1.0075倍 (+0.75%)
+        const sensitivity = 0.0015;
+        // 1イベントあたりの急激な変化（最大でも 0.5倍 〜 2.0倍）を安全にクランプ
+        const rawFactor = Math.exp(-e.deltaY * sensitivity);
+        const zoomFactor = Math.min(Math.max(rawFactor, 0.5), 2.0);
+
+        const targetZoom = zoomLevel * zoomFactor;
+
+        applyZoomAtPoint(targetZoom, cursorVx, cursorVy);
+    };
+
+    /**
+     * ズームインボタンハンドラ（現在見えている視野の中心を維持して 10% 拡大: 1.10倍）
+     */
+    const handleZoomIn = () => {
+        applyZoomAtPoint(zoomLevel * 1.10);
+    };
+
+    /**
+     * ズームアウトボタンハンドラ（現在見えている視野の中心を維持して 10% 縮小: 1.10分の1）
+     */
+    const handleZoomOut = () => {
+        applyZoomAtPoint(zoomLevel / 1.10);
+    };
 
     // ドラッグ開始（マウスダウン）
     const handleMouseDown = (e: React.MouseEvent) => {
@@ -355,15 +427,20 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         setResizingRoiId(null);
     }
 
+    /**
+     * 全体表示リセットハンドラ（等倍 1.0x かつ 画像中央位置に戻す）
+     */
     const handleResetView = () => {
         setZoomLevel(1);
         setPanOffset({ x: 0, y: 0 });
-    }
+    };
 
+    /**
+     * ズームプリセット選択ハンドラ（現在見えている視野の中心を維持したまま指定倍率へ切り替え）
+     */
     const setZoomPreset = (zoom: number) => {
-        setZoomLevel(zoom);
-        setPanOffset({ x: 0, y: 0 });
-    }
+        applyZoomAtPoint(zoom);
+    };
 
     // 数値入力のバリデーションヘルパー（範囲外の値を防ぐ）
     // step が渡された場合は、指定の刻みに丸めてからクランプする
@@ -710,7 +787,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                             <div className="flex bg-black/50 border border-zinc-700 rounded-md overflow-hidden">
                                 <ZoomButton align="start" label="Zoom Out">
                                     <Button variant="ghost" size="icon" className="size-8 text-white hover:text-white hover:bg-zinc-800 rounded-none"
-                                        onClick={() => setZoomLevel(Math.max(0.1, zoomLevel - 0.1))}
+                                        onClick={handleZoomOut}
                                     >
                                         <ZoomOut className="size-4" />
                                     </Button>
@@ -726,7 +803,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
 
                                 <ZoomButton align="end" label="Zoom In">
                                     <Button variant="ghost" size="icon" className="size-8 text-white hover:text-white hover:bg-zinc-800 rounded-none"
-                                        onClick={() => setZoomLevel(Math.min(50, zoomLevel + 0.1))}
+                                        onClick={handleZoomIn}
                                     >
                                         <ZoomIn className="size-4" />
                                     </Button>
