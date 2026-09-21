@@ -848,8 +848,8 @@ def _run_auto_measurement(
             filename = f"angle_{target_deg:09.4f}.tif"
             snapshot_result = camera.take_snapshot(filename_override=filename, save_dir_override=images_dir, force_centroid=is_prescan)
             
-            if snapshot_result and snapshot_result.get("roi_stats"):
-                stats = snapshot_result["roi_stats"]
+            if snapshot_result is not None:
+                stats = snapshot_result.get("roi_stats") or {}
                 rois_map = {r.get("index"): r for r in camera.rois}
                 
                 # --- 飽和判定 ---
@@ -864,7 +864,7 @@ def _run_auto_measurement(
                 try:
                     with open(csv_path, "a", newline="", encoding="utf-8") as f:
                         writer = csv.writer(f)
-                        row = [snapshot_result["angle"], snapshot_result["timestamp"], snapshot_result.get("filepath", "")]
+                        row = [snapshot_result.get("angle", target_deg), snapshot_result.get("timestamp", time.time()), snapshot_result.get("filepath", "")]
                         for r_idx_str in sorted(stats.keys(), key=lambda x: int(x)):
                             r_idx = int(r_idx_str)
                             r_data = stats[r_idx_str]
