@@ -418,6 +418,13 @@ function App() {
           useAppStore.getState().setDefaultAngleRangePresetId(settings.defaultAngleRangePresetId);
         }
 
+        // 【マルチページTIFF追加生成設定の初期同期】
+        // config.json に保存されている設定をストアに反映し、
+        // 設定画面を開かずに直接自動測定を実行した場合でも保存設定が確実に適用されるようにします。
+        if (typeof settings.generateMultipageTiff === "boolean") {
+          useAppStore.getState().setGenerateMultipageTiff(settings.generateMultipageTiff);
+        }
+
         // ============================================================================
         // 【起動時の保存先プロファイル・基準パスの初期同期と復元制御】
         // 1. ファイルからロードされた `outputPresets`（プロファイルリスト）をストアに同期します。
