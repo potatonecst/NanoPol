@@ -443,10 +443,11 @@ class TestCameraControllerSnapshot:
         controller.latest_frame = np.full((10, 10), 123, dtype=np.uint8)
 
         result = controller.take_snapshot()
-        assert isinstance(result, str), "自動保存モードではファイルパスが返るはず"
-        assert os.path.exists(result), f"スナップショットファイルが存在しない: {result}"
-        # 保存先が snapshots/ サブディレクトリであることを確認
-        assert os.path.basename(os.path.dirname(result)) == "snapshots"
+        assert isinstance(result, dict), "take_snapshotはメタデータ辞書を返すべき"
+        filepath = result.get("filepath")
+        assert filepath and os.path.exists(filepath), f"スナップショットファイルが存在しない: {filepath}"
+        # 保存先が snapshots/YYYYMMDD/ サブディレクトリであることを確認
+        assert "snapshots" in filepath
 
     def test_take_snapshot_pending_and_save(self, tmp_path):
         """askSavePath モードで take_snapshot が PENDING を返し、save_pending_snapshot で保存されることを確認する"""
@@ -460,7 +461,7 @@ class TestCameraControllerSnapshot:
         controller.latest_frame = np.full((8, 8), 77, dtype=np.uint8)
 
         result = controller.take_snapshot()
-        assert result == "PENDING", "askSavePath=True の場合は PENDING を返すはず"
+        assert isinstance(result, dict) and result.get("filepath") == "PENDING", "askSavePath=True の場合は filepath が PENDING を返すはず"
 
         target = tmp_path / "manual_snapshot.png"
         success = controller.save_pending_snapshot(str(target))

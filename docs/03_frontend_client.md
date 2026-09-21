@@ -539,6 +539,10 @@ toast.success("移動完了！");
         1. **Device Connection Defaults**（デフォルトステージCOMポート設定）※前提条件として最上部に配置
         2. **Camera Initialization**（カメラの動作初期設定：カラーモード、露出、ゲイン）
         3. **Stage Motion Profile**（ステージの物理運動特性：最小/最大速度、加減速時間）
+    *   **Measurement カテゴリの構成:**
+        自動測定の初期値やデータ出力オプションを管理します。
+        1. **Angle Range Presets**（自動測定画面の初期角度範囲プリセット）
+        2. **Image Stack Output**（マルチページTIFF追加生成 `generateMultipageTiff`: デフォルトON。個別TIFF画像に加え、`images.tif` を一括出力するかどうかを選択可能）
 
 #### カテゴリ切り替えの状態管理とReactフックのルール（重要）
 現在のアクティブなカテゴリ（`activeCategory`）は `useState` フックを用いて管理しています。

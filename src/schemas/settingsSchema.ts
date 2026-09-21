@@ -84,6 +84,8 @@ export const settingsSchema = z.object({
     // --- Measurement Defaults (自動測定デフォルト設定) ---
     // 自動測定画面（Auto Mode）を開いた際に初期適用される角度範囲プリセットのID
     defaultAngleRangePresetId: z.string().default(DEFAULT_SETTINGS.defaultAngleRangePresetId),
+    // 自動測定完了時に個別画像(images/)に加えてマルチページTIFF(images.tif)も追加生成するか
+    generateMultipageTiff: z.boolean().default(DEFAULT_SETTINGS.generateMultipageTiff),
 
     // --- Output Folder Presets (保存先プロファイル) ---
     outputPresets: z.array(

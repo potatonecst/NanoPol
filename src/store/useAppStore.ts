@@ -92,6 +92,8 @@ interface AppState {
     // 自動測定デフォルト設定
     defaultAngleRangePresetId: string; // 自動測定初期選択の角度範囲プリセットID
     setDefaultAngleRangePresetId: (id: string) => void; // 自動測定初期選択のプリセットIDを設定する関数
+    generateMultipageTiff: boolean; // 自動測定完了時にマルチページTIFF(images.tif)を追加生成するか
+    setGenerateMultipageTiff: (enabled: boolean) => void; // マルチページTIFF生成フラグを更新する関数
 
     //ステージコントローラーマニュアル操作
     currentAngle: number; //QWPの回転角度
@@ -267,6 +269,10 @@ export const useAppStore = create<AppState>((set) => ({
     // 自動測定初期選択プリセットID
     defaultAngleRangePresetId: DEFAULT_SETTINGS.defaultAngleRangePresetId,
     setDefaultAngleRangePresetId: (id) => set({ defaultAngleRangePresetId: id }),
+
+    // 自動測定完了時のマルチページTIFF追加生成フラグ
+    generateMultipageTiff: DEFAULT_SETTINGS.generateMultipageTiff,
+    setGenerateMultipageTiff: (enabled) => set({ generateMultipageTiff: enabled }),
 
     currentAngle: 0.0, //初期値
     setCurrentAngle: (angle) => set({ currentAngle: angle }), //set関数でcurrentAngleを書き換え

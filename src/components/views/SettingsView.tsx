@@ -53,6 +53,7 @@ import {
   Undo2,
 } from "lucide-react";
 import { Switch } from "../ui/switch";
+import { Label } from "../ui/label";
 import { toast } from "sonner";
 import { systemApi } from "@/api/client";
 
@@ -144,6 +145,7 @@ export const SettingsView: React.FC = () => {
     defaultOutputDirectory,
     setIsSettingsDirty,
     setDefaultAngleRangePresetId,
+    setGenerateMultipageTiff,
   } = useAppStore(
     useShallow((s) => ({ 
       cameraExposureRange: s.cameraExposureRange, 
@@ -155,6 +157,7 @@ export const SettingsView: React.FC = () => {
       defaultOutputDirectory: s.defaultOutputDirectory,
       setIsSettingsDirty: s.setIsSettingsDirty,
       setDefaultAngleRangePresetId: s.setDefaultAngleRangePresetId,
+      setGenerateMultipageTiff: s.setGenerateMultipageTiff,
     }))
   );
 
@@ -270,6 +273,9 @@ export const SettingsView: React.FC = () => {
         if (freshSettings.defaultAngleRangePresetId) {
           setDefaultAngleRangePresetId(freshSettings.defaultAngleRangePresetId);
         }
+        if (typeof freshSettings.generateMultipageTiff === "boolean") {
+          setGenerateMultipageTiff(freshSettings.generateMultipageTiff);
+        }
       } catch (error) {
         console.error("Failed to load settings:", error);
         toast.error("設定の読み込みに失敗しました");
@@ -371,6 +377,9 @@ export const SettingsView: React.FC = () => {
       syncActivePresetIdFromPath(data.outputDirectory || "");
       if (data.defaultAngleRangePresetId) {
         setDefaultAngleRangePresetId(data.defaultAngleRangePresetId);
+      }
+      if (typeof data.generateMultipageTiff === "boolean") {
+        setGenerateMultipageTiff(data.generateMultipageTiff);
       }
 
       // 4. バックエンド(FastAPI)に設定変更を通知して即時反映させる
@@ -1081,6 +1090,37 @@ export const SettingsView: React.FC = () => {
                         </Field>
                       );
                     }}
+                  />
+                </CardContent>
+              </Card>
+
+              {/* 自動測定画像出力設定カード */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Image Stack Output</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  {/* マルチページTIFFスタック追加生成のトグルスイッチ */}
+                  <Controller
+                    control={form.control}
+                    name="generateMultipageTiff"
+                    render={({ field }) => (
+                      <div className="flex items-center justify-between space-x-4">
+                        <div className="space-y-0.5">
+                          <Label htmlFor="generateMultipageTiff" className="text-sm font-medium cursor-pointer">
+                            Generate Multipage TIFF Stack (images.tif)
+                          </Label>
+                          <p className="text-xs text-muted-foreground">
+                            When enabled, combines all angle-resolved raw frames into a single multi-page TIFF file (images.tif) in addition to saving individual image files.
+                          </p>
+                        </div>
+                        <Switch
+                          id="generateMultipageTiff"
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </div>
+                    )}
                   />
                 </CardContent>
               </Card>

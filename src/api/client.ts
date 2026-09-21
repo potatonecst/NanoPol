@@ -452,7 +452,8 @@ export const systemApi = {
         step_angle: number,
         save_directory: string,
         is_prescan?: boolean,
-        metadata?: any
+        metadata?: any,
+        generate_multipage_tiff?: boolean
     }) =>
         request<{
             status: string,

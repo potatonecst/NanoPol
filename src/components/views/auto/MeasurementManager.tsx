@@ -69,6 +69,7 @@ export function MeasurementManager() {
         clearPlotData,      // グラフデータをクリアするアクション
         fetchRois,          // 最新のROIリストをバックエンドから取得するアクション
         defaultAngleRangePresetId, // 設定されたデフォルトの角度範囲プリセットID
+        generateMultipageTiff,     // マルチページTIFFを追加生成するかどうかの設定フラグ
     } = useAppStore(useShallow((state) => ({
         isMeasuring: state.isMeasuring,
         setIsMeasuring: state.setIsMeasuring,
@@ -82,6 +83,7 @@ export function MeasurementManager() {
         clearPlotData: state.clearPlotData,
         fetchRois: state.fetchRois,
         defaultAngleRangePresetId: state.defaultAngleRangePresetId,
+        generateMultipageTiff: state.generateMultipageTiff,
     })));
 
     // --- デフォルト角度範囲プリセットの解決 ---
@@ -363,6 +365,7 @@ export function MeasurementManager() {
                 step_angle: 15.0, // Pre-Scan は高速化のため15度固定で回す
                 save_directory: targetPath,
                 is_prescan: true,
+                generate_multipage_tiff: generateMultipageTiff, // マルチページTIFF生成設定を渡す
                 metadata: {
                     laser_power_mw: values.laserPower,
                     fiber_pos_x: values.fiberX ?? null,
@@ -450,6 +453,7 @@ export function MeasurementManager() {
                 step_angle: values.stepAngle,
                 save_directory: targetPath,
                 is_prescan: false,
+                generate_multipage_tiff: generateMultipageTiff, // マルチページTIFF生成設定を渡す
                 metadata: {
                     laser_power_mw: values.laserPower,
                     fiber_pos_x: values.fiberX ?? null,

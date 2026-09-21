@@ -702,7 +702,8 @@ def _run_auto_measurement(
     step_angle: float,
     save_directory: str,
     is_prescan: bool = False,
-    metadata: dict = None
+    metadata: dict = None,
+    generate_multipage_tiff: bool = True
 ):
     """
     Step & Shoot 方式による精密な自動測定シーケンスをバックグラウンドで実行します。
@@ -893,46 +894,46 @@ def _run_auto_measurement(
         # --- ループ終了後の後処理 ---
         current_state = _get_auto_operation_snapshot()
         if current_state.get("status") != "cancelled":
-            _set_auto_operation_state(percent=100, message="Generating Multipage TIFF...")
+            _set_auto_operation_state(percent=100, message="Generating Multipage TIFF..." if generate_multipage_tiff else "Finalizing measurement...")
             try:
                 import tifffile
                 image_files = sorted(glob.glob(os.path.join(images_dir, "*.tif")))
-                if image_files:
+                if generate_multipage_tiff and image_files:
                     with tifffile.TiffWriter(multipaged_path, append=False) as tif:
                         for img_file in image_files:
                             img = tifffile.imread(img_file)
                             if img is not None:
                                 tif.write(img)
-                    shutil.rmtree(images_dir, ignore_errors=True)
+                    # 【個別画像の保持】WindowsフォトやFinderでの閲覧性向上のため、images/ フォルダは削除せず保持します
                     
-                    if is_prescan:
-                        _set_auto_operation_state(message="Calculating optimal ROI (Centroid)...")
-                        plot_data = app_state.auto_measurement.get_plot_data()
-                        updated_rois = []
-                        for i, r in enumerate(camera.rois):
-                            roi_idx = r.get("index", i)
-                            key = f"roi_{roi_idx}"
-                            if key not in plot_data or len(plot_data[key]) == 0:
-                                updated_rois.append(r)
-                                continue
-                            pts = plot_data[key]
-                            max_sum = max(p["sum"] for p in pts)
-                            min_val = min(p["sum"] for p in pts)
-                            if max_sum == 0 or (max_sum - min_val) / max_sum < 0.1:
-                                updated_rois.append(r)
-                                continue
-                            threshold = max_sum * 0.2
-                            valid_pts = [p for p in pts if p["sum"] > threshold]
-                            if not valid_pts:
-                                updated_rois.append(r)
-                                continue
-                            total_weight = sum(p["sum"] for p in valid_pts)
-                            weighted_cx = sum(p["cx"] * p["sum"] for p in valid_pts) / total_weight
-                            weighted_cy = sum(p["cy"] * p["sum"] for p in valid_pts) / total_weight
-                            updated_r = dict(r)
-                            updated_r.update({"x": int(round(weighted_cx)), "y": int(round(weighted_cy)), "optical_centroid_x": round(weighted_cx, 4), "optical_centroid_y": round(weighted_cy, 4)})
-                            updated_rois.append(updated_r)
-                        camera.set_rois(updated_rois)
+                if is_prescan:
+                    _set_auto_operation_state(message="Calculating optimal ROI (Centroid)...")
+                    plot_data = app_state.auto_measurement.get_plot_data()
+                    updated_rois = []
+                    for i, r in enumerate(camera.rois):
+                        roi_idx = r.get("index", i)
+                        key = f"roi_{roi_idx}"
+                        if key not in plot_data or len(plot_data[key]) == 0:
+                            updated_rois.append(r)
+                            continue
+                        pts = plot_data[key]
+                        max_sum = max(p["sum"] for p in pts)
+                        min_val = min(p["sum"] for p in pts)
+                        if max_sum == 0 or (max_sum - min_val) / max_sum < 0.1:
+                            updated_rois.append(r)
+                            continue
+                        threshold = max_sum * 0.2
+                        valid_pts = [p for p in pts if p["sum"] > threshold]
+                        if not valid_pts:
+                            updated_rois.append(r)
+                            continue
+                        total_weight = sum(p["sum"] for p in valid_pts)
+                        weighted_cx = sum(p["cx"] * p["sum"] for p in valid_pts) / total_weight
+                        weighted_cy = sum(p["cy"] * p["sum"] for p in valid_pts) / total_weight
+                        updated_r = dict(r)
+                        updated_r.update({"x": int(round(weighted_cx)), "y": int(round(weighted_cy)), "optical_centroid_x": round(weighted_cx, 4), "optical_centroid_y": round(weighted_cy, 4)})
+                        updated_rois.append(updated_r)
+                    camera.set_rois(updated_rois)
                 _set_auto_operation_state(status="succeeded", message="Measurement complete")
             except Exception as e:
                 logger.error(f"[AUTO] Post-processing failed: {e}")
@@ -1375,6 +1376,7 @@ class AutoMeasurementRunRequest(BaseModel):
     save_directory: str
     is_prescan: bool = False
     metadata: dict = None
+    generate_multipage_tiff: bool = True
 
 class UpdateConfigRequest(BaseModel):
     pulses_per_degree: int # 1度回転させるために必要なモーターのパルス数（分解能）
@@ -1934,7 +1936,7 @@ def measurement_auto_run(req: AutoMeasurementRunRequest):
 
     worker = threading.Thread(
         target=_run_auto_measurement,
-        args=(operation_id, req.start_angle, req.end_angle, req.step_angle, req.save_directory, req.is_prescan, req.metadata),
+        args=(operation_id, req.start_angle, req.end_angle, req.step_angle, req.save_directory, req.is_prescan, req.metadata, req.generate_multipage_tiff),
         daemon=True,
     )
     worker.start()

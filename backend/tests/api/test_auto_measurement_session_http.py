@@ -78,9 +78,10 @@ def test_session_management_flow(temp_output_dir):
     r = client.get("/measurement/sessions")
     assert r.status_code == 200
     sessions = r.json()["sessions"]
+    session_names = [s["name"] if isinstance(s, dict) else s for s in sessions]
     # get_today_sessions は sorted されているはずなので ["MyExperiment", "Sample_1"]
-    assert "Sample_1" in sessions
-    assert "MyExperiment" in sessions
+    assert "Sample_1" in session_names
+    assert "MyExperiment" in session_names
     assert len(sessions) == 2
 
     # 6. セッション設定の読み込み
