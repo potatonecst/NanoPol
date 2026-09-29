@@ -1254,7 +1254,7 @@ async def lifespan(app: FastAPI):
     
     logger.info("[SYSTEM] Cleanup Complete.")
 
-app = FastAPI(title="NanoPol Backend", version="0.2.2", lifespan=lifespan)
+app = FastAPI(title="NanoPol Backend", version="0.2.3", lifespan=lifespan)
 
 # ==========================================
 # CORS (Cross-Origin Resource Sharing) の設定
