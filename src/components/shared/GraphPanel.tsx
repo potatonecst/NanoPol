@@ -158,11 +158,17 @@ export function GraphPanel() {
                                 <Label value="QWP Angle [deg]" offset={-15} position="insideBottom" style={{ fontSize: '10px', fill: '#aaa', fontWeight: 'bold' }} />
                             </XAxis>
                             
+                            {/* 
+                                【縦軸（Y軸）の表示レンジ設計】
+                                ・Max（最大輝度）/ Center（中心輝度）: 飽和マージンの確認が目的のため [0, 255]（白飛び基準）で固定。
+                                ・Sum（総散乱強度）/ Drift（重心ズレ量）: 偏光変調の消光比や安定性を正しく評価し、
+                                  微小ノイズの過剰な拡大錯覚を防ぐため、下限を 0 固定とし上限をデータ最大値に合わせた [0, 'auto'] に設定。
+                            */}
                             <YAxis 
                                 tick={{ fontSize: 10, fill: '#888' }}
                                 stroke="#666"
                                 tickLine={{ stroke: '#666' }}
-                                domain={mode === 'max' || mode === 'center' ? [0, 255] : ['auto', 'auto']}
+                                domain={mode === 'max' || mode === 'center' ? [0, 255] : [0, 'auto']}
                             >
                                 <Label value={`[${modeInfo[mode].unit}]`} angle={-90} position="insideLeft" style={{ fontSize: '10px', fill: '#aaa', fontWeight: 'bold', textAnchor: 'middle' }} />
                             </YAxis>
