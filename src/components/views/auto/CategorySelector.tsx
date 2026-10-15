@@ -50,12 +50,14 @@ export function CategorySelector() {
         currentSession, 
         setAutoPhase, 
         setSelectedCategory,
-        resetAutoMeasurement 
+        resetAutoMeasurement,
+        setLastSetupFormValues
     } = useAppStore(useShallow((state) => ({
         currentSession: state.currentSession,
         setAutoPhase: state.setAutoPhase,
         setSelectedCategory: state.setSelectedCategory,
         resetAutoMeasurement: state.resetAutoMeasurement,
+        setLastSetupFormValues: state.setLastSetupFormValues,
     })));
 
     if (!currentSession) return null;
@@ -91,9 +93,12 @@ export function CategorySelector() {
 
     /**
      * カテゴリを選択して測定実行フェーズへ遷移します。
+     * 前回の測定条件（レーザーパワーやファイバー位置等）が持ち越されないよう、
+     * 入力フォームの退避値を初期化してから遷移します。
      */
     const handleSelectCategory = (categoryId: string) => {
         setSelectedCategory(categoryId);
+        setLastSetupFormValues(null);
         setAutoPhase('measuring');
     };
 

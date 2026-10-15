@@ -50,6 +50,23 @@ const { stagePort, isStageConnected } = useAppStore(
 #### 3. 一時的な値の参照 (`getState`)
 `useEffect` などの非同期処理内で「現在バックエンドとつながっているか？」といったその瞬間の状態を知りたいだけの場合は、Reactの描画システムをトリガーしない `useAppStore.getState()` を使用し、最もメモリ効率の良い方法で値を取得します。
 
+#### 4. 画面遷移をまたぐ入力フォーム値・Pre-Scan状態の一時退避と安全なクリア設計
+*   **課題**:
+    1.  Auto Mode の測定条件入力画面（`MeasurementManager`）でレーザーパワー（`laserPower`）やファイバー位置（`fiberX`, `fiberY`）、角度範囲などを入力した後に、「ステージの接続を忘れていた」と気づいて `Devices` 画面に移動すると、コンポーネントがアンマウントされてローカルの `useForm` の値がすべて初期値にリセットされてしまう問題。
+    2.  Pre-Scan（アライメント）を実行して成功または飽和警告が出た後、露光時間の調整や確認のために `Devices` 画面や `Settings` 画面へ移動して戻ってくると、ローカル `useState` だった `prescanStatus` が `"idle"` に、`currentBranchPath` が `null` にリセットされてしまい、本番測定ボタン（`START MEASUREMENT`）が無効化されて押せなくなる問題（および再Pre-Scan時に `_002` フォルダが分裂生成されてしまう問題）。
+*   **解決アプローチ**: グローバルストア（Zustand）に以下を新設・連動させました。
+    *   `lastSetupFormValues: SetupFormValues | null`: フォーム入力値の一時退避
+    *   `prescanStatus: "idle" | "running" | "success" | "saturated" | "failed"`: Pre-Scan の完了ステータス
+    *   `currentBranchPath: string | null`: 現在の測定試行で使用中の保存先フォルダパス（例: `Left_Front_001`）
+*   **動作原理**:
+    1.  `MeasurementManager` のマウント時に `form.watch` を購読（`useEffect`）し、ユーザーが入力を変更するたびに最新のフォーム値（レーザーパワー、ファイバー位置、選択した角度プリセット等）を即座にストアへ退避します。
+    2.  `useForm` の `defaultValues` 初期化時にストアの `lastSetupFormValues` を参照します。値が存在すればそれを復元し、存在しない場合のみ初回プリセットを適用します。
+    3.  Pre-Scan 実行時に決定された保存先ブランチフォルダ（`currentBranchPath`）およびアライメント結果（`prescanStatus`）をストアに保持することで、他画面を閲覧・調整して戻ってきた場合でも「Ready」状態を維持し、そのままスムーズに本番測定を開始できます（必要であれば同一フォルダのまま再Pre-Scanを行うことも可能）。
+*   **値の生存期間（ライフサイクル）と安全クリア機構（案Aの徹底）**:
+    *   **測定完了時の自動リセット**: 本番測定が正常終了してカテゴリ選択画面へ戻るタイミングで、`setLastSetupFormValues(null)`、`setPrescanStatus("idle")`、`setCurrentBranchPath(null)` を一括実行して退避値を確実にクリアします。これにより、次のカテゴリ測定や再測定時に前回のパラメータ（特にファイバー位置等の物理記録）や古いアライメント状態が意図せず持ち越される「ヒューマンエラー・誤記録」を100%防止します。また、次回測定時には Settings 画面で設定されたデフォルトプリセット（例: Standard 5°）が正しく初期ロードされます。
+    *   **カテゴリ変更時の自動リセット**: 測定画面から Back して別のカテゴリ（例: `Left_Front` → `Right_Front`）に移行した際、`selectedCategory` の変化を検知して `prescanStatus` を `"idle"` に、`currentBranchPath` を `null` に初期化します（光学配置が変わるため、Pre-Scan をやり直す必要があります）。
+    *   **セッション終了時の自動リセット**: サンプル選択画面へ戻った際（`resetAutoMeasurement`）にも確実に全項目が初期化され、別サンプルの測定へ前サンプルの値が漏れるのを防ぎます。
+
 ### 1.2 排他制御 (`isSystemBusy`)
 
 *   **`setIsSystemBusy(busy: boolean)`**
@@ -89,6 +106,16 @@ Auto Mode では、単一の画面内で「サンプルの新規作成」「カ�
         - **UI/UX設計（インライン情報バー）**: フローティングツールチップによる「上下ボタンへの覆いかぶさり・マウスイベント衝突」を根絶するため、ボタンの直下に固定の説明エリアを設置。ホバーまたは選択中のプリセットに応じて用途・点数・範囲が瞬時に切り替わるストレスフリーな操作性を実現。
         - **Settings（設定画面）との連動**: 設定画面の「Measurement」タブで設定された `defaultAngleRangePresetId` をストア経由で参照し、自動測定画面を開いた初期状態、またはフォームリセット時にそのプリセット値が自動でフォーム初期値にロードされます。
         - **動作原理**: React Hook Form の `form.setValue` に `shouldValidate: true` を付与して一括更新し、即座にZodバリデーションを通過させます。また、入力値（`watchedStartAngle` 等）を監視して現在値と完全一致するプリセットをアクティブ表示し、手動入力時は自動で `Custom` 表示に切り替わるステート連動を実装しています。
+    *   **ハードウェア未接続ガードと空フォルダ防止機構**:
+        - **背景と事故の根本原因**:
+          従来、ステージ（GSC-01）やカメラ（DCC1645C）が未接続の状態でも「Run Pre-Scan」ボタンが押下可能でした。ボタンが押されると、フロントエンドはまず保存先ディレクトリの採番API（`autoApi.generateBranch`）を呼び出してディスク上に `Left_Front_001` 等のフォルダを作成します。しかしその直後のスキャン開始処理で未接続エラーが発生して中断するため、中身が 0 バイトの空フォルダだけが取り残され、次回接続時に `_002` と連番が無駄に進んでしまう問題が発生していました。
+        - **対策と多層防御（Defense in Depth）の実装**:
+          1. **UIレベルのボタン無効化 (`disabled`)**:
+             `isStageDisconnected = !isStageConnected`、`isCameraDisconnected = !isCameraConnected` を算出し、`isHardwareDisconnected` の場合は「Run Pre-Scan」および「START MEASUREMENT」ボタンを非活性化します。なお、フォームの入力項目自体は `disabled` にせず操作可能にしておくことで、ユーザーは設定値を入力したまま安全に `Devices` 画面へ移動して接続作業を行えます。
+          2. **視覚的なインライン警告表示**:
+             未接続時は Pre-Scan ボタンの直下に `Hardware Disconnected` パネルを表示し、未接続のデバイス（Stage / Camera）と「Devices 画面で接続してください」という案内を明示します。また、最下部のフッターエリアにも警告バッジを表示し、測定ボタンが無効化されている理由を一目で認識可能にしています。
+          3. **ハンドラ先頭での二重防御（ガード文）**:
+             万が一のショートカットキー操作やイベントすり抜けに備え、`handlePreScan` および `handleStartMeasurement` の実行ハンドラの先頭で `if (!isStageConnected || !isCameraConnected)` を検証し、エラーToastを出して即時リターンします。空フォルダが物理生成される `generateBranch` API の呼び出し自体を確実に遮断します。
     *   **Pre-Scan警告の表示とクリーンアップ**: Pre-Scanで飽和が検出されると、アライメントカード内にオレンジの警告パネル（`Saturation Warning`）を表示し、本番測定への自動移行を阻止します。本番測定が手動開始（START MEASUREMENT）されると、表示上の干渉を防ぐためアライメントの完了ステータスは即座に `"idle"` (未スキャン状態) へと自動クリアされ、画面から警告パネルが消去されます。
 
 ---

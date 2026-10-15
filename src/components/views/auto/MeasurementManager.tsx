@@ -70,6 +70,14 @@ export function MeasurementManager() {
         fetchRois,          // 最新のROIリストをバックエンドから取得するアクション
         defaultAngleRangePresetId, // 設定されたデフォルトの角度範囲プリセットID
         generateMultipageTiff,     // マルチページTIFFを追加生成するかどうかの設定フラグ
+        isStageConnected,          // ステージコントローラの接続状態
+        isCameraConnected,         // カメラデバイスの接続状態
+        lastSetupFormValues,       // 前回入力されたフォーム値（画面離脱時の保持データ）
+        setLastSetupFormValues,    // フォーム値をストアへ退避する関数
+        prescanStatus,             // Pre-Scanの完了ステータス（ストア保持）
+        setPrescanStatus,          // Pre-Scanステータスを更新する関数
+        currentBranchPath,         // 現在の測定ブランチフォルダパス（ストア保持）
+        setCurrentBranchPath,      // ブランチフォルダパスを更新する関数
     } = useAppStore(useShallow((state) => ({
         isMeasuring: state.isMeasuring,
         setIsMeasuring: state.setIsMeasuring,
@@ -84,6 +92,14 @@ export function MeasurementManager() {
         fetchRois: state.fetchRois,
         defaultAngleRangePresetId: state.defaultAngleRangePresetId,
         generateMultipageTiff: state.generateMultipageTiff,
+        isStageConnected: state.isStageConnected,
+        isCameraConnected: state.isCameraConnected,
+        lastSetupFormValues: state.lastSetupFormValues,
+        setLastSetupFormValues: state.setLastSetupFormValues,
+        prescanStatus: state.prescanStatus,
+        setPrescanStatus: state.setPrescanStatus,
+        currentBranchPath: state.currentBranchPath,
+        setCurrentBranchPath: state.setCurrentBranchPath,
     })));
 
     // --- デフォルト角度範囲プリセットの解決 ---
@@ -103,9 +119,6 @@ export function MeasurementManager() {
 
     // --- ローカル状態の管理 ---
 
-    // "idle": 未実施, "running": 実行中, "success": 成功（アライメント完了）, "saturated": 飽和警告あり完了, "failed": 失敗
-    const [prescanStatus, setPrescanStatus] = useState<"idle" | "running" | "success" | "saturated" | "failed">("idle");
-    
     // アライメント失敗時でも強制的に開始するためのフラグ
     const [forceStartUnlocked, setForceStartUnlocked] = useState(false);
 
@@ -120,26 +133,41 @@ export function MeasurementManager() {
     const [hasWarning, setHasWarning] = useState<boolean>(false);        // 飽和などの警告状態
     const [warningMessage, setWarningMessage] = useState<string>("");    // 警告の具体的内容
 
-    // 現在の測定（Pre-Scanから本番まで）で共通して使用するデータ保存先フォルダ
-    const [currentBranchPath, setCurrentBranchPath] = useState<string | null>(null);
 
-    // カテゴリが変更されたら保存先パスをリセットする
-    useEffect(() => {
-        setCurrentBranchPath(null);
-    }, [selectedCategory]);
 
     // React Hook Form の初期化（Zodスキーマ連携）
+    // 【解説】画面を離脱（DevicesView等へ移動）しても入力値を復元できるよう、
+    // ストアに退避されていた lastSetupFormValues が存在する場合はそれを初期値に適用します。
     const form = useForm<SetupFormValues>({
         resolver: zodResolver(setupFormSchema) as any,
         defaultValues: {
-            laserPower: "" as any,
-            fiberX: "" as any,
-            fiberY: "" as any,
-            startAngle: initialPreset.startAngle,
-            endAngle: initialPreset.endAngle,
-            stepAngle: initialPreset.stepAngle,
+            laserPower: lastSetupFormValues?.laserPower ?? ("" as any),
+            fiberX: lastSetupFormValues?.fiberX ?? ("" as any),
+            fiberY: lastSetupFormValues?.fiberY ?? ("" as any),
+            startAngle: lastSetupFormValues?.startAngle ?? initialPreset.startAngle,
+            endAngle: lastSetupFormValues?.endAngle ?? initialPreset.endAngle,
+            stepAngle: lastSetupFormValues?.stepAngle ?? initialPreset.stepAngle,
         },
     });
+
+    // 【フォーム入力値のストア自動同期】
+    // ユーザーが入力した最新のパラメータ（Laser Power, Fiber X/Y, 各角度）を監視し、
+    // 即座にストアへ退避して、画面遷移（DevicesView等への往復）による入力値の揮発を防止します。
+    // ※ 測定中（またはPre-Scan中）はユーザーによる入力変更ではないため退避をスキップし、完了時のクリア値上書きを防ぎます。
+    useEffect(() => {
+        const subscription = form.watch((values) => {
+            if (isMeasuring || prescanStatus === "running") return;
+            setLastSetupFormValues({
+                laserPower: values.laserPower as any,
+                fiberX: values.fiberX as any,
+                fiberY: values.fiberY as any,
+                startAngle: values.startAngle,
+                endAngle: values.endAngle,
+                stepAngle: values.stepAngle,
+            });
+        });
+        return () => subscription.unsubscribe();
+    }, [form, setLastSetupFormValues, isMeasuring, prescanStatus]);
 
     // 戻るボタンの処理。測定やスキャンが走っている間は戻れないようにガードします。
     const handleBack = () => {
@@ -149,12 +177,12 @@ export function MeasurementManager() {
 
     // 設定画面でデフォルトプリセットが変更された場合、フォームが未編集であれば最新のプリセット値を即時反映
     useEffect(() => {
-        if (!form.formState.isDirty) {
+        if (!form.formState.isDirty && !lastSetupFormValues) {
             form.setValue("startAngle", initialPreset.startAngle);
             form.setValue("endAngle", initialPreset.endAngle);
             form.setValue("stepAngle", initialPreset.stepAngle);
         }
-    }, [defaultAngleRangePresetId, initialPreset, form]);
+    }, [defaultAngleRangePresetId, initialPreset, form, lastSetupFormValues]);
 
     // --- 角度範囲プリセットの連動ロジック ---
     // ホバー中のプリセットID（インライン説明バーでリアルタイム表示するため）
@@ -234,11 +262,13 @@ export function MeasurementManager() {
                 if (res.status === "succeeded" || res.status === "failed" || res.status === "cancelled") {
                     clearInterval(intervalId);
                     setOperationId(null);
+                    // クロージャの同期ズレを防ぐため、最新のストアから直前のモード（Pre-Scanか否か）を確実に取得
+                    const wasPrescan = useAppStore.getState().isPrescan;
                     setIsMeasuring(false); // 監視終了時にロックを解除
                     setIsPrescan(false);   // フェーズ情報をリセット
 
                     if (res.status === "succeeded") {
-                        if (prescanStatus === "running") {
+                        if (wasPrescan) {
                             // ============================================================================
                             // 【Pre-Scan（アライメント）成功時の自動ROI同期と画面更新】
                             // Pre-Scan が正常に完了すると、バックエンド側で光の重心を元にした新しいROI座標が算出され、
@@ -262,6 +292,27 @@ export function MeasurementManager() {
                             }
                         } else {
                             toast.success("本測定が完了しました。カテゴリ選択に戻ります");
+
+                            // ============================================================================
+                            // 【測定完了時のフォーム入力値・Pre-Scan状態クリア（誤記録防止・案A）】
+                            // 測定が正常終了したため、次回測定時に前回のパラメータ（レーザーパワーやファイバー位置、
+                            // 角度プリセット、アライメント結果）が意図せず引き継がれるのを防止するため、
+                            // 退避されていたフォーム値、Pre-Scan状態、および保存先ブランチパスを初期化します。
+                            // これにより、次回は初期状態（Settingsのデフォルトプリセット適用）から開始できます。
+                            // ============================================================================
+                            setLastSetupFormValues(null);
+                            setPrescanStatus("idle");
+                            setCurrentBranchPath(null);
+                            // フォーム内部の入力バッファも初期状態にリセット
+                            form.reset({
+                                laserPower: "" as any,
+                                fiberX: "" as any,
+                                fiberY: "" as any,
+                                startAngle: initialPreset.startAngle,
+                                endAngle: initialPreset.endAngle,
+                                stepAngle: initialPreset.stepAngle,
+                            });
+
                             // 測定完了後は、履歴をリフレッシュしてからカテゴリ選択画面へ戻る
                             if (currentSession?.folderPath) {
                                 try {
@@ -335,6 +386,13 @@ export function MeasurementManager() {
      */
     const handlePreScan = async (values: SetupFormValues) => {
         if (!currentSession || !selectedCategory) return;
+
+        // 【ハードウェア未接続ガード】
+        // ステージまたはカメラが未接続の場合は処理を中断し、空フォルダ作成（generateBranch）を未然に防止します
+        if (!isStageConnected || !isCameraConnected) {
+            toast.error("ステージまたはカメラが接続されていません。Devices 画面で接続してください。");
+            return;
+        }
 
         setIsMeasuring(true); // ナビゲーションをロック
         setIsPrescan(true);   // Pre-Scan中であることを明示（グラフの自動切り替え用）
@@ -415,6 +473,13 @@ export function MeasurementManager() {
      */
     const handleStartMeasurement = async (values: SetupFormValues) => {
         if (!currentSession || !selectedCategory) return;
+
+        // 【ハードウェア未接続ガード】
+        // ステージまたはカメラが未接続の場合は本番測定を開始しません
+        if (!isStageConnected || !isCameraConnected) {
+            toast.error("ステージまたはカメラが接続されていません。Devices 画面で接続してください。");
+            return;
+        }
 
         setIsMeasuring(true); // ナビゲーションをロック（測定実行中はサイドバー等のページ移動を無効化します）
         setIsPrescan(false);  // 本番測定であることを明示（フロントエンドの表示やグラフ描画の自動切り替え判定に使用します）
@@ -510,10 +575,15 @@ export function MeasurementManager() {
     };
 
     // --- 表示制御用の計算変数 ---
+    // ハードウェアの接続状態判定（ステージ・カメラ双方の接続が必須）
+    const isStageDisconnected = !isStageConnected;
+    const isCameraDisconnected = !isCameraConnected;
+    const isHardwareDisconnected = isStageDisconnected || isCameraDisconnected;
+
     // UIパーツの無効化条件: 測定中、またはPre-Scan実行中
     const isFormDisabled = isMeasuring || prescanStatus === "running";
-    // 本番測定を開始できる条件: Pre-Scan成功（警告あり含む）、または強制解除済み
-    const canStartMeasurement = prescanStatus === "success" || prescanStatus === "saturated" || forceStartUnlocked;
+    // 本番測定を開始できる条件: Pre-Scan成功（警告あり含む）、または強制解除済みで、かつハードウェアが接続されていること
+    const canStartMeasurement = (prescanStatus === "success" || prescanStatus === "saturated" || forceStartUnlocked) && !isHardwareDisconnected;
 
     return (
         <div className="flex flex-col h-full space-y-6">
@@ -802,12 +872,18 @@ export function MeasurementManager() {
                             Roughly align the ROI(s) manually on the camera view, then run Pre-Scan to calculate the exact optical centroid.
                         </p>
 
+                        {/* 
+                          * Pre-Scan 実行ボタン
+                          * 測定中や実行中だけでなく、ステージやカメラが未接続の場合は無効化（disabled）されます。
+                          * これにより、デバイス未接続のままボタンを押してしまい、中身が空のフォルダ（Left_Front_001 等）が
+                          * 作成されて中断する事故を根本から防止します。
+                          */}
                         <Button
                             type="button"
                             variant="secondary"
                             size="sm"
                             className="w-full"
-                            disabled={isFormDisabled}
+                            disabled={isFormDisabled || isHardwareDisconnected}
                             onClick={form.handleSubmit(handlePreScan)}
                         >
                             {prescanStatus === "running" ? (
@@ -817,6 +893,26 @@ export function MeasurementManager() {
                             )}
                             {prescanStatus === "running" ? "Scanning..." : "Run Pre-Scan"}
                         </Button>
+
+                        {/* 
+                          * 【ハードウェア未接続警告パネル】
+                          * ステージまたはカメラが未接続の場合に表示され、ユーザーに Devices 画面での接続を案内します。
+                          * なお、フォーム入力欄自体は操作可能なため、入力値は保持されたまま安全に Devices 画面へ移動できます。
+                          */}
+                        {isHardwareDisconnected && (
+                            <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-md flex items-start gap-2 text-xs text-destructive font-medium leading-normal">
+                                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-destructive" />
+                                <div className="space-y-1">
+                                    <span className="font-bold">Hardware Disconnected</span>
+                                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                                        {[
+                                            isStageDisconnected && "Stage (GSC-01)",
+                                            isCameraDisconnected && "Camera (DCC1645C)"
+                                        ].filter(Boolean).join(" and ")} is not connected. Please connect devices in the Devices view before running Pre-Scan.
+                                    </p>
+                                </div>
+                            </div>
+                        )}
 
                         {/* 
                           * 【アライメント警告パネル (Saturation Warning Panel)】
@@ -867,115 +963,124 @@ export function MeasurementManager() {
             {/* 下部固定エリア: 本番実行ボタンとリモコン */}
             <div className="pt-4 border-t mt-auto bg-card">
                 {!isMeasuring && prescanStatus !== "running" ? (
-                    <div className="flex gap-2">
-                        {/* 手動操作リモコン (Manual Remote) ポップオーバー */}
-                        <Popover>
-                            <TooltipProvider>
-                                <Tooltip>
-                                    <TooltipTrigger asChild>
-                                        <PopoverTrigger asChild>
-                                            <Button 
-                                                variant="outline" 
-                                                size="icon" 
-                                                className="h-10 w-10 shrink-0 hover:border-primary/50"
-                                                disabled={isSystemBusy}
-                                            >
-                                                <Joystick className="h-5 w-5 text-muted-foreground" />
-                                            </Button>
-                                        </PopoverTrigger>
-                                    </TooltipTrigger>
-                                    <TooltipContent className="font-semibold">
-                                        Manual Remote
-                                    </TooltipContent>
-                                </Tooltip>
-                            </TooltipProvider>
-                            <PopoverContent side="top" align="start" className="w-64 p-4 mb-2 shadow-xl border-primary/20">
-                                <div className="space-y-4">
-                                    <div className="flex items-center justify-between">
-                                        <h5 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Manual Remote</h5>
-                                        <Badge variant="secondary" className="font-mono text-[9px]">{currentAngle.toFixed(3)}°</Badge>
-                                    </div>
-
-                                    {/* 絶対移動セクション */}
-                                    <div className="space-y-1.5">
-                                        <Label className="text-[9px] uppercase text-muted-foreground">Absolute Move</Label>
-                                        <div className="flex gap-1.5">
-                                            <Input
-                                                className="h-8 text-xs font-mono"
-                                                placeholder="0.00"
-                                                value={targetAngle}
-                                                onChange={(e) => setTargetAngle(e.target.value)}
-                                                onKeyDown={(e) => e.key === 'Enter' && moveAbsolute(parseFloat(targetAngle))}
-                                            />
-                                            <Button
-                                                size="icon"
-                                                className="h-8 w-8 shrink-0"
-                                                disabled={isSystemBusy || !targetAngle}
-                                                onClick={() => moveAbsolute(parseFloat(targetAngle))}
-                                            >
-                                                <MoveRight className="h-3.5 w-3.5" />
-                                            </Button>
-                                        </div>
-                                    </div>
-
-                                    <Separator />
-
-                                    {/* ジョグ操作セクション */}
-                                    <div className="space-y-3">
+                    <div className="space-y-2">
+                        {/* ハードウェア未接続時のインライン警告案内 */}
+                        {isHardwareDisconnected && (
+                            <div className="text-[11px] text-destructive font-medium flex items-center justify-center gap-1.5 py-1.5 px-2 rounded bg-destructive/10 border border-destructive/20">
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                <span>Hardware disconnected. Connect in Devices view to start.</span>
+                            </div>
+                        )}
+                        <div className="flex gap-2">
+                            {/* 手動操作リモコン (Manual Remote) ポップオーバー */}
+                            <Popover>
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <PopoverTrigger asChild>
+                                                <Button 
+                                                    variant="outline" 
+                                                    size="icon" 
+                                                    className="h-10 w-10 shrink-0 hover:border-primary/50"
+                                                    disabled={isSystemBusy || isStageDisconnected}
+                                                >
+                                                    <Joystick className="h-5 w-5 text-muted-foreground" />
+                                                </Button>
+                                            </PopoverTrigger>
+                                        </TooltipTrigger>
+                                        <TooltipContent className="font-semibold">
+                                            Manual Remote
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </TooltipProvider>
+                                <PopoverContent side="top" align="start" className="w-64 p-4 mb-2 shadow-xl border-primary/20">
+                                    <div className="space-y-4">
                                         <div className="flex items-center justify-between">
-                                            <Label className="text-[9px] uppercase text-muted-foreground">Jog Step</Label>
-                                            <Tabs value={String(jogStep)} onValueChange={(v) => setJogStep(parseFloat(v))} className="h-7">
-                                                <TabsList className="h-7 p-0.5">
-                                                {[0.1, 1, 5].map((s) => (
-                                                     <TabsTrigger
-                                                         key={s} value={String(s)}
-                                                         className="text-[9px] h-6 px-2"
-                                                    >
-                                                        {s}°
-                                                     </TabsTrigger>
-                                                ))}
-                                                </TabsList>
-                                            </Tabs>
+                                            <h5 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Manual Remote</h5>
+                                            <Badge variant="secondary" className="font-mono text-[9px]">{currentAngle.toFixed(3)}°</Badge>
                                         </div>
-                                        {/* ジョグボタン群: [マイナス] [Home] [プラス] */}
-                                        <div className="flex gap-2">
-                                            <Button variant="outline" size="sm" className="h-8 flex-1" onClick={() => moveRelative(-jogStep)} disabled={isSystemBusy}>
-                                                <Minus className="h-3.5 w-3.5" />
-                                            </Button>
-                                            <Button variant="outline" size="sm" className="h-8 flex-1" onClick={() => homeStage()} disabled={isSystemBusy}>
-                                                <House className="h-3.5 w-3.5" />
-                                            </Button>
-                                            <Button variant="outline" size="sm" className="h-8 flex-1" onClick={() => moveRelative(jogStep)} disabled={isSystemBusy}>
-                                                <Plus className="h-3.5 w-3.5" />
-                                            </Button>
+
+                                        {/* 絶対移動セクション */}
+                                        <div className="space-y-1.5">
+                                            <Label className="text-[9px] uppercase text-muted-foreground">Absolute Move</Label>
+                                            <div className="flex gap-1.5">
+                                                <Input
+                                                    className="h-8 text-xs font-mono"
+                                                    placeholder="0.00"
+                                                    value={targetAngle}
+                                                    onChange={(e) => setTargetAngle(e.target.value)}
+                                                    onKeyDown={(e) => e.key === 'Enter' && moveAbsolute(parseFloat(targetAngle))}
+                                                />
+                                                <Button
+                                                    size="icon"
+                                                    className="h-8 w-8 shrink-0"
+                                                    disabled={isSystemBusy || !targetAngle}
+                                                    onClick={() => moveAbsolute(parseFloat(targetAngle))}
+                                                >
+                                                    <MoveRight className="h-3.5 w-3.5" />
+                                                </Button>
+                                            </div>
                                         </div>
+
+                                        <Separator />
+
+                                        {/* ジョグ操作セクション */}
+                                        <div className="space-y-3">
+                                            <div className="flex items-center justify-between">
+                                                <Label className="text-[9px] uppercase text-muted-foreground">Jog Step</Label>
+                                                <Tabs value={String(jogStep)} onValueChange={(v) => setJogStep(parseFloat(v))} className="h-7">
+                                                    <TabsList className="h-7 p-0.5">
+                                                    {[0.1, 1, 5].map((s) => (
+                                                         <TabsTrigger
+                                                             key={s} value={String(s)}
+                                                             className="text-[9px] h-6 px-2"
+                                                        >
+                                                            {s}°
+                                                         </TabsTrigger>
+                                                    ))}
+                                                    </TabsList>
+                                                </Tabs>
+                                            </div>
+                                            {/* ジョグボタン群: [マイナス] [Home] [プラス] */}
+                                            <div className="flex gap-2">
+                                                <Button variant="outline" size="sm" className="h-8 flex-1" onClick={() => moveRelative(-jogStep)} disabled={isSystemBusy}>
+                                                    <Minus className="h-3.5 w-3.5" />
+                                                </Button>
+                                                <Button variant="outline" size="sm" className="h-8 flex-1" onClick={() => homeStage()} disabled={isSystemBusy}>
+                                                    <House className="h-3.5 w-3.5" />
+                                                </Button>
+                                                <Button variant="outline" size="sm" className="h-8 flex-1" onClick={() => moveRelative(jogStep)} disabled={isSystemBusy}>
+                                                    <Plus className="h-3.5 w-3.5" />
+                                                </Button>
+                                            </div>
+                                        </div>
+
+                                        <Separator />
+
+                                        {/* 非常用・クイック停止ボタン */}
+                                        <Button 
+                                            variant="destructive" 
+                                            size="sm" 
+                                            className="w-full h-8 font-bold shadow-inner" 
+                                            onClick={() => stopStage(false)}
+                                        >
+                                            <Square className="h-3 w-3 fill-current mr-2" /> STOP STAGE
+                                        </Button>
                                     </div>
+                                </PopoverContent>
+                            </Popover>
 
-                                    <Separator />
-
-                                    {/* 非常用・クイック停止ボタン */}
-                                    <Button 
-                                        variant="destructive" 
-                                        size="sm" 
-                                        className="w-full h-8 font-bold shadow-inner" 
-                                        onClick={() => stopStage(false)}
-                                    >
-                                        <Square className="h-3 w-3 fill-current mr-2" /> STOP STAGE
-                                    </Button>
-                                </div>
-                            </PopoverContent>
-                        </Popover>
-
-                        {/* 本番測定開始ボタン */}
-                        <Button
-                            type="button"
-                            className="flex-1 font-bold shadow-lg h-10"
-                            disabled={!canStartMeasurement}
-                            onClick={form.handleSubmit(handleStartMeasurement)}
-                        >
-                            <Play className="w-4 h-4 mr-2" />
-                            START MEASUREMENT
-                        </Button>
+                            {/* 本番測定開始ボタン */}
+                            <Button
+                                type="button"
+                                className="flex-1 font-bold shadow-lg h-10"
+                                disabled={!canStartMeasurement}
+                                onClick={form.handleSubmit(handleStartMeasurement)}
+                            >
+                                <Play className="w-4 h-4 mr-2" />
+                                START MEASUREMENT
+                            </Button>
+                        </div>
                     </div>
                 ) : (
                     /* 動作中のプログレス表示と中止ボタン */

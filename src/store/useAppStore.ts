@@ -95,6 +95,30 @@ interface AppState {
     generateMultipageTiff: boolean; // 自動測定完了時にマルチページTIFF(images.tif)を追加生成するか
     setGenerateMultipageTiff: (enabled: boolean) => void; // マルチページTIFF生成フラグを更新する関数
 
+    // 自動測定フォーム入力値の一時退避（画面遷移による入力値の揮発を防止）
+    lastSetupFormValues: {
+        laserPower?: number | string;
+        fiberX?: number | string | null;
+        fiberY?: number | string | null;
+        startAngle?: number;
+        endAngle?: number;
+        stepAngle?: number;
+    } | null;
+    setLastSetupFormValues: (values: Partial<{
+        laserPower: number | string;
+        fiberX: number | string | null;
+        fiberY: number | string | null;
+        startAngle: number;
+        endAngle: number;
+        stepAngle: number;
+    }> | null) => void;
+
+    // 自動測定 Pre-Scan 状態および保存先フォルダ（画面遷移によるリセットを防止）
+    prescanStatus: "idle" | "running" | "success" | "saturated" | "failed";
+    setPrescanStatus: (status: "idle" | "running" | "success" | "saturated" | "failed") => void;
+    currentBranchPath: string | null;
+    setCurrentBranchPath: (path: string | null) => void;
+
     //ステージコントローラーマニュアル操作
     currentAngle: number; //QWPの回転角度
     setCurrentAngle: (angle: number) => void; //QWPの回転角度を設定する関数
@@ -274,6 +298,23 @@ export const useAppStore = create<AppState>((set) => ({
     generateMultipageTiff: DEFAULT_SETTINGS.generateMultipageTiff,
     setGenerateMultipageTiff: (enabled) => set({ generateMultipageTiff: enabled }),
 
+    // 自動測定フォーム入力値の一時退避用ステートおよびセッター
+    // DevicesView や SettingsView など他画面へ一時離脱しても入力値を保持し、復元可能にする
+    lastSetupFormValues: null,
+    setLastSetupFormValues: (values) => set((state) => ({
+        lastSetupFormValues: values === null ? null : {
+            ...(state.lastSetupFormValues || {}),
+            ...values,
+        }
+    })),
+
+    // 自動測定 Pre-Scan 状態および現在の保存先ブランチフォルダ
+    // DevicesView や SettingsView に移動してもアライメント結果や採番フォルダを維持する
+    prescanStatus: "idle",
+    setPrescanStatus: (status) => set({ prescanStatus: status }),
+    currentBranchPath: null,
+    setCurrentBranchPath: (path) => set({ currentBranchPath: path }),
+
     currentAngle: 0.0, //初期値
     setCurrentAngle: (angle) => set({ currentAngle: angle }), //set関数でcurrentAngleを書き換え
 
@@ -440,7 +481,18 @@ export const useAppStore = create<AppState>((set) => ({
     setCurrentSession: (session) => set({ currentSession: session }),
     
     selectedCategory: null,
-    setSelectedCategory: (category) => set({ selectedCategory: category }),
+    setSelectedCategory: (category) => set((state) => {
+        // 異なるカテゴリが選択された場合のみ、Pre-Scan状態、ブランチフォルダ、およびフォーム退避値を初期化
+        if (state.selectedCategory !== category) {
+            return {
+                selectedCategory: category,
+                prescanStatus: "idle",
+                currentBranchPath: null,
+                lastSetupFormValues: null,
+            };
+        }
+        return { selectedCategory: category };
+    }),
 
     // --- グラフデータ ---
     plotData: {},
@@ -454,6 +506,9 @@ export const useAppStore = create<AppState>((set) => ({
         isMeasuring: false,
         rois: [], // ROIもリセット
         plotData: {}, // グラフデータもリセット
+        lastSetupFormValues: null, // セッション終了時に入力退避値もクリア
+        prescanStatus: "idle",     // Pre-Scan状態もリセット
+        currentBranchPath: null,   // 保存先ブランチフォルダもリセット
     }),
 
     // アプリ側のハードウェア接続および測定状態を強制的に「未接続・初期状態」に戻す
