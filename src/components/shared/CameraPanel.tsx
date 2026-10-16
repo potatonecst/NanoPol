@@ -86,6 +86,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         cameraGainRange,
         rois, addROI, updateROI, removeROI,
         isMeasuring,
+        isSystemBusy,
     } = useAppStore(useShallow((state) => ({
         cameraResolution: state.cameraResolution,
         currentAngle: state.currentAngle,
@@ -105,6 +106,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
         updateROI: state.updateROI,
         removeROI: state.removeROI,
         isMeasuring: state.isMeasuring,
+        isSystemBusy: state.isSystemBusy,
     })));
 
     // カメラ表示領域のサイズ計測用Ref
@@ -474,6 +476,11 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
     const exposureStepStr = String(exposureStep ?? "");
     const exposurePrecision = exposureStepStr.includes(".") ? exposureStepStr.split(".")[1].length : 0;
 
+    // 露光・ゲイン変更などのカメラパラメータ操作を無効化する条件:
+    // 自動測定（Pre-Scan または本番測定）実行中、システム処理中、またはカメラ未接続時は
+    // 実験データの定量的整合性保護およびハードウェア競合防止のため操作をロックします。
+    const isCameraControlsDisabled = isMeasuring || isSystemBusy || !isCameraConnected;
+
     // コンテナのサイズ監視 (ResizeObserver)
     // ウィンドウサイズが変わった時に、表示エリアの大きさを再取得します。
     useEffect(() => {
@@ -575,7 +582,8 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                     step={exposureStep}
                                     min={exposureMin}
                                     max={exposureMax}
-                                    className="h-7 w-24 text-xs font-mono text-left pl-2 pr-0 tabular-nums"
+                                    disabled={isCameraControlsDisabled}
+                                    className="h-7 w-24 text-xs font-mono text-left pl-2 pr-0 tabular-nums disabled:opacity-50"
                                 />
                             </div>
 
@@ -583,6 +591,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                 value={[exposureTime]}
                                 onValueChange={handleExposureSliderChange}
                                 min={exposureMin} max={exposureMax} step={exposureStep}
+                                disabled={isCameraControlsDisabled}
                                 className="w-full"
                             />
                         </div>
@@ -604,7 +613,8 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                         step={0.01}
                                         min={cameraGainRange?.min ?? DEFAULT_GAIN_MIN}
                                         max={cameraGainRange?.max ?? DEFAULT_GAIN_MAX}
-                                        className="h-7 w-20 text-xs font-mono text-left pl-5 pr-0 tabular-nums"
+                                        disabled={isCameraControlsDisabled}
+                                        className="h-7 w-20 text-xs font-mono text-left pl-5 pr-0 tabular-nums disabled:opacity-50"
                                     />
                                 </div>
                             </div>
@@ -615,6 +625,7 @@ export function CameraPanel({ showAngle = false }: CameraPanelProps) {
                                 min={cameraGainRange?.min ?? DEFAULT_GAIN_MIN}
                                 max={cameraGainRange?.max ?? DEFAULT_GAIN_MAX}
                                 step={0.01}
+                                disabled={isCameraControlsDisabled}
                                 className="w-full"
                             />
                         </div>

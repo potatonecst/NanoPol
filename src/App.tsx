@@ -772,7 +772,7 @@ function App() {
                 size="sm"
                 className="gap-2 flex w-9 md:w-28 justify-center transition-all"
                 onClick={toggleRecording}
-                disabled={!isCameraConnected}
+                disabled={!isCameraConnected || isMeasuring}
                 aria-label={isRecording ? "Stop Recording" : "Start Recording"}
               >
                 {isRecording ? <Square className="size-4" /> : <Video className="size-4" />}
@@ -786,7 +786,7 @@ function App() {
                 variant="outline"
                 size="sm"
                 className="gap-2 flex md:w-28 justify-center"
-                disabled={!isCameraConnected}
+                disabled={!isCameraConnected || isMeasuring}
                 aria-label="Snapshot"
                 onClick={handleSnapshot}
               >

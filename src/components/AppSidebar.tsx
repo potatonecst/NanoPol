@@ -27,6 +27,7 @@ export function AppSidebar() {
         currentMode, 
         setMode, 
         isSystemBusy,
+        isMeasuring,
         isSettingsDirty,
         setIsSettingsDirty,
         pendingNavigationMode,
@@ -36,6 +37,7 @@ export function AppSidebar() {
             currentMode: state.currentMode, // 現在選択されているモード
             setMode: state.setMode,         // モードを変更する関数
             isSystemBusy: state.isSystemBusy, // システムが処理中かどうか（ロック用）
+            isMeasuring: state.isMeasuring,   // 自動測定実行中かどうか（ロック用）
             isSettingsDirty: state.isSettingsDirty, // 設定画面の未保存変更フラグ
             setIsSettingsDirty: state.setIsSettingsDirty,
             pendingNavigationMode: state.pendingNavigationMode, // 遷移保留先のモード
@@ -53,6 +55,7 @@ export function AppSidebar() {
      */
     const handleNavClick = (targetMode: AppMode) => {
         if (currentMode === targetMode) return; // 同じ画面なら何もしない
+        if (isSystemBusy || isMeasuring) return; // 測定中またはシステム処理中は画面遷移をブロック
 
         if (currentMode === "settings" && isSettingsDirty) {
             // 未保存の変更がある場合は、画面遷移を保留して確認ダイアログを開く
@@ -100,7 +103,7 @@ export function AppSidebar() {
                         )}
                         onClick={() => handleNavClick(mode)}
                         title={label}
-                        disabled={isSystemBusy}
+                        disabled={isSystemBusy || isMeasuring}
                     >
                         <Icon className="size-6" />
                     </Button>
