@@ -11,7 +11,6 @@ import {
     Play, 
     Scan, 
     AlertCircle, 
-    RefreshCcw, 
     ArrowLeft, 
     XCircle, 
     Minus, 
@@ -23,9 +22,11 @@ import {
     Square,
     AlertTriangle,
     SlidersHorizontal,
-    Info
+    Info,
+    RotateCcw,
+    Loader2
 } from 'lucide-react';
-import { autoApi } from '@/api/client';
+import { autoApi, cameraApi } from '@/api/client';
 import { toast } from 'sonner';
 import { setupFormSchema, SetupFormValues } from '@/schemas/measurementSchema';
 import { useStageActions } from '@/hooks/useStageActions';
@@ -40,6 +41,16 @@ import {
     PopoverContent,
     PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { DEFAULT_ANGLE_PRESETS, AngleRangePreset } from '@/constants/constants';
 
 /**
@@ -59,6 +70,7 @@ export function MeasurementManager() {
     const {
         isMeasuring,        // 現在自動測定（本番）が走っているか
         setIsMeasuring,     // 測定状態を更新する関数
+        isPrescan,          // 現在Pre-Scanが実行中かどうか
         setIsPrescan,       // Pre-Scan状態を更新する関数
         currentSession,     // 現在アクティブなセッション（サンプル）の情報
         setCurrentSession,  // セッション情報を更新する関数
@@ -78,9 +90,15 @@ export function MeasurementManager() {
         setPrescanStatus,          // Pre-Scanステータスを更新する関数
         currentBranchPath,         // 現在の測定ブランチフォルダパス（ストア保持）
         setCurrentBranchPath,      // ブランチフォルダパスを更新する関数
+        lastSuccessfulPrescan,     // 直前の成功したPre-Scan情報（復元用）
+        setLastSuccessfulPrescan,  // 直前の成功したPre-Scan情報を保存する関数
+        isStageBusy,               // ステージが物理的に回転中か
+        setExposureTime,           // カメラ露出時間を設定する関数
+        setGain,                   // カメラゲインを設定する関数
     } = useAppStore(useShallow((state) => ({
         isMeasuring: state.isMeasuring,
         setIsMeasuring: state.setIsMeasuring,
+        isPrescan: state.isPrescan,
         setIsPrescan: state.setIsPrescan,
         currentSession: state.currentSession,
         setCurrentSession: state.setCurrentSession,
@@ -100,6 +118,11 @@ export function MeasurementManager() {
         setPrescanStatus: state.setPrescanStatus,
         currentBranchPath: state.currentBranchPath,
         setCurrentBranchPath: state.setCurrentBranchPath,
+        lastSuccessfulPrescan: state.lastSuccessfulPrescan,
+        setLastSuccessfulPrescan: state.setLastSuccessfulPrescan,
+        isStageBusy: state.isStageBusy,
+        setExposureTime: state.setExposureTime,
+        setGain: state.setGain,
     })));
 
     // --- デフォルト角度範囲プリセットの解決 ---
@@ -283,6 +306,7 @@ export function MeasurementManager() {
                             // 画面上の四角い枠線が新しい重心位置にスッと移動します。
                             // ============================================================================
                             await fetchRois();
+                            const finalStatus = res.has_warning ? "saturated" : "success";
                             if (res.has_warning) {
                                 toast.warning("事前スキャンが完了しました（露光過多の警告があります。露光設定を確認してください）");
                                 setPrescanStatus("saturated");
@@ -290,6 +314,20 @@ export function MeasurementManager() {
                                 toast.success("事前スキャン（Pre-Scan）が完了しました");
                                 setPrescanStatus("success");
                             }
+
+                            // 直前の成功試行情報を保存（再Pre-Scanキャンセル時などの復元用）
+                            const stateNow = useAppStore.getState();
+                            const currentAttempts = res.attempt_number ?? (lastSuccessfulPrescan ? lastSuccessfulPrescan.attemptNumber + 1 : 1);
+                            setLastSuccessfulPrescan({
+                                attemptNumber: currentAttempts,
+                                exposureTime: stateNow.exposureTime,
+                                gain: stateNow.gain,
+                                laserPower: String(form.getValues("laserPower") ?? ""),
+                                fiberX: String(form.getValues("fiberX") ?? ""),
+                                fiberY: String(form.getValues("fiberY") ?? ""),
+                                status: finalStatus,
+                                rois: stateNow.rois,
+                            });
                         } else {
                             toast.success("本測定が完了しました。カテゴリ選択に戻ります");
 
@@ -303,6 +341,7 @@ export function MeasurementManager() {
                             setLastSetupFormValues(null);
                             setPrescanStatus("idle");
                             setCurrentBranchPath(null);
+                            setLastSuccessfulPrescan(null); // 本測定完了のため直前成功バッファもクリア
                             // フォーム内部の入力バッファも初期状態にリセット
                             form.reset({
                                 laserPower: "" as any,
@@ -551,8 +590,8 @@ export function MeasurementManager() {
             // これにより、バックエンド側で物理ステージの停止処理（減速停止）が走り、
             // バックグラウンドで稼働している測定ループの状態が "cancelled" に移行します。
             await autoApi.cancelAutoMeasurement();
-            setProgressMessage("Cancelling operation...");
-            toast.info("中止リクエストを送信しました");
+            setProgressMessage(isPrescan ? "Cancelling Pre-Scan..." : "Cancelling measurement...");
+            toast.info(isPrescan ? "事前スキャンの中止リクエストを送信しました" : "測定の中止リクエストを送信しました");
         } catch (error: any) {
             // 通信障害等でキャンセルAPIの呼び出し自体が失敗した場合のエラーハンドリング。
             toast.error("中止処理に失敗しました: " + (error.message || "不明なエラー"));
@@ -574,6 +613,69 @@ export function MeasurementManager() {
         }
     };
 
+    // 物理パラメータ変更確認ダイアログの開閉ステート
+    const [isLaserRevertDialogOpen, setIsLaserRevertDialogOpen] = useState(false);
+
+    /**
+     * 直前の成功した Pre-Scan 条件（露光時間、ゲイン、レーザーパワー、ファイバー位置、アライメントROI）を実行・復元する。
+     */
+    const executeRevertPrescan = async (targetPrescan: NonNullable<typeof lastSuccessfulPrescan>) => {
+        try {
+            // 1. カメラ設定（露光時間・ゲイン）をバックエンドおよびストアに復元
+            await cameraApi.config(targetPrescan.exposureTime, targetPrescan.gain);
+            setExposureTime(targetPrescan.exposureTime);
+            setGain(targetPrescan.gain);
+
+            // 2. フォームのレーザーパワーおよびファイバー位置を復元
+            form.setValue("laserPower", targetPrescan.laserPower as any);
+            if (targetPrescan.fiberX !== undefined) {
+                form.setValue("fiberX", targetPrescan.fiberX as any);
+            }
+            if (targetPrescan.fiberY !== undefined) {
+                form.setValue("fiberY", targetPrescan.fiberY as any);
+            }
+
+            // 3. アライメントされたROIを復元
+            if (targetPrescan.rois && targetPrescan.rois.length > 0) {
+                await cameraApi.setRois(targetPrescan.rois);
+                await fetchRois();
+            }
+
+            // 4. Pre-Scan 完了ステータスを復元（Ready または Saturated）
+            setPrescanStatus(targetPrescan.status);
+            toast.success(`Restored setup from Attempt ${targetPrescan.attemptNumber}`);
+        } catch (err) {
+            console.error("Failed to revert prescan:", err);
+            toast.error("Failed to restore setup");
+        }
+    };
+
+    /**
+     * 復元ボタン押下時のハンドラ。
+     * 手動調整が必要な物理パラメータ（レーザーパワーやファイバー位置）が変更されている場合は確認ダイアログを挟み、
+     * 変更されていない場合は即座に自動復元します。
+     */
+    const handleRevertClick = () => {
+        if (!lastSuccessfulPrescan) return;
+        const currentLaser = String(form.getValues("laserPower") ?? "");
+        const savedLaser = String(lastSuccessfulPrescan.laserPower ?? "");
+        const currentFiberX = String(form.getValues("fiberX") ?? "");
+        const savedFiberX = String(lastSuccessfulPrescan.fiberX ?? "");
+        const currentFiberY = String(form.getValues("fiberY") ?? "");
+        const savedFiberY = String(lastSuccessfulPrescan.fiberY ?? "");
+
+        const isLaserChanged = currentLaser !== savedLaser;
+        const isFiberChanged = currentFiberX !== savedFiberX || currentFiberY !== savedFiberY;
+
+        if (isLaserChanged || isFiberChanged) {
+            // 物理調整パラメータが書き換えられている場合は、確認ダイアログを開く
+            setIsLaserRevertDialogOpen(true);
+        } else {
+            // 露光時間等のみが変更されていた場合は、ダイアログなしで即座に復元
+            executeRevertPrescan(lastSuccessfulPrescan);
+        }
+    };
+
     // --- 表示制御用の計算変数 ---
     // ハードウェアの接続状態判定（ステージ・カメラ双方の接続が必須）
     const isStageDisconnected = !isStageConnected;
@@ -582,8 +684,12 @@ export function MeasurementManager() {
 
     // UIパーツの無効化条件: 測定中、またはPre-Scan実行中
     const isFormDisabled = isMeasuring || prescanStatus === "running";
-    // 本番測定を開始できる条件: Pre-Scan成功（警告あり含む）、または強制解除済みで、かつハードウェアが接続されていること
-    const canStartMeasurement = (prescanStatus === "success" || prescanStatus === "saturated" || forceStartUnlocked) && !isHardwareDisconnected;
+    // 本番測定を開始できる条件: Pre-Scan成功（警告あり含む）、または強制解除済みで、かつハードウェア接続かつ静止中であること
+    const canStartMeasurement = (prescanStatus === "success" || prescanStatus === "saturated" || forceStartUnlocked) 
+        && !isHardwareDisconnected 
+        && !isStageBusy 
+        && !isSystemBusy 
+        && !isMeasuring;
 
     return (
         <div className="flex flex-col h-full space-y-6">
@@ -877,22 +983,75 @@ export function MeasurementManager() {
                           * 測定中や実行中だけでなく、ステージやカメラが未接続の場合は無効化（disabled）されます。
                           * これにより、デバイス未接続のままボタンを押してしまい、中身が空のフォルダ（Left_Front_001 等）が
                           * 作成されて中断する事故を根本から防止します。
+                          * アライメント工程における主役アクションとして、Primary (default) スタイルを採用しています。
                           */}
                         <Button
                             type="button"
-                            variant="secondary"
+                            variant="default"
                             size="sm"
-                            className="w-full"
+                            className="w-full font-semibold"
                             disabled={isFormDisabled || isHardwareDisconnected}
                             onClick={form.handleSubmit(handlePreScan)}
                         >
                             {prescanStatus === "running" ? (
-                                <RefreshCcw className="w-4 h-4 mr-2 animate-spin" />
+                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                             ) : (
                                 <Scan className="w-4 h-4 mr-2" />
                             )}
                             {prescanStatus === "running" ? "Scanning..." : "Run Pre-Scan"}
                         </Button>
+
+                        {/* 
+                          * 【直前のPre-Scan成功条件への復元案内ボックス】
+                          * 再Pre-Scanを途中でキャンセルしたり失敗した場合でも、直前に成功した試行条件が
+                          * 保持されている場合に表示され、ワンクリックで安全に過去の成功条件に復帰できます。
+                          */}
+                        {!isFormDisabled && lastSuccessfulPrescan && prescanStatus !== "success" && prescanStatus !== "saturated" && (
+                            <div className="p-3 bg-muted/60 border border-border/80 rounded-md space-y-2.5 text-xs">
+                                <div className="flex items-center justify-between font-bold text-foreground">
+                                    <span>
+                                        Previous Setup (Attempt {lastSuccessfulPrescan.attemptNumber})
+                                    </span>
+                                    {lastSuccessfulPrescan.status === "saturated" && (
+                                        <Badge variant="outline" className="text-[10px] font-mono border-amber-500/40 text-amber-500 bg-amber-500/10">
+                                            Saturated
+                                        </Badge>
+                                    )}
+                                </div>
+                                <div className="space-y-1.5 text-[11px] font-mono bg-background/80 p-2.5 rounded border border-border/50">
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-muted-foreground">Exposure</span>
+                                        <span className="font-semibold text-foreground">{lastSuccessfulPrescan.exposureTime} ms</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-muted-foreground">Gain</span>
+                                        <span className="font-semibold text-foreground">×{lastSuccessfulPrescan.gain.toFixed(2)}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-muted-foreground">Laser Power</span>
+                                        <span className="font-semibold text-foreground">{lastSuccessfulPrescan.laserPower || "--"} mW</span>
+                                    </div>
+                                    {(lastSuccessfulPrescan.fiberX || lastSuccessfulPrescan.fiberY) && (
+                                        <div className="flex justify-between items-center">
+                                            <span className="text-muted-foreground">Fiber (X, Y)</span>
+                                            <span className="font-semibold text-foreground">
+                                                ({lastSuccessfulPrescan.fiberX || "--"}, {lastSuccessfulPrescan.fiberY || "--"})
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="w-full h-8 text-xs font-semibold"
+                                    onClick={handleRevertClick}
+                                >
+                                    <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
+                                    Restore This Setup
+                                </Button>
+                            </div>
+                        )}
 
                         {/* 
                           * 【ハードウェア未接続警告パネル】
@@ -1112,11 +1271,64 @@ export function MeasurementManager() {
                             onClick={handleCancel}
                         >
                             <XCircle className="w-4 h-4 mr-2" />
-                            CANCEL MEASUREMENT
+                            {isPrescan ? "CANCEL PRE-SCAN" : "CANCEL MEASUREMENT"}
                         </Button>
                     </div>
                 )}
             </div>
+
+            {/* 物理パラメータ調整確認ダイアログ */}
+            <AlertDialog open={isLaserRevertDialogOpen} onOpenChange={setIsLaserRevertDialogOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle className="flex items-center gap-2 text-foreground font-semibold">
+                            <AlertTriangle className="w-5 h-5 text-amber-500" />
+                            Confirm Physical Adjustments
+                        </AlertDialogTitle>
+                        <AlertDialogDescription asChild>
+                            <div className="space-y-3 text-sm pt-2 text-muted-foreground">
+                                <p>
+                                    Attempt {lastSuccessfulPrescan?.attemptNumber} was recorded with different physical parameters from your current setup:
+                                </p>
+                                <div className="space-y-1.5 text-xs font-mono bg-muted/80 p-2.5 rounded border border-border/60">
+                                    <div className="flex justify-between">
+                                        <span className="text-muted-foreground">Laser Power:</span>
+                                        <span className="font-semibold text-foreground">
+                                            {lastSuccessfulPrescan?.laserPower || "--"} mW
+                                        </span>
+                                    </div>
+                                    {(lastSuccessfulPrescan?.fiberX || lastSuccessfulPrescan?.fiberY) && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted-foreground">Fiber (X, Y):</span>
+                                            <span className="font-semibold text-foreground">
+                                                ({lastSuccessfulPrescan?.fiberX || "--"}, {lastSuccessfulPrescan?.fiberY || "--"})
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="bg-amber-500/10 p-2.5 rounded border border-amber-500/20 text-xs space-y-1">
+                                    <div className="font-semibold text-foreground">
+                                        レーザーパワーおよびファイバステージの座標を上記の値に戻しましたか？
+                                    </div>
+                                    <div className="text-[11px] text-muted-foreground">
+                                        Did you return the laser power and fiber stage coordinates to these values?
+                                    </div>
+                                </div>
+                            </div>
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter className="mt-4">
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => {
+                            if (lastSuccessfulPrescan) {
+                                executeRevertPrescan(lastSuccessfulPrescan);
+                            }
+                        }}>
+                            Yes, Restored & Apply
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
         </div>
     );

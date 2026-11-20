@@ -742,6 +742,7 @@ def _run_auto_measurement(
             csv_path = os.path.join(prescan_dir, csv_filename)
             images_dir = os.path.join(prescan_dir, f"attempt_{attempt_number}_images")
             multipaged_path = os.path.join(prescan_dir, f"attempt_{attempt_number}.tif")
+            _set_auto_operation_state(attempt_number=attempt_number)
         else:
             csv_filename = os.path.basename(os.path.normpath(save_directory)) + ".csv"
             csv_path = os.path.join(save_directory, csv_filename)
@@ -934,7 +935,43 @@ def _run_auto_measurement(
                         updated_r.update({"x": int(round(weighted_cx)), "y": int(round(weighted_cy)), "optical_centroid_x": round(weighted_cx, 4), "optical_centroid_y": round(weighted_cy, 4)})
                         updated_rois.append(updated_r)
                     camera.set_rois(updated_rois)
-                _set_auto_operation_state(status="succeeded", message="Measurement complete")
+
+                # ====================================================================
+                # 【原点復帰の完了待機と完了ステータス同期】
+                # 画像取得・ROI解析が終わった後、直ちに succeeded を発行せず、
+                # まずステージを物理的に原点（Home: 0.0°）へ復帰させ、完全に静止するまで
+                # 待機します。これにより、フロントエンドが測定ボタンをフライングで押して
+                # コマンド衝突・測定エラーになる不具合を根本から防ぎます。
+                # ====================================================================
+                _set_auto_operation_state(
+                    message="Returning stage to Home (0.0°)...",
+                    progress=1.0
+                )
+                try:
+                    if app_state.is_busy:
+                        logger.info("[AUTO] Waiting for stage stop before returning home...")
+                        w_start = time.time()
+                        while app_state.is_busy and (time.time() - w_start < 15.0):
+                            time.sleep(0.1)
+
+                    logger.info("[AUTO] Returning stage to hardware origin (Home)...")
+                    stage.home()
+                    app_state.is_busy = True # 監視ポーリングの遅延タイムラグを防ぐため即座にビジー化
+
+                    # 原点復帰動作が完了し、ステージが完全に静止するまで待機（最大45秒）
+                    home_wait_start = time.time()
+                    time.sleep(0.5) # コマンド反映の微小待機
+                    while app_state.is_busy and (time.time() - home_wait_start < 45.0):
+                        time.sleep(0.1)
+                    logger.info("[AUTO] Stage has reached Home and stopped.")
+                    homed_already = True
+                except Exception as e:
+                    logger.error(f"[AUTO] Failed to return to origin during post-processing: {e}")
+
+                _set_auto_operation_state(
+                    status="succeeded", 
+                    message="Pre-Scan complete" if is_prescan else "Measurement complete"
+                )
             except Exception as e:
                 logger.error(f"[AUTO] Post-processing failed: {e}")
                 _set_auto_operation_state(status="failed", message=str(e))
@@ -1061,21 +1098,22 @@ def _run_auto_measurement(
             except Exception as e:
                 logger.error(f"[AUTO] Failed to append history: {e}")
 
-        # --- 自動原点復帰 (Auto Homing) ---
-        # 測定エラー等によりステージがまだ移動中の場合、その完了（静止）を最大15秒待ってから
-        # 原点復帰コマンドを送信し、重複送信による NG エラーを防ぎます。
-        try:
-            if app_state.is_busy:
-                logger.info("[AUTO] Stage is busy. Waiting for stop before homing...")
-                wait_start = time.time()
-                while app_state.is_busy and (time.time() - wait_start < 15.0):
-                    time.sleep(0.1)
+        # --- 自動原点復帰 (Auto Homing: キャンセル時またはエラー時) ---
+        # 正常終了時ですでに原点復帰（homed_already）が行われている場合はスキップします。
+        # キャンセル時や例外時でまだ原点復帰していない場合のみ実行します。
+        if not locals().get("homed_already", False):
+            try:
+                if app_state.is_busy:
+                    logger.info("[AUTO] Stage is busy. Waiting for stop before homing...")
+                    wait_start = time.time()
+                    while app_state.is_busy and (time.time() - wait_start < 15.0):
+                        time.sleep(0.1)
 
-            logger.info("[AUTO] Returning stage to hardware origin (Home)...")
-            stage.home()
-            app_state.is_busy = True # 監視ポーリングの遅延タイムラグを防ぐため即座にビジー化
-        except Exception as e:
-            logger.error(f"[AUTO] Failed to return to origin: {e}")
+                logger.info("[AUTO] Returning stage to hardware origin (Home) after cancel/error...")
+                stage.home()
+                app_state.is_busy = True # 監視ポーリングの遅延タイムラグを防ぐため即座にビジー化
+            except Exception as e:
+                logger.error(f"[AUTO] Failed to return to origin: {e}")
 
 
 def _terminate_backend_process():
@@ -1254,7 +1292,7 @@ async def lifespan(app: FastAPI):
     
     logger.info("[SYSTEM] Cleanup Complete.")
 
-app = FastAPI(title="NanoPol Backend", version="0.2.6", lifespan=lifespan)
+app = FastAPI(title="NanoPol Backend", version="0.2.7", lifespan=lifespan)
 
 # ==========================================
 # CORS (Cross-Origin Resource Sharing) の設定

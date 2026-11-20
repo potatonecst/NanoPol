@@ -481,6 +481,7 @@ export const systemApi = {
             current_angle: number,
             target_angle: number,
             cancel_requested: boolean,
+            attempt_number?: number,
             has_warning?: boolean,
             warning_message?: string
         }>(url);

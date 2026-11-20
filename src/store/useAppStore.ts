@@ -119,6 +119,28 @@ interface AppState {
     currentBranchPath: string | null;
     setCurrentBranchPath: (path: string | null) => void;
 
+    // 直前の成功した Pre-Scan 試行情報（再Pre-Scanキャンセル時等の復元用）
+    lastSuccessfulPrescan: {
+        attemptNumber: number;
+        exposureTime: number;
+        gain: number;
+        laserPower: string;
+        fiberX?: string;
+        fiberY?: string;
+        status: "success" | "saturated";
+        rois: ROIData[];
+    } | null;
+    setLastSuccessfulPrescan: (prescan: {
+        attemptNumber: number;
+        exposureTime: number;
+        gain: number;
+        laserPower: string;
+        fiberX?: string;
+        fiberY?: string;
+        status: "success" | "saturated";
+        rois: ROIData[];
+    } | null) => void;
+
     //ステージコントローラーマニュアル操作
     currentAngle: number; //QWPの回転角度
     setCurrentAngle: (angle: number) => void; //QWPの回転角度を設定する関数
@@ -315,6 +337,10 @@ export const useAppStore = create<AppState>((set) => ({
     currentBranchPath: null,
     setCurrentBranchPath: (path) => set({ currentBranchPath: path }),
 
+    // 直前の成功した Pre-Scan 試行情報（再Pre-Scanキャンセル時等の復元用）
+    lastSuccessfulPrescan: null,
+    setLastSuccessfulPrescan: (prescan) => set({ lastSuccessfulPrescan: prescan }),
+
     currentAngle: 0.0, //初期値
     setCurrentAngle: (angle) => set({ currentAngle: angle }), //set関数でcurrentAngleを書き換え
 
@@ -396,7 +422,8 @@ export const useAppStore = create<AppState>((set) => ({
         syncRoisToBackend(updatedRois);
 
         return {
-            rois: updatedRois
+            rois: updatedRois,
+            lastSuccessfulPrescan: null, // ROIが変更されたため前回のスキャン結果をクリア
         };
     }),
     updateROI: (id, updates) => set((state) => {
@@ -421,16 +448,25 @@ export const useAppStore = create<AppState>((set) => ({
         });
 
         syncRoisToBackend(updatedRois);
-        return { rois: updatedRois };
+        return { 
+            rois: updatedRois,
+            lastSuccessfulPrescan: null, // ROIが変更されたため前回のスキャン結果をクリア
+        };
     }),
     removeROI: (id) => set((state) => {
         const updatedRois = state.rois.filter((r) => r.id !== id);
         syncRoisToBackend(updatedRois);
-        return { rois: updatedRois };
+        return { 
+            rois: updatedRois,
+            lastSuccessfulPrescan: null, // ROIが変更されたため前回のスキャン結果をクリア
+        };
     }),
     clearROIs: () => set(() => {
         syncRoisToBackend([]);
-        return { rois: [] };
+        return { 
+            rois: [],
+            lastSuccessfulPrescan: null, // ROIが変更されたため前回のスキャン結果をクリア
+        };
     }),
     fetchRois: async () => {
         try {
@@ -482,13 +518,14 @@ export const useAppStore = create<AppState>((set) => ({
     
     selectedCategory: null,
     setSelectedCategory: (category) => set((state) => {
-        // 異なるカテゴリが選択された場合のみ、Pre-Scan状態、ブランチフォルダ、およびフォーム退避値を初期化
+        // 異なるカテゴリが選択された場合のみ、Pre-Scan状態、ブランチフォルダ、フォーム退避値、および直前成功試行を初期化
         if (state.selectedCategory !== category) {
             return {
                 selectedCategory: category,
                 prescanStatus: "idle",
                 currentBranchPath: null,
                 lastSetupFormValues: null,
+                lastSuccessfulPrescan: null,
             };
         }
         return { selectedCategory: category };
@@ -509,6 +546,7 @@ export const useAppStore = create<AppState>((set) => ({
         lastSetupFormValues: null, // セッション終了時に入力退避値もクリア
         prescanStatus: "idle",     // Pre-Scan状態もリセット
         currentBranchPath: null,   // 保存先ブランチフォルダもリセット
+        lastSuccessfulPrescan: null, // 直前の成功試行履歴もクリア
     }),
 
     // アプリ側のハードウェア接続および測定状態を強制的に「未接続・初期状態」に戻す
